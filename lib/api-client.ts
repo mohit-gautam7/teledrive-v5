@@ -11,7 +11,7 @@ export class ApiError extends Error {
 function friendlyStatus(status: number, fallback: string) {
   if (status === 401) return "Your session expired. Please sign in again.";
   if (status === 403) return "You do not have permission to do that.";
-  if (status === 413) return "File too large — Vercel limits request bodies to 4.5 MB on the Hobby plan. Use a smaller file or upgrade to Vercel Pro.";
+  if (status === 413) return "File too large — exceeds the server's maximum upload size.";
   if (status === 429) return "Too many requests. Please wait a moment and try again.";
   if (status >= 500) return "The server had a problem. Please try again.";
   return fallback;
