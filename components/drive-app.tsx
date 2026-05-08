@@ -17,6 +17,7 @@ import {
   List,
   LogOut,
   Menu,
+  MoreVertical,
   Monitor,
   Moon,
   Plus,
@@ -30,6 +31,7 @@ import {
   Video,
   X
 } from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Button } from "@/components/button";
 import { apiFetch, uploadFile } from "@/lib/api-client";
 import { cn, formatBytes } from "@/lib/utils";
@@ -199,10 +201,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   }
 
   async function deleteFile(fileId: string) {
-    if (!confirm("Move this file to trash?")) return;
+    const inTrash = appView === "trash";
+    const msg = inTrash
+      ? "Permanently delete this file? This cannot be undone."
+      : "Move this file to trash?";
+    if (!confirm(msg)) return;
     try {
       await apiFetch(`/api/files/${fileId}`, { method: "DELETE" });
-      toast.success("File moved to trash");
+      toast.success(inTrash ? "File permanently deleted" : "File moved to trash");
       refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not delete file.");
@@ -475,7 +481,8 @@ function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFi
         <h3 className="truncate text-sm font-semibold">{file.originalName}</h3>
         <p className="mt-1 text-xs text-slate-500">{formatBytes(file.size)} - {file.storageMode}</p>
       </div>
-      <div className={cn("flex gap-2", grid ? "mt-4" : "ml-auto")}>
+      {/* Desktop list view & all grid views: show 3 buttons */}
+      <div className={cn("flex gap-2", grid ? "mt-4" : "ml-auto hidden sm:flex")}>
         <button onClick={onDownload} className="grid h-11 w-11 place-items-center rounded-md border border-slate-200 hover:bg-slate-50 active:scale-[0.96] dark:border-slate-800 dark:hover:bg-slate-800" aria-label="Download">
           <Download className="h-4 w-4" />
         </button>
@@ -486,6 +493,31 @@ function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFi
           <Trash2 className="h-4 w-4" />
         </button>
       </div>
+      {/* Mobile list view only: collapse into ⋯ dropdown */}
+      {!grid && (
+        <div className="ml-auto flex sm:hidden">
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button className="grid h-11 w-11 place-items-center rounded-md border border-slate-200 hover:bg-slate-50 active:scale-[0.96] dark:border-slate-800 dark:hover:bg-slate-800" aria-label="More actions">
+                <MoreVertical className="h-4 w-4" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[140px] overflow-hidden rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
+                <DropdownMenu.Item onSelect={onDownload} className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <Download className="h-4 w-4" /> Download
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={onShare} className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-slate-100 dark:hover:bg-slate-800">
+                  <Link2 className="h-4 w-4" /> Share
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={onDelete} className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-red-600 outline-none hover:bg-red-50 dark:hover:bg-red-950">
+                  <Trash2 className="h-4 w-4" /> Delete
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </div>
+      )}
     </motion.article>
   );
 }
