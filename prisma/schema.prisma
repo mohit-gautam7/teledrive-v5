@@ -77,6 +77,20 @@ model Share {
   file         File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
 }
 
+model BotLoginCode {
+  id         String   @id @default(cuid())
+  telegramId String
+  name       String
+  username   String?
+  avatar     String?
+  code       String
+  expiresAt  DateTime
+  used       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([code])
+}
+
 enum StorageMode {
   BOT
   PERSONAL
