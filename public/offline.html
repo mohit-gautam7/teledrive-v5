@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TeleDrive — Offline</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100svh;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    /* Orbs */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      pointer-events: none;
+      filter: blur(70px);
+      animation: float 8s ease-in-out infinite;
+    }
+    .orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, rgba(56,189,248,.16) 0%, transparent 70%); top: -140px; right: -80px; }
+    .orb-2 { width: 360px; height: 360px; background: radial-gradient(circle, rgba(99,102,241,.12) 0%, transparent 70%); bottom: -100px; left: -60px; animation-delay: -4s; animation-duration: 11s; }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-30px); }
+    }
+
+    /* Grid overlay */
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(148,163,184,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148,163,184,.025) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+
+    .card {
+      position: relative;
+      z-index: 10;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.04);
+      backdrop-filter: blur(24px);
+      border-radius: 20px;
+      padding: 48px 40px;
+      text-align: center;
+      max-width: 420px;
+      width: calc(100% - 32px);
+      box-shadow: 0 25px 60px rgba(0,0,0,.5);
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      border-radius: 21px;
+      background: linear-gradient(135deg, rgba(56,189,248,.12), transparent 50%, rgba(99,102,241,.08));
+      pointer-events: none;
+    }
+
+    .icon-wrap {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 72px;
+      height: 72px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, #0ea5e9, #2563eb);
+      margin-bottom: 24px;
+      box-shadow: 0 12px 32px rgba(14,165,233,.3);
+    }
+
+    .icon-wrap svg { width: 36px; height: 36px; }
+
+    h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 12px; color: #f8fafc; }
+    p { font-size: .95rem; line-height: 1.7; color: #94a3b8; margin-bottom: 32px; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(14,165,233,.12);
+      border: 1px solid rgba(14,165,233,.25);
+      color: #38bdf8;
+      border-radius: 999px;
+      padding: 4px 14px;
+      font-size: .8rem;
+      margin-bottom: 28px;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #38bdf8; animation: blink 1.6s ease-in-out infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(14,165,233,.15);
+      border: 1px solid rgba(14,165,233,.3);
+      color: #7dd3fc;
+      border-radius: 10px;
+      padding: 10px 22px;
+      font-size: .9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background .2s, transform .15s;
+      font-family: inherit;
+    }
+    button:hover { background: rgba(14,165,233,.25); transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="grid-bg"></div>
+
+  <div class="card">
+    <div class="icon-wrap">
+      <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M27 17c0-1-.1-2-.3-3C25.2 10 21.6 7.5 17.5 7.5c-3.4 0-6.4 1.8-8 4.6-.5-.1-1-.1-1.5-.1C4.2 12 2 14.2 2 17s2.2 5 5 5.2h20c3.2 0 5.8-2.6 5.8-5.9C32.8 13.3 30.2 11 27 11z" fill="white" opacity=".9"/>
+        <path d="M18 21v8M14 25l4 4 4-4" stroke="#1e3a5f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+
+    <div class="badge">
+      <span class="dot"></span>
+      No connection detected
+    </div>
+
+    <h1>You're offline</h1>
+    <p>TeleDrive needs an internet connection to access your files and Telegram storage. Check your connection and try again.</p>
+
+    <button onclick="location.reload()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+        <path d="M21 3v5h-5"/>
+        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+        <path d="M8 16H3v5"/>
+      </svg>
+      Try again
+    </button>
+  </div>
+</body>
+</html>

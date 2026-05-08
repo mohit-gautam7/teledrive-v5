@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String          @id @default(cuid())
+  telegramId     String          @unique
+  name           String
+  username       String?
+  avatar         String?
+  createdAt      DateTime        @default(now())
+  storageConfig  StorageConfig?
+  files          File[]
+  folders        Folder[]
+}
+
+model StorageConfig {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  botToken        String?
+  botChannelId    String?
+  telegramSession String?
+  createdAt       DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model File {
+  id                String      @id @default(cuid())
+  userId            String
+  filename          String
+  originalName      String
+  mimeType          String
+  size              BigInt
+  storageMode       StorageMode
+  telegramFileId    String?
+  telegramMessageId String?
+  telegramFilePath  String?
+  folderId          String?
+  isDeleted         Boolean     @default(false)
+  isFavorite        Boolean     @default(false)
+  createdAt         DateTime    @default(now())
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder            Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  shares            Share[]
+
+  @@index([userId, folderId])
+  @@index([userId, createdAt])
+}
+
+model Folder {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  parentId  String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[] @relation("FolderTree")
+  files     File[]
+
+  @@index([userId, parentId])
+}
+
+model Share {
+  id           String    @id @default(cuid())
+  fileId       String
+  shareToken   String    @unique
+  expiryDate   DateTime?
+  passwordHash String?
+  disabled     Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  file         File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
+
+enum StorageMode {
+  BOT
+  PERSONAL
+}

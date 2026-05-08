@@ -1,0 +1,15 @@
+.env
+.env.local
+.env.*.local
+.next
+node_modules
+dist
+build
+client
+server
+shared
+drizzle
+.manus-logs
+.webdev
+*.log
+*.tsbuildinfo
