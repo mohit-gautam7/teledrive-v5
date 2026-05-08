@@ -12,6 +12,18 @@ declare global {
   }
 }
 
+async function ownerLogin(key: string) {
+  const res = await fetch("/api/auth/owner-login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Invalid key");
+  }
+}
+
 const features = [
   { icon: Upload, label: "Files up to 50 MB via bot channel" },
   { icon: Cloud, label: "Large media via Saved Messages" },
@@ -22,6 +34,9 @@ export default function Login() {
   const mountRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const [isLocalhost, setIsLocalhost] = useState(false);
+  const [showOwnerLogin, setShowOwnerLogin] = useState(false);
+  const [ownerKey, setOwnerKey] = useState("");
+  const [ownerLoading, setOwnerLoading] = useState(false);
 
   useEffect(() => {
     setIsLocalhost(["localhost", "127.0.0.1"].includes(window.location.hostname));
@@ -50,6 +65,19 @@ export default function Login() {
     script.setAttribute("data-request-access", "write");
     mountRef.current.appendChild(script);
   }, []);
+
+  async function handleOwnerLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setOwnerLoading(true);
+    setError("");
+    try {
+      await ownerLogin(ownerKey);
+      window.location.href = "/drive";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid key");
+      setOwnerLoading(false);
+    }
+  }
 
   async function devLogin() {
     try {
@@ -257,6 +285,51 @@ export default function Login() {
             >
               Reload widget
             </Button>
+
+            {/* Owner key login */}
+            <div className="mt-5" style={{ borderTop: "1px solid rgba(255,255,255,0.07)", paddingTop: 16 }}>
+              <button
+                type="button"
+                onClick={() => setShowOwnerLogin(v => !v)}
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 12, color: "#475569", width: "100%", textAlign: "center" }}
+              >
+                {showOwnerLogin ? "▲ Hide" : "Having trouble? Use owner key →"}
+              </button>
+
+              {showOwnerLogin && (
+                <motion.form
+                  onSubmit={handleOwnerLogin}
+                  className="mt-3 flex gap-2"
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
+                  <input
+                    type="password"
+                    placeholder="Owner key…"
+                    value={ownerKey}
+                    onChange={e => setOwnerKey(e.target.value)}
+                    required
+                    style={{
+                      flex: 1, borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(255,255,255,0.06)", color: "#e2e8f0",
+                      padding: "8px 12px", fontSize: 14, outline: "none"
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={ownerLoading}
+                    style={{
+                      borderRadius: 10, border: "none", background: "#0284c7",
+                      color: "#fff", padding: "8px 16px", fontSize: 14,
+                      fontWeight: 600, cursor: ownerLoading ? "not-allowed" : "pointer",
+                      opacity: ownerLoading ? 0.6 : 1
+                    }}
+                  >
+                    {ownerLoading ? "…" : "Go"}
+                  </button>
+                </motion.form>
+              )}
+            </div>
           </div>
         </motion.section>
       </div>
