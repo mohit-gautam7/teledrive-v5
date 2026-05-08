@@ -132,7 +132,7 @@ export default function Login() {
       </div>
 
       {/* Content grid */}
-      <div className="relative z-10 mx-auto grid min-h-[calc(100vh-0px)] max-w-6xl items-center gap-10 px-4 py-8 md:grid-cols-[1.1fr_0.9fr] md:gap-12 md:px-8 md:py-12">
+      <div className="relative z-10 mx-auto grid min-h-screen w-full max-w-6xl items-center gap-10 px-4 py-8 md:grid-cols-[1.1fr_0.9fr] md:gap-12 md:px-8 md:py-12" style={{ boxSizing:"border-box" }}>
 
         {/* ── Left: Hero — hidden on mobile ── */}
         <motion.section
@@ -176,12 +176,13 @@ export default function Login() {
 
         {/* ── Right: Login card ── */}
         <motion.section
-          className="w-full"
+          className="w-full mx-auto"
+          style={{ maxWidth: "min(100%, 440px)" }}
           initial={{ opacity:0, y:24, scale:0.97 }}
           animate={{ opacity:1, y:0, scale:1 }}
           transition={{ duration:0.5, delay:0.15, ease:"easeOut" }}
         >
-          <div style={{ position:"relative", borderRadius:20, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", backdropFilter:"blur(28px)", WebkitBackdropFilter:"blur(28px)", padding:"clamp(18px,5vw,28px)", boxShadow:"0 32px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08)" }}>
+          <div style={{ position:"relative", borderRadius:20, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", backdropFilter:"blur(28px)", WebkitBackdropFilter:"blur(28px)", padding:"clamp(16px,5vw,28px)", boxShadow:"0 32px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08)", boxSizing:"border-box", width:"100%", overflow:"hidden" }}>
             <div style={{ position:"absolute", inset:-1, borderRadius:21, pointerEvents:"none", background:"linear-gradient(135deg, rgba(56,189,248,0.15) 0%, transparent 50%, rgba(99,102,241,0.1) 100%)" }} />
 
             {/* Traffic lights */}
@@ -209,14 +210,16 @@ export default function Login() {
                 <motion.div key="bot" initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} exit={{ opacity:0, y:-8 }} transition={{ duration:0.18 }}>
                   <div className="space-y-2.5 mb-5">
                     {[
-                      ["1", `Open Telegram → message @${BOT_USERNAME}`],
-                      ["2", "Send any message (e.g. hi)"],
-                      ["3", "Bot replies with a 6-digit code"],
-                      ["4", "Paste it below and press Login"]
-                    ].map(([n, text]) => (
+                      ["1", "Open Telegram, message", `@${BOT_USERNAME}`],
+                      ["2", "Send any message (e.g. hi)", ""],
+                      ["3", "Bot replies with a 6-digit code", ""],
+                      ["4", "Paste it below and press Login", ""]
+                    ].map(([n, text, highlight]) => (
                       <div key={n} className="flex items-start gap-3">
                         <span style={{ minWidth:20, height:20, borderRadius:"50%", background:"rgba(56,189,248,0.15)", border:"1px solid rgba(56,189,248,0.3)", color:"#38bdf8", fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", marginTop:1, flexShrink:0 }}>{n}</span>
-                        <span style={{ fontSize:13, color:"#94a3b8", lineHeight:1.5 }}>{text}</span>
+                        <span style={{ fontSize:13, color:"#94a3b8", lineHeight:1.5, wordBreak:"break-word", overflowWrap:"anywhere", minWidth:0 }}>
+                          {text}{highlight ? <> <span style={{ color:"#38bdf8", fontWeight:600 }}>{highlight}</span></> : null}
+                        </span>
                       </div>
                     ))}
                   </div>
