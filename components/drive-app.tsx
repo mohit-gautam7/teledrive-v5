@@ -68,7 +68,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [view, setView] = useState<"grid" | "list">("grid");
   const [appView, setAppView] = useState<AppView>("files");
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ name: string; percent: number } | null>(null);
+  const [uploadQueue, setUploadQueue] = useState<{ id: string; name: string; size: number; percent: number; status: "uploading" | "done" | "error"; error?: string }[]>([]);
+  const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("system");
@@ -130,30 +131,37 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const uploadFiles = useCallback(
     async (acceptedFiles: File[]) => {
-      const maxSize = 2 * 1024 * 1024 * 1024; // Telegram's 2 GB limit
-      const tooLarge = acceptedFiles.find(file => file.size > maxSize);
+      const maxSize = 2 * 1024 * 1024 * 1024;
+      const tooLarge = acceptedFiles.find(f => f.size > maxSize);
       if (tooLarge) {
         toast.error(`"${tooLarge.name}" exceeds Telegram's 2 GB file limit.`);
         return;
       }
+      const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "uploading" as const }));
+      setUploadQueue(items);
       setUploading(true);
-      try {
-        for (const file of acceptedFiles) {
+      let anyError = false;
+      for (let i = 0; i < acceptedFiles.length; i++) {
+        const file = acceptedFiles[i];
+        const itemId = items[i].id;
+        try {
           const form = new FormData();
           form.append("file", file);
           if (folderId) form.append("folderId", folderId);
-          setUploadProgress({ name: file.name, percent: 0 });
-          const { data } = await uploadFile<{ routing: { storageMode: "BOT" | "PERSONAL" } }>("/api/upload", form, percent => {
-            setUploadProgress({ name: file.name, percent });
+          await uploadFile<{ routing: { storageMode: "BOT" | "PERSONAL" } }>("/api/upload", form, percent => {
+            setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent } : it));
           });
-          toast.success(`${file.name} uploaded to ${data.routing.storageMode === "BOT" ? "bot storage" : "personal storage"}`);
+          setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: 100, status: "done" } : it));
+        } catch (error) {
+          anyError = true;
+          const msg = error instanceof Error ? error.message : "Upload failed";
+          setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "error", error: msg } : it));
         }
-        await refresh();
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Upload failed");
-      } finally {
-        setUploading(false);
-        setUploadProgress(null);
+      }
+      await refresh();
+      setUploading(false);
+      if (!anyError) {
+        setTimeout(() => setUploadQueue([]), 2500);
       }
     },
     [folderId, refresh]
@@ -294,17 +302,46 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           {uploading ? "Uploading…" : "Upload"}
         </button>
 
-        {uploadProgress ? (
-          <div className="mt-3 rounded-xl border p-3" style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(0,212,255,0.05)" }}>
-            <div className="flex items-center justify-between gap-3 text-xs" style={{ color: "#94a3b8" }}>
-              <span className="truncate">{uploadProgress.name}</span>
-              <span style={{ color: "#00d4ff" }}>{uploadProgress.percent}%</span>
-            </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
-              <motion.div className="h-full rounded-full" style={{ background: "linear-gradient(90deg,#00d4ff,#0284c7)" }} initial={{ width: 0 }} animate={{ width: `${uploadProgress.percent}%` }} />
-            </div>
-          </div>
-        ) : null}
+        <AnimatePresence>
+          {uploadQueue.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mt-3 overflow-hidden rounded-xl border"
+              style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(0,212,255,0.04)" }}
+            >
+              <div className="max-h-52 overflow-y-auto p-2 space-y-1.5">
+                {uploadQueue.map(item => (
+                  <div key={item.id} className="rounded-lg p-2.5" style={{ background: "rgba(255,255,255,0.03)" }}>
+                    <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
+                      <span className="truncate font-medium" style={{ color: "#e2e8f0", maxWidth: "75%" }}>{item.name}</span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {item.status === "uploading" && <span style={{ color: "#00d4ff" }}>{item.percent}%</span>}
+                        {item.status === "done" && <CheckCircle2 className="h-3.5 w-3.5" style={{ color: "#34d399" }} />}
+                        {item.status === "error" && (
+                          <button onClick={() => setUploadQueue(q => q.filter(it => it.id !== item.id))}>
+                            <X className="h-3.5 w-3.5" style={{ color: "#f87171" }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="h-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.07)" }}>
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ background: item.status === "error" ? "#f87171" : item.status === "done" ? "#34d399" : "linear-gradient(90deg,#00d4ff,#0284c7)" }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${item.status === "done" ? 100 : item.percent}%` }}
+                        transition={{ ease: "easeOut" }}
+                      />
+                    </div>
+                    {item.status === "error" && <p className="mt-1 text-xs truncate" style={{ color: "#f87171" }}>{item.error}</p>}
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Nav */}
         <nav className="mt-6 flex-1 space-y-1 overflow-y-auto pb-4">
@@ -427,17 +464,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           <>
             {/* Drop zone */}
             <div
-              className={cn("mb-6 rounded-2xl border-2 border-dashed p-8 text-center transition", isDragActive && "dropzone-active scale-[1.01]")}
-              style={{ borderColor: isDragActive ? "#00d4ff" : "rgba(0,212,255,0.2)", background: isDragActive ? "rgba(0,212,255,0.06)" : "rgba(0,212,255,0.02)", cursor: "crosshair" }}
+              className={cn("mb-6 rounded-2xl border-2 border-dashed transition", isDragActive && "dropzone-active scale-[1.01]")}
+              style={{ borderColor: isDragActive ? "#00d4ff" : "rgba(0,212,255,0.2)", background: isDragActive ? "rgba(0,212,255,0.06)" : "rgba(0,212,255,0.02)", cursor: "crosshair", padding: "clamp(1rem,4vw,2.5rem)", textAlign: "center" }}
             >
-              <Upload className="mx-auto mb-3 h-8 w-8" style={{ color: "#00d4ff" }} />
-              <p className="font-semibold" style={{ color: "#e2e8f0" }}>Drop files or folders here</p>
-              <p className="mt-1 text-sm" style={{ color: "#475569" }}>Auto-routes large files to Telegram storage.</p>
+              <Upload className="mx-auto mb-2 h-7 w-7" style={{ color: "#00d4ff" }} />
+              <p className="font-semibold text-sm md:text-base" style={{ color: "#e2e8f0" }}>Drop files or folders here</p>
+              <p className="mt-0.5 text-xs md:text-sm" style={{ color: "#475569" }}>Auto-routes large files to Telegram storage.</p>
             </div>
 
             {/* Folders */}
             {folders.length > 0 ? (
-              <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="mb-8 grid gap-3 grid-cols-2 sm:grid-cols-2 xl:grid-cols-4">
                 {folders.map(folder => (
                   <motion.button
                     key={folder.id}
@@ -459,13 +496,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
             {loading ? <FileSkeletonGrid view={view} /> : null}
 
-            <motion.div layout className={cn(loading && "hidden", view === "grid" ? "grid gap-4 sm:grid-cols-2 xl:grid-cols-4" : "space-y-2")}>
+            <motion.div layout className={cn(loading && "hidden", view === "grid" ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" : "space-y-2")}>
               <AnimatePresence mode="popLayout">
                 {files.map(file => (
                   <FileTile
                     key={file.id}
                     file={file}
                     grid={view === "grid"}
+                    onPreview={() => setPreviewFile(file)}
                     onDownload={() => {
                       toast.info("Preparing download…");
                       window.location.href = `/api/download/${file.id}`;
@@ -490,11 +528,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           )}
         </section>
       </motion.main>
+
+      {/* Preview modal */}
+      <AnimatePresence>
+        {previewFile && <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />}
+      </AnimatePresence>
     </div>
   );
 }
 
-function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFile; grid: boolean; onDownload: () => void; onShare: () => void; onDelete: () => void }) {
+function FileTile({ file, grid, onPreview, onDownload, onShare, onDelete }: { file: DriveFile; grid: boolean; onPreview: () => void; onDownload: () => void; onShare: () => void; onDelete: () => void }) {
   const Icon = file.mimeType.startsWith("image/") ? Image : file.mimeType.startsWith("video/") ? Video : FileIcon;
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const isImage = file.mimeType.startsWith("image/");
@@ -513,7 +556,9 @@ function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFi
     >
       <div
         className={cn("relative grid overflow-hidden place-items-center rounded-lg", grid ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")}
-        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)" }}
+        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)", cursor: "zoom-in" }}
+        onClick={onPreview}
+        title="Click to preview"
       >
         {(isImage || isVideo) && !mediaLoaded ? (
           <div className="absolute inset-0 animate-pulse" style={{ background: "linear-gradient(90deg, rgba(255,255,255,0.04), rgba(0,212,255,0.06), rgba(255,255,255,0.04))" }} />
@@ -629,7 +674,7 @@ function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFi
 
 function FileSkeletonGrid({ view }: { view: "grid" | "list" }) {
   return (
-    <div className={view === "grid" ? "grid gap-4 sm:grid-cols-2 xl:grid-cols-4" : "space-y-2"}>
+    <div className={view === "grid" ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" : "space-y-2"}>
       {Array.from({ length: view === "grid" ? 8 : 5 }).map((_, index) => (
         <div
           key={index}
@@ -706,4 +751,99 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
 
 function CloudIcon() {
   return <Upload className="h-5 w-5" />;
+}
+
+function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
+  const isImage = file.mimeType.startsWith("image/") && !file.mimeType.includes("heic") && !file.mimeType.includes("heif");
+  const isVideo = file.mimeType.startsWith("video/");
+  const previewUrl = isImage ? `/api/preview/${file.id}` : isVideo ? `/api/stream/${file.id}` : "";
+  const Icon = isImage ? Image : isVideo ? Video : FileIcon;
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+      style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)" }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0, y: 40 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.9, opacity: 0, y: 40 }}
+        transition={{ type: "spring", damping: 22, stiffness: 320 }}
+        className="relative w-full sm:max-w-3xl rounded-t-3xl sm:rounded-2xl overflow-hidden"
+        style={{ border: "1px solid rgba(0,212,255,0.18)", background: "rgba(7,13,26,0.97)", maxHeight: "92vh" }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Handle bar for mobile */}
+        <div className="flex justify-center pt-3 pb-1 sm:hidden">
+          <div className="h-1 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.2)" }} />
+        </div>
+        {/* Header */}
+        <div className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          <div className="min-w-0">
+            <h3 className="truncate font-semibold text-sm" style={{ color: "#e2e8f0" }}>{file.originalName}</h3>
+            <p className="text-xs" style={{ color: "#475569" }}>{formatBytes(file.size)} · {file.storageMode} · {file.mimeType}</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => { window.location.href = `/api/download/${file.id}`; }}
+              className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition"
+              style={{ border: "1px solid rgba(0,212,255,0.3)", background: "rgba(0,212,255,0.08)", color: "#00d4ff" }}
+            >
+              <Download className="h-3.5 w-3.5" /> Download
+            </button>
+            <button
+              onClick={onClose}
+              className="grid h-8 w-8 place-items-center rounded-xl transition"
+              style={{ border: "1px solid rgba(255,255,255,0.1)", color: "#64748b" }}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        {/* Content */}
+        <div className="flex items-center justify-center overflow-auto" style={{ minHeight: 220, maxHeight: "74vh", padding: "1rem" }}>
+          {isImage ? (
+            <motion.img
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.3 }}
+              src={previewUrl}
+              alt={file.originalName}
+              className="rounded-xl object-contain"
+              style={{ maxWidth: "100%", maxHeight: "70vh" }}
+            />
+          ) : isVideo ? (
+            <video
+              src={previewUrl}
+              controls
+              autoPlay
+              className="rounded-xl"
+              style={{ maxWidth: "100%", maxHeight: "70vh" }}
+            />
+          ) : (
+            <div className="text-center py-8">
+              <div className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-2xl" style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.15)" }}>
+                <Icon className="h-10 w-10" style={{ color: "#00d4ff" }} />
+              </div>
+              <p className="font-semibold" style={{ color: "#94a3b8" }}>No preview available</p>
+              {(file.mimeType.includes("heic") || file.mimeType.includes("heif")) && (
+                <p className="mt-1 text-sm" style={{ color: "#475569" }}>HEIC/HEIF isn't supported by browsers. Download to view.</p>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
 }
