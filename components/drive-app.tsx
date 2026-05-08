@@ -13,13 +13,16 @@ import {
   Grid2X2,
   Home,
   Image,
+  Info,
   Link2,
   List,
   LogOut,
+  Mail,
   Menu,
   MoreVertical,
   Monitor,
   Moon,
+  Pencil,
   Plus,
   RotateCw,
   Search,
@@ -55,7 +58,7 @@ type DriveFolder = {
   createdAt: string;
 };
 
-type AppView = "home" | "files" | "shared" | "recent" | "favorites" | "trash" | "settings";
+type AppView = "home" | "files" | "shared" | "recent" | "favorites" | "trash" | "settings" | "about";
 type ThemeMode = "light" | "dark" | "system";
 
 export default function DriveApp({ user }: { user: { name: string; username?: string | null; avatar?: string | null } }) {
@@ -68,8 +71,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [view, setView] = useState<"grid" | "list">("grid");
   const [appView, setAppView] = useState<AppView>("files");
   const [uploading, setUploading] = useState(false);
-  const [uploadQueue, setUploadQueue] = useState<{ id: string; name: string; size: number; percent: number; status: "uploading" | "done" | "error"; error?: string }[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<{ id: string; name: string; size: number; percent: number; status: "pending" | "uploading" | "done" | "error"; error?: string }[]>([]);
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
+  const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("system");
@@ -137,7 +141,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         toast.error(`"${tooLarge.name}" exceeds Telegram's 2 GB file limit.`);
         return;
       }
-      const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "uploading" as const }));
+      const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "pending" as const }));
       setUploadQueue(items);
       setUploading(true);
       let anyError = false;
@@ -145,6 +149,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         const file = acceptedFiles[i];
         const itemId = items[i].id;
         try {
+          setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "uploading" } : it));
           const form = new FormData();
           form.append("file", file);
           if (folderId) form.append("folderId", folderId);
@@ -175,19 +180,31 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const storageUsed = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
 
-  async function createFolder() {
-    const name = prompt("Folder name");
-    if (!name) return;
+  async function submitFolderModal(name: string) {
+    if (!folderModal) return;
     try {
-      await apiFetch("/api/folders", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, parentId: folderId })
-      });
-      toast.success("Folder created");
+      if (folderModal.mode === "create") {
+        await apiFetch("/api/folders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, parentId: folderId }) });
+        toast.success("Folder created");
+      } else {
+        await apiFetch(`/api/folders/${folderModal.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+        toast.success("Folder renamed");
+      }
+      setFolderModal(null);
       refresh();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create folder.");
+      toast.error(error instanceof Error ? error.message : "Could not save folder.");
+    }
+  }
+
+  async function deleteFolder(id: string) {
+    if (!confirm("Delete this folder? Files inside will not be deleted.")) return;
+    try {
+      await apiFetch(`/api/folders/${id}`, { method: "DELETE" });
+      toast.success("Folder deleted");
+      refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete folder.");
     }
   }
 
@@ -245,7 +262,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     { icon: Link2, label: "Shared", view: "shared" as AppView },
     { icon: Star, label: "Favorites", view: "favorites" as AppView },
     { icon: Trash2, label: "Trash", view: "trash" as AppView },
-    { icon: Settings, label: "Settings", view: "settings" as AppView }
+    { icon: Settings, label: "Settings", view: "settings" as AppView },
+    { icon: Info, label: "About", view: "about" as AppView }
   ];
 
   function selectView(nextView: AppView) {
@@ -317,6 +335,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
                       <span className="truncate font-medium" style={{ color: "#e2e8f0", maxWidth: "75%" }}>{item.name}</span>
                       <div className="flex items-center gap-1.5 shrink-0">
+                        {item.status === "pending" && <span style={{ color: "#475569" }}>Waiting</span>}
                         {item.status === "uploading" && <span style={{ color: "#00d4ff" }}>{item.percent}%</span>}
                         {item.status === "done" && <CheckCircle2 className="h-3.5 w-3.5" style={{ color: "#34d399" }} />}
                         {item.status === "error" && (
@@ -329,9 +348,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     <div className="h-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.07)" }}>
                       <motion.div
                         className="h-full rounded-full"
-                        style={{ background: item.status === "error" ? "#f87171" : item.status === "done" ? "#34d399" : "linear-gradient(90deg,#00d4ff,#0284c7)" }}
+                        style={{ background: item.status === "error" ? "#f87171" : item.status === "done" ? "#34d399" : item.status === "pending" ? "rgba(255,255,255,0.1)" : "linear-gradient(90deg,#00d4ff,#0284c7)" }}
                         initial={{ width: 0 }}
-                        animate={{ width: `${item.status === "done" ? 100 : item.percent}%` }}
+                        animate={{ width: item.status === "pending" ? "100%" : `${item.status === "done" ? 100 : item.percent}%` }}
                         transition={{ ease: "easeOut" }}
                       />
                     </div>
@@ -429,13 +448,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                 ))}
               </div>
               <h1 className="mt-2 text-xl font-bold md:text-2xl" style={{ color: "#e2e8f0" }}>
-                {appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : "Personal cloud storage"}
+                {appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : appView === "about" ? "About & Contact" : "Personal cloud storage"}
               </h1>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={createFolder}
-                disabled={appView === "settings" || appView === "trash" || appView === "shared"}
+                onClick={() => setFolderModal({ mode: "create", value: "" })}
+                disabled={appView === "settings" || appView === "trash" || appView === "shared" || appView === "about"}
                 className="btn-ripple flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition active:scale-[0.96] disabled:opacity-40"
                 style={{ border: "1px solid rgba(0,212,255,0.3)", color: "#00d4ff", background: "rgba(0,212,255,0.06)" }}
               >
@@ -458,10 +477,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             </div>
           </div>
 
+          <AnimatePresence mode="wait">
           {appView === "settings" ? (
-            <SettingsPanel theme={theme} setTheme={setTheme} authStatus={authStatus} />
+            <motion.div key="settings" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.22 }}>
+              <SettingsPanel theme={theme} setTheme={setTheme} authStatus={authStatus} />
+            </motion.div>
+          ) : appView === "about" ? (
+            <motion.div key="about" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.22 }}>
+              <AboutPanel />
+            </motion.div>
           ) : (
-          <>
+          <motion.div key="files" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.22 }}>
             {/* Drop zone */}
             <div
               className={cn("mb-6 rounded-2xl border-2 border-dashed transition", isDragActive && "dropzone-active scale-[1.01]")}
@@ -476,20 +502,38 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             {folders.length > 0 ? (
               <div className="mb-8 grid gap-3 grid-cols-2 sm:grid-cols-2 xl:grid-cols-4">
                 {folders.map(folder => (
-                  <motion.button
+                  <motion.div
                     key={folder.id}
                     layout
                     whileHover={{ y: -4, scale: 1.02 }}
                     whileTap={{ scale: 0.97 }}
-                    onClick={() => enterFolder(folder)}
-                    className="drive-card flex items-center gap-3 rounded-xl border p-4 text-left transition"
+                    className="drive-card relative flex items-center gap-3 rounded-xl border p-4 text-left transition"
                     style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", cursor: "pointer" }}
                   >
-                    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.2)" }}>
-                      <Folder className="h-5 w-5" style={{ color: "#fbbf24" }} />
-                    </div>
-                    <span className="truncate text-sm font-semibold" style={{ color: "#e2e8f0" }}>{folder.name}</span>
-                  </motion.button>
+                    <button className="flex flex-1 min-w-0 items-center gap-3" onClick={() => enterFolder(folder)}>
+                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                        <Folder className="h-5 w-5" style={{ color: "#fbbf24" }} />
+                      </div>
+                      <span className="truncate text-sm font-semibold" style={{ color: "#e2e8f0" }}>{folder.name}</span>
+                    </button>
+                    <DropdownMenu.Root>
+                      <DropdownMenu.Trigger asChild>
+                        <button className="shrink-0 grid h-7 w-7 place-items-center rounded-lg transition" style={{ color: "#64748b" }} onClick={e => e.stopPropagation()} aria-label="Folder options">
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[150px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid rgba(255,255,255,0.1)", background: "rgba(13,24,41,0.95)", backdropFilter: "blur(20px)" }}>
+                          <DropdownMenu.Item onSelect={() => setFolderModal({ mode: "rename", id: folder.id, value: folder.name })} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "#e2e8f0" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.1)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                            <Pencil className="h-4 w-4" style={{ color: "#00d4ff" }} /> Rename
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item onSelect={() => deleteFolder(folder.id)} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "#f87171" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                            <Trash2 className="h-4 w-4" /> Delete
+                          </DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu.Root>
+                  </motion.div>
                 ))}
               </div>
             ) : null}
@@ -524,14 +568,27 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                 <p className="mt-1 text-sm" style={{ color: "#475569" }}>Upload something and TeleDrive will route it automatically.</p>
               </div>
             ) : null}
-          </>
+          </motion.div>
           )}
+          </AnimatePresence>
         </section>
       </motion.main>
 
       {/* Preview modal */}
       <AnimatePresence>
         {previewFile && <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />}
+      </AnimatePresence>
+
+      {/* Folder create/rename modal */}
+      <AnimatePresence>
+        {folderModal && (
+          <FolderModal
+            mode={folderModal.mode}
+            initialValue={folderModal.value}
+            onConfirm={submitFolderModal}
+            onClose={() => setFolderModal(null)}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -750,7 +807,116 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
 }
 
 function CloudIcon() {
-  return <Upload className="h-5 w-5" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden="true">
+      <path d="M12 3C9.24 3 7 5.24 7 8c0 .18.01.36.03.54A5.5 5.5 0 0 0 2 14a5.5 5.5 0 0 0 5.5 5.5h9A4.5 4.5 0 0 0 21 15a4.5 4.5 0 0 0-4.16-4.49A5.002 5.002 0 0 0 12 3Z" fill="currentColor" opacity="0.3" />
+      <path d="M12 15V9m0 6-2.5-2.5M12 15l2.5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FolderModal({ mode, initialValue, onConfirm, onClose }: { mode: "create" | "rename"; initialValue: string; onConfirm: (name: string) => void; onClose: () => void }) {
+  const [value, setValue] = useState(initialValue);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(12px)" }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.88, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.88, opacity: 0, y: 20 }}
+        transition={{ type: "spring", damping: 22, stiffness: 340 }}
+        className="w-full max-w-sm rounded-2xl p-6"
+        style={{ border: "1px solid rgba(0,212,255,0.2)", background: "rgba(7,13,26,0.97)", boxShadow: "0 0 40px rgba(0,212,255,0.1)" }}
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold mb-4" style={{ color: "#e2e8f0" }}>{mode === "create" ? "New Folder" : "Rename Folder"}</h2>
+        <input
+          autoFocus
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && value.trim()) onConfirm(value.trim()); }}
+          placeholder="Folder name"
+          className="w-full rounded-xl px-4 py-3 text-sm outline-none transition"
+          style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(0,212,255,0.25)", color: "#e2e8f0" }}
+        />
+        <div className="mt-4 flex gap-3 justify-end">
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-sm transition" style={{ border: "1px solid rgba(255,255,255,0.1)", color: "#64748b" }}>Cancel</button>
+          <button
+            onClick={() => { if (value.trim()) onConfirm(value.trim()); }}
+            className="btn-ripple rounded-xl px-5 py-2 text-sm font-semibold transition"
+            style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: "0 0 14px rgba(0,212,255,0.3)" }}
+          >
+            {mode === "create" ? "Create" : "Save"}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function AboutPanel() {
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      {/* About card */}
+      <div className="rounded-2xl border p-6" style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
+        <div className="flex items-center gap-4 mb-5">
+          <div className="grid h-14 w-14 place-items-center rounded-2xl" style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", boxShadow: "0 0 24px rgba(0,212,255,0.4)" }}>
+            <CloudIcon />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold" style={{ background: "linear-gradient(90deg,#fff,#00d4ff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>TeleDrive</h2>
+            <p className="text-sm" style={{ color: "#475569" }}>Personal cloud powered by Telegram</p>
+          </div>
+        </div>
+        <p className="text-sm leading-relaxed" style={{ color: "#94a3b8" }}>
+          TeleDrive lets you store unlimited files using your personal Telegram account as a backend. Files are securely sent to a private Telegram channel and served back through a fast API — completely free, with no storage limits beyond Telegram's own.
+        </p>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          {[["Storage", "Unlimited*"], ["Backend", "Telegram MTProto"], ["Hosting", "Render.com"], ["Auth", "JWT + Bot OTP"]].map(([label, val]) => (
+            <div key={label} className="rounded-xl p-3" style={{ background: "rgba(0,212,255,0.05)", border: "1px solid rgba(0,212,255,0.1)" }}>
+              <p className="text-xs" style={{ color: "#475569" }}>{label}</p>
+              <p className="text-sm font-semibold mt-0.5" style={{ color: "#e2e8f0" }}>{val}</p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-xs" style={{ color: "#334155" }}>* Subject to Telegram's per-file limits (2GB bot / 4GB personal)</p>
+      </div>
+
+      {/* Contact card */}
+      <div className="rounded-2xl border p-6" style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
+        <h2 className="text-lg font-bold mb-2" style={{ color: "#e2e8f0" }}>Contact Developer</h2>
+        <p className="text-sm mb-5" style={{ color: "#64748b" }}>Built and maintained by Mohit Gautam. Feel free to reach out for feedback, bugs, or collaborations.</p>
+        <a
+          href="mailto:mohitgautam905835@gmail.com"
+          className="btn-ripple flex items-center gap-3 rounded-xl px-5 py-3.5 font-semibold transition active:scale-[0.97]"
+          style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: "0 0 20px rgba(0,212,255,0.3)", cursor: "pointer", textDecoration: "none" }}
+        >
+          <Mail className="h-5 w-5" />
+          mohitgautam905835@gmail.com
+        </a>
+        <div className="mt-4 rounded-xl p-4" style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.1)" }}>
+          <p className="text-sm font-semibold mb-1" style={{ color: "#e2e8f0" }}>Response time</p>
+          <p className="text-sm" style={{ color: "#64748b" }}>Usually within 24–48 hours. Include "TeleDrive" in the subject line.</p>
+        </div>
+        <div className="mt-4 rounded-xl p-4" style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.1)" }}>
+          <p className="text-sm font-semibold mb-1" style={{ color: "#fbbf24" }}>Open Source</p>
+          <p className="text-sm" style={{ color: "#64748b" }}>This project is built with Next.js, Prisma, Framer Motion, and the Telegram Bot/MTProto APIs.</p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
