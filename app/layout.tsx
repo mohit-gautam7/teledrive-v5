@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { Toaster } from "sonner";
 import { ServiceWorkerRegister } from "@/components/sw-register";
+import { CursorGlow } from "@/components/cursor-glow";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -31,6 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <Toaster richColors position="top-right" toastOptions={{ duration: 4200 }} />
         <ServiceWorkerRegister />
+        <CursorGlow />
       </body>
     </html>
   );

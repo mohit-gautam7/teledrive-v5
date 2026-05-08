@@ -254,123 +254,171 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   }
 
   return (
-    <div {...getRootProps()} className="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] transition-colors duration-300">
+    <div
+      {...getRootProps()}
+      className="min-h-screen text-[var(--text-primary)]"
+      style={{ background: "linear-gradient(-45deg,#070d1a,#0a1128,#070d1a,#0d1829)", backgroundSize: "400% 400%", animation: "bgmove 20s ease infinite" }}
+    >
       <input {...getInputProps()} />
-      {sidebarOpen ? <button className="fixed inset-0 z-30 bg-black/30 lg:hidden" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} /> : null}
+      {sidebarOpen ? <button className="fixed inset-0 z-30 bg-black/50 lg:hidden" style={{ backdropFilter: "blur(2px)" }} aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} /> : null}
+
+      {/* ── Sidebar ── */}
       <motion.aside
         initial={{ x: -24, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.35, ease: "easeOut" }}
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-[86vw] max-w-72 border-r border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-5 transition md:w-72",
+          "fixed inset-y-0 left-0 z-40 flex w-[86vw] max-w-72 flex-col border-r px-4 py-5 transition md:w-72",
           sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
+        style={{ borderColor: "rgba(0,212,255,0.12)", background: "rgba(7,13,26,0.92)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}
       >
+        {/* Logo */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-xl font-semibold">
-            <div className="grid h-10 w-10 place-items-center rounded-md bg-sky-600 text-white">
+          <div className="flex items-center gap-3 text-lg font-bold tracking-wide">
+            <div className="grid h-10 w-10 place-items-center rounded-xl" style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", boxShadow: "0 0 18px rgba(0,212,255,0.4)" }}>
               <CloudIcon />
             </div>
-            TeleDrive
+            <span style={{ background: "linear-gradient(90deg,#fff,#00d4ff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>TeleDrive</span>
           </div>
-          <button className="lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar">
+          <button className="lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" style={{ color: "#64748b" }}>
             <X className="h-5 w-5" />
           </button>
         </div>
-        <Button className="mt-8 min-h-11 w-full active:scale-[0.96]" onClick={open} disabled={uploading}>
+
+        {/* Upload button */}
+        <button
+          onClick={open}
+          disabled={uploading}
+          className="btn-ripple mt-7 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl font-semibold text-sm transition active:scale-[0.96] disabled:opacity-60"
+          style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: "0 0 18px rgba(0,212,255,0.35)", cursor: uploading ? "not-allowed" : "pointer" }}
+        >
           <Upload className="h-4 w-4" />
-          {uploading ? "Uploading..." : "Upload"}
-        </Button>
+          {uploading ? "Uploading…" : "Upload"}
+        </button>
+
         {uploadProgress ? (
-          <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
-            <div className="flex items-center justify-between gap-3 text-xs">
+          <div className="mt-3 rounded-xl border p-3" style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(0,212,255,0.05)" }}>
+            <div className="flex items-center justify-between gap-3 text-xs" style={{ color: "#94a3b8" }}>
               <span className="truncate">{uploadProgress.name}</span>
-              <span>{uploadProgress.percent}%</span>
+              <span style={{ color: "#00d4ff" }}>{uploadProgress.percent}%</span>
             </div>
-            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-              <motion.div className="h-full bg-sky-600" initial={{ width: 0 }} animate={{ width: `${uploadProgress.percent}%` }} />
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
+              <motion.div className="h-full rounded-full" style={{ background: "linear-gradient(90deg,#00d4ff,#0284c7)" }} initial={{ width: 0 }} animate={{ width: `${uploadProgress.percent}%` }} />
             </div>
           </div>
         ) : null}
-        <nav className="mt-7 space-y-1">
-          {navItems.map(({ icon: Icon, label, view: itemView }) => (
-            <button
-              key={label}
-              onClick={() => selectView(itemView)}
-              className={cn(
-                "relative flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 dark:text-slate-300 dark:hover:bg-slate-800",
-                appView === itemView && "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-200"
-              )}
-            >
-              {appView === itemView ? <motion.span layoutId="nav-active" className="absolute left-0 h-6 w-1 rounded-r-full bg-sky-600" /> : null}
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
+
+        {/* Nav */}
+        <nav className="mt-6 flex-1 space-y-1 overflow-y-auto pb-4">
+          {navItems.map(({ icon: Icon, label, view: itemView }) => {
+            const active = appView === itemView;
+            return (
+              <button
+                key={label}
+                onClick={() => selectView(itemView)}
+                className={cn("nav-item-drive relative flex min-h-10 w-full items-center gap-3 rounded-xl px-3 py-2 text-sm transition focus:outline-none")}
+                style={{
+                  color: active ? "#00d4ff" : "#64748b",
+                  background: active ? "rgba(0,212,255,0.08)" : "transparent",
+                  border: active ? "1px solid rgba(0,212,255,0.2)" : "1px solid transparent",
+                }}
+              >
+                {active ? <motion.span layoutId="nav-active" className="absolute left-0 h-6 w-1 rounded-r-full" style={{ background: "#00d4ff", boxShadow: "0 0 8px #00d4ff" }} /> : null}
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            );
+          })}
         </nav>
-        <div className="absolute bottom-5 left-4 right-4 rounded-lg border border-[var(--border)] p-4">
-          <p className="text-sm font-medium">{user.name}</p>
-          <p className="truncate text-xs text-slate-500">{user.username ? `@${user.username}` : "Telegram account"}</p>
-          <div className="mt-3 flex items-center gap-2 text-xs">
-            {authStatus === "connected" ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : authStatus === "failed" ? <AlertCircle className="h-4 w-4 text-red-500" /> : <RotateCw className="h-4 w-4 animate-spin text-sky-500" />}
-            <span>{authStatus === "connected" ? "Connected" : authStatus === "failed" ? "Reconnect needed" : "Checking..."}</span>
+
+        {/* User card — mt-auto keeps it at bottom without absolute overlap */}
+        <div className="mt-auto rounded-xl border p-4" style={{ borderColor: "rgba(0,212,255,0.12)", background: "rgba(0,212,255,0.04)" }}>
+          <p className="text-sm font-semibold" style={{ color: "#e2e8f0" }}>{user.name}</p>
+          <p className="truncate text-xs" style={{ color: "#475569" }}>{user.username ? `@${user.username}` : "Telegram account"}</p>
+          <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "#64748b" }}>
+            {authStatus === "connected" ? <CheckCircle2 className="h-4 w-4" style={{ color: "#34d399" }} /> : authStatus === "failed" ? <AlertCircle className="h-4 w-4" style={{ color: "#f87171" }} /> : <RotateCw className="h-4 w-4 animate-spin" style={{ color: "#00d4ff" }} />}
+            <span>{authStatus === "connected" ? "Connected" : authStatus === "failed" ? "Reconnect needed" : "Checking…"}</span>
           </div>
-          <p className="mt-4 text-xs text-slate-500">Visible folder size</p>
-          <p className="text-sm font-semibold">{formatBytes(storageUsed)}</p>
+          <p className="mt-3 text-xs" style={{ color: "#475569" }}>Storage used</p>
+          <p className="text-sm font-bold" style={{ color: "#00d4ff" }}>{formatBytes(storageUsed)}</p>
         </div>
       </motion.aside>
 
-      <motion.main className="lg:pl-72" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>
-        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg-primary)]/85 backdrop-blur">
-          <div className="flex min-h-14 items-center gap-2 px-3 md:min-h-16 md:gap-3 md:px-8">
-            <button className="grid h-11 w-11 place-items-center rounded-md lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
+      {/* ── Main ── */}
+      <motion.main className="lg:pl-72" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
+        {/* Header */}
+        <header className="sticky top-0 z-30" style={{ background: "rgba(7,13,26,0.88)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "1px solid rgba(0,212,255,0.1)" }}>
+          <div className="flex min-h-14 items-center gap-2 px-3 md:min-h-16 md:gap-3 md:px-6">
+            <button className="grid h-11 w-11 place-items-center rounded-xl lg:hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }} onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
               <Menu className="h-5 w-5" />
             </button>
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: "#475569" }} />
               <input
                 value={query}
                 onChange={event => setQuery(event.target.value)}
-                placeholder="Search in this folder"
-                className="h-11 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] pl-10 pr-3 text-sm outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20"
+                placeholder="Search files…"
+                style={{ cursor: "text", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#e2e8f0", borderRadius: 12 }}
+                className="h-11 w-full pl-10 pr-3 text-sm outline-none transition focus:border-[#00d4ff] focus:ring-2 focus:ring-[rgba(0,212,255,0.15)]"
               />
             </div>
             <button
               onClick={() => setTheme(current => (current === "system" ? "light" : current === "light" ? "dark" : "system"))}
-              className="grid h-11 w-11 place-items-center rounded-md border border-[var(--border)] active:scale-[0.96]"
-              aria-label="Toggle dark mode"
+              className="grid h-11 w-11 place-items-center rounded-xl transition hover:text-[#00d4ff] active:scale-[0.96]"
+              style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+              aria-label="Toggle theme"
             >
               {theme === "system" ? <Monitor className="h-4 w-4" /> : theme === "light" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
-            <button onClick={logout} className="grid h-11 w-11 place-items-center rounded-md border border-[var(--border)] active:scale-[0.96]" aria-label="Logout">
+            <button
+              onClick={logout}
+              className="grid h-11 w-11 place-items-center rounded-xl transition hover:text-red-400 active:scale-[0.96]"
+              style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+              aria-label="Logout"
+            >
               <LogOut className="h-4 w-4" />
             </button>
           </div>
         </header>
 
-        <section className="px-4 py-6 md:px-8">
+        <section className="px-4 py-6 md:px-6">
           <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                <button onClick={goHome} className="hover:text-sky-600">My Files</button>
+              <div className="flex flex-wrap items-center gap-2 text-sm" style={{ color: "#475569" }}>
+                <button onClick={goHome} className="transition hover:text-[#00d4ff]">My Files</button>
                 {folderTrail.map(folder => (
                   <span key={folder.id} className="flex items-center gap-2">
                     <span>/</span>
-                    <span className="text-slate-800 dark:text-slate-200">{folder.name}</span>
+                    <span style={{ color: "#94a3b8" }}>{folder.name}</span>
                   </span>
                 ))}
               </div>
-              <h1 className="mt-2 text-xl font-semibold md:text-2xl">{appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : "Personal cloud storage"}</h1>
+              <h1 className="mt-2 text-xl font-bold md:text-2xl" style={{ color: "#e2e8f0" }}>
+                {appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : "Personal cloud storage"}
+              </h1>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button className="min-h-11 bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50 active:scale-[0.96] dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-800" onClick={createFolder} disabled={appView === "settings" || appView === "trash" || appView === "shared"}>
-                <Plus className="h-4 w-4" />
-                Folder
-              </Button>
-              <button onClick={() => setView("grid")} className={cn("grid h-11 w-11 place-items-center rounded-md border active:scale-[0.96]", view === "grid" && "bg-slate-900 text-white dark:bg-white dark:text-slate-900")}>
+              <button
+                onClick={createFolder}
+                disabled={appView === "settings" || appView === "trash" || appView === "shared"}
+                className="btn-ripple flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition active:scale-[0.96] disabled:opacity-40"
+                style={{ border: "1px solid rgba(0,212,255,0.3)", color: "#00d4ff", background: "rgba(0,212,255,0.06)" }}
+              >
+                <Plus className="h-4 w-4" /> Folder
+              </button>
+              <button
+                onClick={() => setView("grid")}
+                className="grid h-10 w-10 place-items-center rounded-xl transition active:scale-[0.96]"
+                style={{ border: `1px solid ${view === "grid" ? "#00d4ff" : "rgba(255,255,255,0.08)"}`, background: view === "grid" ? "rgba(0,212,255,0.12)" : "transparent", color: view === "grid" ? "#00d4ff" : "#64748b" }}
+              >
                 <Grid2X2 className="h-4 w-4" />
               </button>
-              <button onClick={() => setView("list")} className={cn("grid h-11 w-11 place-items-center rounded-md border active:scale-[0.96]", view === "list" && "bg-slate-900 text-white dark:bg-white dark:text-slate-900")}>
+              <button
+                onClick={() => setView("list")}
+                className="grid h-10 w-10 place-items-center rounded-xl transition active:scale-[0.96]"
+                style={{ border: `1px solid ${view === "list" ? "#00d4ff" : "rgba(255,255,255,0.08)"}`, background: view === "list" ? "rgba(0,212,255,0.12)" : "transparent", color: view === "list" ? "#00d4ff" : "#64748b" }}
+              >
                 <List className="h-4 w-4" />
               </button>
             </div>
@@ -380,61 +428,67 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             <SettingsPanel theme={theme} setTheme={setTheme} authStatus={authStatus} />
           ) : (
           <>
+            {/* Drop zone */}
             <div
-            className={cn(
-              "mb-6 rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center transition dark:border-slate-700 dark:bg-slate-900",
-              isDragActive && "scale-[1.01] border-sky-500 bg-sky-50 shadow-lg shadow-sky-100 dark:bg-sky-950 dark:shadow-none"
-            )}
-          >
-            <Upload className="mx-auto mb-3 h-8 w-8 text-sky-600" />
-            <p className="font-medium">Drop files or folders here</p>
-            <p className="mt-1 text-sm text-slate-500">Automatic routing sends videos and large files to personal Telegram storage.</p>
-          </div>
-
-          {folders.length > 0 ? (
-            <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {folders.map(folder => (
-                <motion.button
-                  key={folder.id}
-                  layout
-                  whileHover={{ y: -2 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => enterFolder(folder)}
-                  className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-sky-300 hover:shadow-md dark:border-slate-800 dark:bg-slate-900"
-                >
-                  <Folder className="h-6 w-6 text-amber-500" />
-                  <span className="truncate font-medium">{folder.name}</span>
-                </motion.button>
-              ))}
+              className={cn("mb-6 rounded-2xl border-2 border-dashed p-8 text-center transition", isDragActive && "dropzone-active scale-[1.01]")}
+              style={{ borderColor: isDragActive ? "#00d4ff" : "rgba(0,212,255,0.2)", background: isDragActive ? "rgba(0,212,255,0.06)" : "rgba(0,212,255,0.02)", cursor: "crosshair" }}
+            >
+              <Upload className="mx-auto mb-3 h-8 w-8" style={{ color: "#00d4ff" }} />
+              <p className="font-semibold" style={{ color: "#e2e8f0" }}>Drop files or folders here</p>
+              <p className="mt-1 text-sm" style={{ color: "#475569" }}>Auto-routes large files to Telegram storage.</p>
             </div>
-          ) : null}
 
-          {loading ? <FileSkeletonGrid view={view} /> : null}
+            {/* Folders */}
+            {folders.length > 0 ? (
+              <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {folders.map(folder => (
+                  <motion.button
+                    key={folder.id}
+                    layout
+                    whileHover={{ y: -4, scale: 1.02 }}
+                    whileTap={{ scale: 0.97 }}
+                    onClick={() => enterFolder(folder)}
+                    className="drive-card flex items-center gap-3 rounded-xl border p-4 text-left transition"
+                    style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", cursor: "pointer" }}
+                  >
+                    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.2)" }}>
+                      <Folder className="h-5 w-5" style={{ color: "#fbbf24" }} />
+                    </div>
+                    <span className="truncate text-sm font-semibold" style={{ color: "#e2e8f0" }}>{folder.name}</span>
+                  </motion.button>
+                ))}
+              </div>
+            ) : null}
 
-          <motion.div layout className={cn(loading && "hidden", view === "grid" ? "grid gap-4 sm:grid-cols-2 xl:grid-cols-4" : "space-y-2")}>
-            <AnimatePresence mode="popLayout">
-              {files.map(file => (
-                <FileTile
-                  key={file.id}
-                  file={file}
-                  grid={view === "grid"}
-                  onDownload={() => {
-                    toast.info("Preparing download...");
-                    window.location.href = `/api/download/${file.id}`;
-                  }}
-                  onShare={() => shareFile(file.id)}
-                  onDelete={() => deleteFile(file.id)}
-                />
-              ))}
-            </AnimatePresence>
-          </motion.div>
-          {!loading && !files.length && !folders.length ? (
-            <div className="rounded-lg border border-slate-200 bg-white p-12 text-center dark:border-slate-800 dark:bg-slate-900">
-              <FileIcon className="mx-auto mb-3 h-10 w-10 text-slate-400" />
-              <p className="font-medium">No files yet</p>
-              <p className="mt-1 text-sm text-slate-500">Upload something and TeleDrive will route it automatically.</p>
-            </div>
-          ) : null}
+            {loading ? <FileSkeletonGrid view={view} /> : null}
+
+            <motion.div layout className={cn(loading && "hidden", view === "grid" ? "grid gap-4 sm:grid-cols-2 xl:grid-cols-4" : "space-y-2")}>
+              <AnimatePresence mode="popLayout">
+                {files.map(file => (
+                  <FileTile
+                    key={file.id}
+                    file={file}
+                    grid={view === "grid"}
+                    onDownload={() => {
+                      toast.info("Preparing download…");
+                      window.location.href = `/api/download/${file.id}`;
+                    }}
+                    onShare={() => shareFile(file.id)}
+                    onDelete={() => deleteFile(file.id)}
+                  />
+                ))}
+              </AnimatePresence>
+            </motion.div>
+
+            {!loading && !files.length && !folders.length ? (
+              <div className="rounded-2xl border p-12 text-center" style={{ borderColor: "rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.02)" }}>
+                <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl" style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.15)" }}>
+                  <FileIcon className="h-8 w-8" style={{ color: "#00d4ff" }} />
+                </div>
+                <p className="font-semibold" style={{ color: "#e2e8f0" }}>No files yet</p>
+                <p className="mt-1 text-sm" style={{ color: "#475569" }}>Upload something and TeleDrive will route it automatically.</p>
+              </div>
+            ) : null}
           </>
           )}
         </section>
@@ -457,39 +511,66 @@ function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFi
       exit={{ opacity: 0, y: 8, scale: 0.98 }}
       whileHover={{ y: grid ? -3 : 0 }}
       transition={{ duration: 0.22, ease: "easeOut" }}
-      className={cn("rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md dark:border-slate-800 dark:bg-slate-900", !grid && "flex items-center gap-4")}
+      className={cn("drive-card rounded-xl border p-4 transition", !grid && "flex items-center gap-4")}
+      style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}
     >
-      <div className={cn("relative grid overflow-hidden place-items-center rounded-md bg-slate-100 dark:bg-slate-800", grid ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")}>
-        {(isImage || isVideo) && !mediaLoaded ? <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-slate-100 via-slate-200 to-slate-100 dark:from-slate-800 dark:via-slate-700 dark:to-slate-800" /> : null}
+      <div
+        className={cn("relative grid overflow-hidden place-items-center rounded-lg", grid ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")}
+        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)" }}
+      >
+        {(isImage || isVideo) && !mediaLoaded ? (
+          <div className="absolute inset-0 animate-pulse" style={{ background: "linear-gradient(90deg, rgba(255,255,255,0.04), rgba(0,212,255,0.06), rgba(255,255,255,0.04))" }} />
+        ) : null}
         {isImage ? (
           <img
             src={preview}
             alt={file.originalName}
-            className={cn("h-full w-full rounded-md object-cover transition duration-500", mediaLoaded ? "scale-100 opacity-100" : "scale-[1.02] opacity-0")}
+            className={cn("h-full w-full rounded-lg object-cover transition duration-500", mediaLoaded ? "scale-100 opacity-100" : "scale-[1.02] opacity-0")}
             loading="lazy"
             decoding="async"
             onLoad={() => setMediaLoaded(true)}
             onError={() => setMediaLoaded(true)}
           />
         ) : isVideo ? (
-          <video src={preview} className="h-full w-full rounded-md object-cover" muted preload="metadata" onLoadedData={() => setMediaLoaded(true)} />
+          <video src={preview} className="h-full w-full rounded-lg object-cover" muted preload="metadata" onLoadedData={() => setMediaLoaded(true)} />
         ) : (
-          <Icon className="h-8 w-8 text-sky-600" />
+          <Icon className="h-8 w-8" style={{ color: "#00d4ff" }} />
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <h3 className="truncate text-sm font-semibold">{file.originalName}</h3>
-        <p className="mt-1 text-xs text-slate-500">{formatBytes(file.size)} - {file.storageMode}</p>
+        <h3 className="truncate text-sm font-semibold" style={{ color: "#e2e8f0" }}>{file.originalName}</h3>
+        <p className="mt-1 text-xs" style={{ color: "#475569" }}>{formatBytes(file.size)} · {file.storageMode}</p>
       </div>
       {/* Desktop list view & all grid views: show 3 buttons */}
       <div className={cn("flex gap-2", grid ? "mt-4" : "ml-auto hidden sm:flex")}>
-        <button onClick={onDownload} className="grid h-11 w-11 place-items-center rounded-md border border-slate-200 hover:bg-slate-50 active:scale-[0.96] dark:border-slate-800 dark:hover:bg-slate-800" aria-label="Download">
+        <button
+          onClick={onDownload}
+          className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
+          style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(0,212,255,0.5)"; (e.currentTarget as HTMLElement).style.color = "#00d4ff"; (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.08)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.1)"; (e.currentTarget as HTMLElement).style.color = "#94a3b8"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          aria-label="Download"
+        >
           <Download className="h-4 w-4" />
         </button>
-        <button onClick={onShare} className="grid h-11 w-11 place-items-center rounded-md border border-slate-200 hover:bg-slate-50 active:scale-[0.96] dark:border-slate-800 dark:hover:bg-slate-800" aria-label="Share">
+        <button
+          onClick={onShare}
+          className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
+          style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", cursor: "pointer" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(0,212,255,0.5)"; (e.currentTarget as HTMLElement).style.color = "#00d4ff"; (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.08)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.1)"; (e.currentTarget as HTMLElement).style.color = "#94a3b8"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          aria-label="Share"
+        >
           <Link2 className="h-4 w-4" />
         </button>
-        <button onClick={onDelete} className="grid h-11 w-11 place-items-center rounded-md border border-slate-200 text-red-600 hover:bg-red-50 active:scale-[0.96] dark:border-slate-800 dark:hover:bg-red-950" aria-label="Delete">
+        <button
+          onClick={onDelete}
+          className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
+          style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#f87171" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(239,68,68,0.5)"; (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.1)"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          aria-label="Delete"
+        >
           <Trash2 className="h-4 w-4" />
         </button>
       </div>
@@ -498,19 +579,46 @@ function FileTile({ file, grid, onDownload, onShare, onDelete }: { file: DriveFi
         <div className="ml-auto flex sm:hidden">
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
-              <button className="grid h-11 w-11 place-items-center rounded-md border border-slate-200 hover:bg-slate-50 active:scale-[0.96] dark:border-slate-800 dark:hover:bg-slate-800" aria-label="More actions">
+              <button
+                className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
+                style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8" }}
+                aria-label="More actions"
+              >
                 <MoreVertical className="h-4 w-4" />
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
-              <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[140px] overflow-hidden rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-800 dark:bg-slate-900">
-                <DropdownMenu.Item onSelect={onDownload} className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-slate-100 dark:hover:bg-slate-800">
-                  <Download className="h-4 w-4" /> Download
+              <DropdownMenu.Content
+                align="end"
+                sideOffset={4}
+                className="z-50 min-w-[150px] overflow-hidden rounded-xl p-1 shadow-2xl"
+                style={{ border: "1px solid rgba(255,255,255,0.1)", background: "rgba(13,24,41,0.95)", backdropFilter: "blur(20px)" }}
+              >
+                <DropdownMenu.Item
+                  onSelect={onDownload}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
+                  style={{ color: "#e2e8f0" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.1)"}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+                >
+                  <Download className="h-4 w-4" style={{ color: "#00d4ff" }} /> Download
                 </DropdownMenu.Item>
-                <DropdownMenu.Item onSelect={onShare} className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-slate-100 dark:hover:bg-slate-800">
-                  <Link2 className="h-4 w-4" /> Share
+                <DropdownMenu.Item
+                  onSelect={onShare}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
+                  style={{ color: "#e2e8f0" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.1)"}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+                >
+                  <Link2 className="h-4 w-4" style={{ color: "#00d4ff" }} /> Share
                 </DropdownMenu.Item>
-                <DropdownMenu.Item onSelect={onDelete} className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-red-600 outline-none hover:bg-red-50 dark:hover:bg-red-950">
+                <DropdownMenu.Item
+                  onSelect={onDelete}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
+                  style={{ color: "#f87171" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+                >
                   <Trash2 className="h-4 w-4" /> Delete
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
@@ -526,11 +634,18 @@ function FileSkeletonGrid({ view }: { view: "grid" | "list" }) {
   return (
     <div className={view === "grid" ? "grid gap-4 sm:grid-cols-2 xl:grid-cols-4" : "space-y-2"}>
       {Array.from({ length: view === "grid" ? 8 : 5 }).map((_, index) => (
-        <div key={index} className={cn("rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900", view === "list" && "flex items-center gap-4")}>
-          <div className={cn("animate-pulse rounded-md bg-slate-100 dark:bg-slate-800", view === "grid" ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")} />
+        <div
+          key={index}
+          className={cn("rounded-xl border p-4", view === "list" && "flex items-center gap-4")}
+          style={{ borderColor: "rgba(255,255,255,0.07)", background: "rgba(255,255,255,0.02)" }}
+        >
+          <div
+            className={cn("animate-pulse rounded-lg", view === "grid" ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")}
+            style={{ background: "linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(0,212,255,0.06) 50%, rgba(255,255,255,0.04) 100%)", backgroundSize: "200% 100%", animation: "pulse 1.5s ease-in-out infinite" }}
+          />
           <div className="space-y-2">
-            <div className="h-4 w-40 animate-pulse rounded bg-slate-100 dark:bg-slate-800" />
-            <div className="h-3 w-24 animate-pulse rounded bg-slate-100 dark:bg-slate-800" />
+            <div className="h-4 w-40 animate-pulse rounded-md" style={{ background: "rgba(255,255,255,0.06)" }} />
+            <div className="h-3 w-24 animate-pulse rounded-md" style={{ background: "rgba(255,255,255,0.04)" }} />
           </div>
         </div>
       ))}
@@ -545,8 +660,8 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
       animate={{ opacity: 1, y: 0 }}
       className="grid gap-4 lg:grid-cols-2"
     >
-      <section className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-5">
-        <h2 className="font-semibold">Appearance</h2>
+      <section className="rounded-xl border p-5" style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
+        <h2 className="font-semibold" style={{ color: "#e2e8f0" }}>Appearance</h2>
         <div className="mt-4 grid grid-cols-3 gap-2">
           {[
             { value: "light" as ThemeMode, icon: Sun, label: "Light" },
@@ -556,10 +671,11 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
             <button
               key={item.value}
               onClick={() => setTheme(item.value)}
-              className={cn(
-                "flex min-h-11 items-center justify-center gap-2 rounded-md border border-[var(--border)] text-sm transition hover:border-sky-400 active:scale-[0.96]",
-                theme === item.value && "border-sky-500 bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-200"
-              )}
+              className="flex min-h-11 items-center justify-center gap-2 rounded-xl border text-sm transition active:scale-[0.96]"
+              style={theme === item.value
+                ? { borderColor: "#00d4ff", background: "rgba(0,212,255,0.12)", color: "#00d4ff", boxShadow: "0 0 14px rgba(0,212,255,0.2)" }
+                : { borderColor: "rgba(255,255,255,0.08)", background: "transparent", color: "#94a3b8" }
+              }
             >
               <item.icon className="h-4 w-4" />
               {item.label}
@@ -567,20 +683,21 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
           ))}
         </div>
       </section>
-      <section className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-5">
-        <h2 className="font-semibold">Telegram Connection</h2>
+      <section className="rounded-xl border p-5" style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
+        <h2 className="font-semibold" style={{ color: "#e2e8f0" }}>Telegram Connection</h2>
         <div className="mt-4 flex items-center gap-2 text-sm">
-          {authStatus === "connected" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : <AlertCircle className="h-5 w-5 text-red-500" />}
-          <span>{authStatus === "connected" ? "Connected with Telegram login" : "Session needs attention"}</span>
+          {authStatus === "connected"
+            ? <CheckCircle2 className="h-5 w-5" style={{ color: "#34d399" }} />
+            : <AlertCircle className="h-5 w-5" style={{ color: "#f87171" }} />}
+          <span style={{ color: "#94a3b8" }}>{authStatus === "connected" ? "Connected with Telegram login" : "Session needs attention"}</span>
         </div>
-        <p className="mt-3 text-sm text-slate-500">
+        <p className="mt-3 text-sm" style={{ color: "#475569" }}>
           If Telegram login stops working, set the production domain in BotFather and sign in again. Large personal-storage uploads also require a valid GramJS session.
         </p>
         <button
-          onClick={() => {
-            window.location.href = "/";
-          }}
-          className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--border)] px-4 text-sm hover:bg-slate-50 active:scale-[0.96] dark:hover:bg-slate-800"
+          onClick={() => { window.location.href = "/"; }}
+          className="btn-ripple mt-4 inline-flex min-h-10 items-center gap-2 rounded-xl border px-4 text-sm transition active:scale-[0.96]"
+          style={{ borderColor: "rgba(0,212,255,0.3)", background: "rgba(0,212,255,0.06)", color: "#00d4ff" }}
         >
           <RotateCw className="h-4 w-4" />
           Reconnect Telegram
