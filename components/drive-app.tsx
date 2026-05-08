@@ -130,18 +130,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const uploadFiles = useCallback(
     async (acceptedFiles: File[]) => {
-      const maxTelegramSize = 2 * 1024 * 1024 * 1024;
-      const tooLarge = acceptedFiles.find(file => file.size > maxTelegramSize);
+      // Vercel serverless request body limit is 4.5 MB on Hobby plan
+      const vercelLimit = 4.5 * 1024 * 1024;
+      const tooLarge = acceptedFiles.find(file => file.size > vercelLimit);
       if (tooLarge) {
-        toast.error(`${tooLarge.name} is larger than Telegram's 2GB limit.`);
+        toast.error(`"${tooLarge.name}" is too large — Vercel limits uploads to 4.5 MB. Upgrade to Vercel Pro or self-host for larger files.`);
         return;
       }
       setUploading(true);
       try {
         for (const file of acceptedFiles) {
-          if (file.size > 50 * 1024 * 1024) {
-            toast.info("Large files use personal Telegram storage and may take longer on Vercel.");
-          }
           const form = new FormData();
           form.append("file", file);
           if (folderId) form.append("folderId", folderId);
