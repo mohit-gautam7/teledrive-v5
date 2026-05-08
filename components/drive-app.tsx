@@ -74,6 +74,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [uploadQueue, setUploadQueue] = useState<{ id: string; name: string; size: number; percent: number; status: "pending" | "uploading" | "done" | "error"; error?: string }[]>([]);
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{ title: string; body: string; danger?: boolean; onConfirm: () => void } | null>(null);
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("system");
@@ -197,15 +198,21 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }
 
-  async function deleteFolder(id: string) {
-    if (!confirm("Delete this folder? Files inside will not be deleted.")) return;
-    try {
-      await apiFetch(`/api/folders/${id}`, { method: "DELETE" });
-      toast.success("Folder deleted");
-      refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not delete folder.");
-    }
+  function deleteFolder(id: string) {
+    setConfirmModal({
+      title: "Delete Folder",
+      body: "This folder and all files inside will be moved to trash. Continue?",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await apiFetch(`/api/folders/${id}`, { method: "DELETE" });
+          toast.success("Folder and its files moved to trash");
+          refresh();
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Could not delete folder.");
+        }
+      }
+    });
   }
 
   async function shareFile(fileId: string) {
@@ -222,19 +229,22 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }
 
-  async function deleteFile(fileId: string) {
+  function deleteFile(fileId: string) {
     const inTrash = appView === "trash";
-    const msg = inTrash
-      ? "Permanently delete this file? This cannot be undone."
-      : "Move this file to trash?";
-    if (!confirm(msg)) return;
-    try {
-      await apiFetch(`/api/files/${fileId}`, { method: "DELETE" });
-      toast.success(inTrash ? "File permanently deleted" : "File moved to trash");
-      refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not delete file.");
-    }
+    setConfirmModal({
+      title: inTrash ? "Permanently Delete" : "Move to Trash",
+      body: inTrash ? "This file will be permanently deleted and cannot be recovered." : "This file will be moved to trash. You can restore it later.",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await apiFetch(`/api/files/${fileId}`, { method: "DELETE" });
+          toast.success(inTrash ? "File permanently deleted" : "File moved to trash");
+          refresh();
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Could not delete file.");
+        }
+      }
+    });
   }
 
   async function logout() {
@@ -399,81 +409,87 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       </motion.aside>
 
       {/* ── Main ── */}
-      <motion.main className="lg:pl-72" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
+      <motion.main className="lg:pl-72 min-h-screen" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
         {/* Header */}
-        <header className="sticky top-0 z-30" style={{ background: "rgba(7,13,26,0.88)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "1px solid rgba(0,212,255,0.1)" }}>
-          <div className="flex min-h-14 items-center gap-2 px-3 md:min-h-16 md:gap-3 md:px-6">
-            <button className="grid h-11 w-11 place-items-center rounded-xl lg:hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }} onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
-              <Menu className="h-5 w-5" />
+        <header className="sticky top-0 z-30" style={{ background: "rgba(7,13,26,0.92)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "1px solid rgba(0,212,255,0.1)" }}>
+          <div className="flex h-14 items-center gap-2 px-3 md:h-16 md:gap-3 md:px-6">
+            <button className="grid h-9 w-9 shrink-0 place-items-center rounded-xl lg:hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }} onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
+              <Menu className="h-4 w-4" />
             </button>
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: "#475569" }} />
+            <div className="relative flex-1 min-w-0">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 pointer-events-none" style={{ color: "#475569" }} />
               <input
                 value={query}
                 onChange={event => setQuery(event.target.value)}
                 placeholder="Search files…"
                 style={{ cursor: "text", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#e2e8f0", borderRadius: 12 }}
-                className="h-11 w-full pl-10 pr-3 text-sm outline-none transition focus:border-[#00d4ff] focus:ring-2 focus:ring-[rgba(0,212,255,0.15)]"
+                className="h-10 w-full pl-10 pr-3 text-sm outline-none transition focus:border-[#00d4ff] focus:ring-2 focus:ring-[rgba(0,212,255,0.15)]"
               />
             </div>
-            <button
-              onClick={() => setTheme(current => (current === "system" ? "light" : current === "light" ? "dark" : "system"))}
-              className="grid h-11 w-11 place-items-center rounded-xl transition hover:text-[#00d4ff] active:scale-[0.96]"
-              style={{ border: "1px solid rgba(255,255,255,0.08)" }}
-              aria-label="Toggle theme"
-            >
-              {theme === "system" ? <Monitor className="h-4 w-4" /> : theme === "light" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </button>
-            <button
-              onClick={logout}
-              className="grid h-11 w-11 place-items-center rounded-xl transition hover:text-red-400 active:scale-[0.96]"
-              style={{ border: "1px solid rgba(255,255,255,0.08)" }}
-              aria-label="Logout"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setTheme(current => (current === "system" ? "light" : current === "light" ? "dark" : "system"))}
+                className="grid h-9 w-9 place-items-center rounded-xl transition hover:text-[#00d4ff] active:scale-[0.96]"
+                style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+                aria-label="Toggle theme"
+              >
+                {theme === "system" ? <Monitor className="h-4 w-4" /> : theme === "light" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+              <button
+                onClick={logout}
+                className="grid h-9 w-9 place-items-center rounded-xl transition hover:text-red-400 active:scale-[0.96]"
+                style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+                aria-label="Logout"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </header>
 
-        <section className="px-4 py-6 md:px-6">
-          <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="flex flex-wrap items-center gap-2 text-sm" style={{ color: "#475569" }}>
+        <section className="px-3 py-5 md:px-6 md:py-6 max-w-7xl mx-auto">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5 text-xs" style={{ color: "#475569" }}>
                 <button onClick={goHome} className="transition hover:text-[#00d4ff]">My Files</button>
                 {folderTrail.map(folder => (
-                  <span key={folder.id} className="flex items-center gap-2">
+                  <span key={folder.id} className="flex items-center gap-1.5">
                     <span>/</span>
-                    <span style={{ color: "#94a3b8" }}>{folder.name}</span>
+                    <button onClick={() => enterFolder(folder)} className="transition hover:text-[#00d4ff]" style={{ color: "#94a3b8" }}>{folder.name}</button>
                   </span>
                 ))}
               </div>
-              <h1 className="mt-2 text-xl font-bold md:text-2xl" style={{ color: "#e2e8f0" }}>
+              <h1 className="mt-1 text-lg font-bold md:text-2xl truncate" style={{ color: "#e2e8f0" }}>
                 {appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : appView === "about" ? "About & Contact" : "Personal cloud storage"}
               </h1>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
                 onClick={() => setFolderModal({ mode: "create", value: "" })}
                 disabled={appView === "settings" || appView === "trash" || appView === "shared" || appView === "about"}
-                className="btn-ripple flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition active:scale-[0.96] disabled:opacity-40"
+                className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition active:scale-[0.96] disabled:opacity-40"
                 style={{ border: "1px solid rgba(0,212,255,0.3)", color: "#00d4ff", background: "rgba(0,212,255,0.06)" }}
               >
-                <Plus className="h-4 w-4" /> Folder
+                <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Folder</span>
               </button>
-              <button
-                onClick={() => setView("grid")}
-                className="grid h-10 w-10 place-items-center rounded-xl transition active:scale-[0.96]"
-                style={{ border: `1px solid ${view === "grid" ? "#00d4ff" : "rgba(255,255,255,0.08)"}`, background: view === "grid" ? "rgba(0,212,255,0.12)" : "transparent", color: view === "grid" ? "#00d4ff" : "#64748b" }}
-              >
-                <Grid2X2 className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => setView("list")}
-                className="grid h-10 w-10 place-items-center rounded-xl transition active:scale-[0.96]"
-                style={{ border: `1px solid ${view === "list" ? "#00d4ff" : "rgba(255,255,255,0.08)"}`, background: view === "list" ? "rgba(0,212,255,0.12)" : "transparent", color: view === "list" ? "#00d4ff" : "#64748b" }}
-              >
-                <List className="h-4 w-4" />
-              </button>
+              <div className="flex items-center rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }}>
+                <button
+                  onClick={() => setView("grid")}
+                  className="grid h-9 w-9 place-items-center transition active:scale-[0.9]"
+                  style={{ background: view === "grid" ? "rgba(0,212,255,0.15)" : "transparent", color: view === "grid" ? "#00d4ff" : "#64748b", borderRight: "1px solid rgba(255,255,255,0.08)" }}
+                  aria-label="Grid view"
+                >
+                  <Grid2X2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => setView("list")}
+                  className="grid h-9 w-9 place-items-center transition active:scale-[0.9]"
+                  style={{ background: view === "list" ? "rgba(0,212,255,0.15)" : "transparent", color: view === "list" ? "#00d4ff" : "#64748b" }}
+                  aria-label="List view"
+                >
+                  <List className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -542,10 +558,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
             <motion.div layout className={cn(loading && "hidden", view === "grid" ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" : "space-y-2")}>
               <AnimatePresence mode="popLayout">
-                {files.map(file => (
+                {files.map((file, index) => (
                   <FileTile
                     key={file.id}
                     file={file}
+                    index={index}
                     grid={view === "grid"}
                     onPreview={() => setPreviewFile(file)}
                     onDownload={() => {
@@ -590,11 +607,24 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           />
         )}
       </AnimatePresence>
+
+      {/* Confirm modal */}
+      <AnimatePresence>
+        {confirmModal && (
+          <ConfirmModal
+            title={confirmModal.title}
+            body={confirmModal.body}
+            danger={confirmModal.danger}
+            onConfirm={() => { confirmModal.onConfirm(); setConfirmModal(null); }}
+            onClose={() => setConfirmModal(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function FileTile({ file, grid, onPreview, onDownload, onShare, onDelete }: { file: DriveFile; grid: boolean; onPreview: () => void; onDownload: () => void; onShare: () => void; onDelete: () => void }) {
+function FileTile({ file, grid, index, onPreview, onDownload, onShare, onDelete }: { file: DriveFile; grid: boolean; index: number; onPreview: () => void; onDownload: () => void; onShare: () => void; onDelete: () => void }) {
   const Icon = file.mimeType.startsWith("image/") ? Image : file.mimeType.startsWith("video/") ? Video : FileIcon;
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const isImage = file.mimeType.startsWith("image/");
@@ -603,12 +633,12 @@ function FileTile({ file, grid, onPreview, onDownload, onShare, onDelete }: { fi
   return (
     <motion.article
       layout
-      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+      initial={{ opacity: 0, y: 16, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 8, scale: 0.98 }}
-      whileHover={{ y: grid ? -3 : 0 }}
-      transition={{ duration: 0.22, ease: "easeOut" }}
-      className={cn("drive-card rounded-xl border p-4 transition", !grid && "flex items-center gap-4")}
+      exit={{ opacity: 0, scale: 0.95 }}
+      whileHover={{ y: grid ? -4 : 0, boxShadow: "0 8px 32px rgba(0,212,255,0.12)" }}
+      transition={{ duration: 0.2, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 1, 0.36, 1] }}
+      className={cn("drive-card rounded-xl border p-3 md:p-4 transition", !grid && "flex items-center gap-3")}
       style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}
     >
       <div
@@ -916,6 +946,48 @@ function AboutPanel() {
         </div>
       </div>
     </div>
+  );
+}
+
+function ConfirmModal({ title, body, danger, onConfirm, onClose }: { title: string; body: string; danger?: boolean; onConfirm: () => void; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(12px)" }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.88, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.88, opacity: 0, y: 20 }}
+        transition={{ type: "spring", damping: 22, stiffness: 340 }}
+        className="w-full max-w-sm rounded-2xl p-6"
+        style={{ border: `1px solid ${danger ? "rgba(239,68,68,0.25)" : "rgba(0,212,255,0.2)"}`, background: "rgba(7,13,26,0.97)", boxShadow: danger ? "0 0 40px rgba(239,68,68,0.08)" : "0 0 40px rgba(0,212,255,0.08)" }}
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold mb-2" style={{ color: danger ? "#f87171" : "#e2e8f0" }}>{title}</h2>
+        <p className="text-sm mb-5" style={{ color: "#94a3b8" }}>{body}</p>
+        <div className="flex gap-3 justify-end">
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-sm transition" style={{ border: "1px solid rgba(255,255,255,0.1)", color: "#64748b" }}>Cancel</button>
+          <button
+            onClick={onConfirm}
+            className="btn-ripple rounded-xl px-5 py-2 text-sm font-semibold transition active:scale-[0.96]"
+            style={{ background: danger ? "linear-gradient(135deg,#ef4444,#b91c1c)" : "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: danger ? "0 0 14px rgba(239,68,68,0.3)" : "0 0 14px rgba(0,212,255,0.3)" }}
+          >
+            Confirm
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
