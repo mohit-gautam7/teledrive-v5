@@ -1,21 +1,14 @@
 import { StorageMode } from "@prisma/client";
 
-const FIFTY_MB = 50 * 1024 * 1024;
+const TWO_GB = 2 * 1024 * 1024 * 1024;
 
 export function decideStorage(mimeType: string, size: number) {
-  if (mimeType.startsWith("video/")) {
-    return { storageMode: StorageMode.PERSONAL, reason: "Videos always use personal Telegram storage." };
+  // Use BOT for everything up to 2GB — MTProto only if session is configured and file exceeds bot limit
+  const hasSession = !!process.env.TELEGRAM_SESSION;
+  if (hasSession && size > TWO_GB) {
+    return { storageMode: StorageMode.PERSONAL, reason: "Files over 2GB use personal Telegram storage." };
   }
-  if (mimeType.startsWith("image/") && size <= FIFTY_MB) {
-    return { storageMode: StorageMode.BOT, reason: "Images up to 50MB use bot channel storage." };
-  }
-  if (mimeType.startsWith("image/")) {
-    return { storageMode: StorageMode.PERSONAL, reason: "Large images use personal Telegram storage." };
-  }
-  if (size <= FIFTY_MB) {
-    return { storageMode: StorageMode.BOT, reason: "Files up to 50MB use bot channel storage." };
-  }
-  return { storageMode: StorageMode.PERSONAL, reason: "Large files use personal Telegram storage." };
+  return { storageMode: StorageMode.BOT, reason: "Using bot channel storage." };
 }
 
 export function safeName(name: string) {
