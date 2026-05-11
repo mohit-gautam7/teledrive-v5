@@ -62,19 +62,22 @@ model Folder {
   parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
   children  Folder[] @relation("FolderTree")
   files     File[]
+  shares    Share[]
 
   @@index([userId, parentId])
 }
 
 model Share {
   id           String    @id @default(cuid())
-  fileId       String
+  fileId       String?
+  folderId     String?
   shareToken   String    @unique
   expiryDate   DateTime?
   passwordHash String?
   disabled     Boolean   @default(false)
   createdAt    DateTime  @default(now())
-  file         File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  file         File?     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  folder       Folder?   @relation(fields: [folderId], references: [id], onDelete: Cascade)
 }
 
 model BotLoginCode {

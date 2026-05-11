@@ -4,8 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { getBotFileUrl } from "@/lib/telegram";
 
 export async function GET(request: NextRequest, { params }: { params: { token: string } }) {
-  const share = await prisma.share.findUnique({ where: { shareToken: params.token }, include: { file: { include: { user: { include: { storageConfig: true } } } } } });
-  if (!share || share.disabled || share.file.isDeleted) return NextResponse.json({ error: "Share not found." }, { status: 404 });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const share = await prisma.share.findUnique({ where: { shareToken: params.token }, include: { file: { include: { user: { include: { storageConfig: true } } } } } }) as any;
+  if (!share || share.disabled || !share.file || share.file.isDeleted) return NextResponse.json({ error: "Share not found." }, { status: 404 });
   if (share.expiryDate && share.expiryDate < new Date()) return NextResponse.json({ error: "Share expired." }, { status: 410 });
   if (share.passwordHash) return NextResponse.json({ error: "Password protected shares must be opened in the share page." }, { status: 401 });
   if (share.file.storageMode === StorageMode.PERSONAL) {

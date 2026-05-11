@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Lock, Share2 } from "lucide-react";
+import { Download, File as FileIcon, Folder, Lock, Share2 } from "lucide-react";
 import { Button } from "@/components/button";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
@@ -13,20 +13,30 @@ type SharedFile = {
   size: number;
 };
 
+type SharedFolder = {
+  id: string;
+  name: string;
+};
+
 export default function ShareViewer({ token }: { token: string }) {
   const [file, setFile] = useState<SharedFile | null>(null);
+  const [folderData, setFolderData] = useState<{ folder: SharedFolder; files: SharedFile[] } | null>(null);
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
   const [error, setError] = useState("");
 
   async function load(pass?: string) {
     try {
-      const data = await apiFetch<{ file: SharedFile }>(`/api/share/${token}`, {
+      const data = await apiFetch<{ file?: SharedFile; folder?: SharedFolder; files?: SharedFile[] }>(`/api/share/${token}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ password: pass })
       });
-      setFile(data.file);
+      if (data.folder) {
+        setFolderData({ folder: data.folder, files: data.files ?? [] });
+      } else if (data.file) {
+        setFile(data.file);
+      }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setNeedsPassword(true);
@@ -38,16 +48,45 @@ export default function ShareViewer({ token }: { token: string }) {
 
   useEffect(() => {
     load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <main className="grid min-h-screen place-items-center bg-slate-950 px-5 text-white">
-      <section className="w-full max-w-md rounded-lg border border-white/10 bg-white p-6 text-slate-950 shadow-2xl">
-        <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-md bg-sky-600 text-white">
-          <Share2 className="h-5 w-5" />
-        </div>
-        {file ? (
+      <section className="w-full max-w-lg rounded-lg border border-white/10 bg-white p-6 text-slate-950 shadow-2xl">
+        {folderData ? (
           <>
+            <div className="mb-5 flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-md bg-amber-500 text-white shrink-0">
+                <Folder className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="truncate text-xl font-semibold">{folderData.folder.name}</h1>
+                <p className="text-sm text-slate-500">{folderData.files.length} file{folderData.files.length !== 1 ? "s" : ""}</p>
+              </div>
+            </div>
+            {folderData.files.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-4">This folder is empty.</p>
+            ) : (
+              <ul className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+                {folderData.files.map(f => (
+                  <li key={f.id} className="flex items-center gap-3 py-3">
+                    <FileIcon className="h-5 w-5 shrink-0 text-slate-400" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{f.originalName}</p>
+                      <p className="text-xs text-slate-400">{f.mimeType} · {formatBytes(f.size)}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-4 text-xs text-slate-400 text-center">Share individual files to enable direct downloads.</p>
+          </>
+        ) : file ? (
+          <>
+            <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-md bg-sky-600 text-white">
+              <Share2 className="h-5 w-5" />
+            </div>
             <h1 className="truncate text-xl font-semibold">{file.originalName}</h1>
             <p className="mt-2 text-sm text-slate-500">{file.mimeType} · {formatBytes(file.size)}</p>
             {file.mimeType.startsWith("video/") ? (
@@ -59,12 +98,7 @@ export default function ShareViewer({ token }: { token: string }) {
             </a>
           </>
         ) : needsPassword ? (
-          <form
-            onSubmit={event => {
-              event.preventDefault();
-              load(password);
-            }}
-          >
+          <form onSubmit={event => { event.preventDefault(); load(password); }}>
             <Lock className="mb-4 h-6 w-6 text-slate-500" />
             <h1 className="text-xl font-semibold">Password required</h1>
             <input

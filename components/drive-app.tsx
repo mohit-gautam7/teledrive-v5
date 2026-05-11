@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Download,
   File as FileIcon,
   Folder,
@@ -18,7 +20,9 @@ import {
   List,
   LogOut,
   Mail,
+  Maximize,
   Menu,
+  Minimize,
   MoreVertical,
   Monitor,
   Moon,
@@ -64,8 +68,13 @@ type ThemeMode = "light" | "dark" | "system";
 export default function DriveApp({ user }: { user: { name: string; username?: string | null; avatar?: string | null } }) {
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [folders, setFolders] = useState<DriveFolder[]>([]);
-  const [folderId, setFolderId] = useState<string | null>(null);
+  const [folderId, setFolderId] = useState<string | null>(() =>
+    typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("folder") : null
+  );
   const [folderTrail, setFolderTrail] = useState<DriveFolder[]>([]);
+  const [navDirection, setNavDirection] = useState(0);
+  const trailsByFolder = useRef<Map<string | null, DriveFolder[]>>(new Map([[null, []]]));
+
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
@@ -255,16 +264,90 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }
 
+  // Browser back/forward navigation
+  useEffect(() => {
+    const handlePop = () => {
+      const newFolderId = new URLSearchParams(window.location.search).get("folder");
+      setFolderId(newFolderId);
+      setFolderTrail(trailsByFolder.current.get(newFolderId) ?? []);
+      setNavDirection(0);
+    };
+    window.addEventListener("popstate", handlePop);
+    return () => window.removeEventListener("popstate", handlePop);
+  }, []);
+
+  async function toggleFavorite(fileId: string) {
+    const file = files.find(f => f.id === fileId);
+    if (!file) return;
+    const newValue = !file.isFavorite;
+    setFiles(fs => fs.map(f => f.id === fileId ? { ...f, isFavorite: newValue } : f));
+    try {
+      await apiFetch(`/api/files/${fileId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ isFavorite: newValue })
+      });
+    } catch {
+      setFiles(fs => fs.map(f => f.id === fileId ? { ...f, isFavorite: !newValue } : f));
+      toast.error("Could not update favorite.");
+    }
+  }
+
+  async function restoreFile(fileId: string) {
+    try {
+      await apiFetch(`/api/files/${fileId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ restore: true })
+      });
+      toast.success("File restored");
+      refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not restore file.");
+    }
+  }
+
+  async function shareFolder(folderId: string) {
+    try {
+      const data = await apiFetch<{ shareUrl: string }>("/api/share", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folderId })
+      });
+      await navigator.clipboard.writeText(`${window.location.origin}${data.shareUrl}`);
+      toast.success("Folder share link copied to clipboard");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Share failed.");
+    }
+  }
+
+
   function enterFolder(folder: DriveFolder) {
-    setFolderTrail(current => [...current, folder]);
+    const newTrail = [...folderTrail, folder];
+    trailsByFolder.current.set(folder.id, newTrail);
+    setNavDirection(1);
+    setFolderTrail(newTrail);
     setFolderId(folder.id);
+    window.history.pushState(null, "", `?folder=${folder.id}`);
   }
 
   function goHome() {
+    setNavDirection(-1);
     setFolderTrail([]);
     setFolderId(null);
     setAppView("files");
+    window.history.pushState(null, "", "?");
   }
+
+  function navigateBackInTrail(folder: DriveFolder) {
+    const idx = folderTrail.findIndex(f => f.id === folder.id);
+    const newTrail = idx >= 0 ? folderTrail.slice(0, idx + 1) : [];
+    setNavDirection(-1);
+    setFolderTrail(newTrail);
+    setFolderId(folder.id);
+    window.history.pushState(null, "", `?folder=${folder.id}`);
+  }
+
 
   const navItems = [
     { icon: Home, label: "Home", view: "home" as AppView },
@@ -277,45 +360,61 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   ];
 
   function selectView(nextView: AppView) {
+    setNavDirection(0);
     setAppView(nextView);
     setSidebarOpen(false);
     if (nextView !== "settings") {
       setFolderId(null);
       setFolderTrail([]);
+      window.history.pushState(null, "", "?");
     }
     if (nextView === "shared") toast.info("Shared file management is coming next. Public links already work from file cards.");
   }
 
+
   return (
     <div
       {...getRootProps()}
-      className="min-h-screen text-[var(--text-primary)]"
-      style={{ background: "linear-gradient(-45deg,#070d1a,#0a1128,#070d1a,#0d1829)", backgroundSize: "400% 400%", animation: "bgmove 20s ease infinite" }}
+      className="drive-bg min-h-screen text-[var(--text-primary)]"
     >
       <input {...getInputProps()} />
       {sidebarOpen ? <button className="fixed inset-0 z-30 bg-black/50 lg:hidden" style={{ backdropFilter: "blur(2px)" }} aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} /> : null}
 
       {/* ── Sidebar ── */}
       <motion.aside
-        initial={{ x: -24, opacity: 0 }}
+        initial={{ x: -28, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
+        transition={{ type: "spring", stiffness: 340, damping: 32 }}
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[86vw] max-w-72 flex-col border-r px-4 py-5 transition md:w-72",
+          "fixed inset-y-0 left-0 z-40 flex w-[86vw] max-w-[272px] flex-col border-r px-5 py-6 transition-transform md:w-[272px]",
           sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
-        style={{ borderColor: "rgba(0,212,255,0.12)", background: "rgba(7,13,26,0.92)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}
+        style={{
+          borderColor: "var(--cyan-border)",
+          background: "color-mix(in srgb, var(--bg-0) 94%, transparent)",
+          backdropFilter: "blur(28px)",
+          WebkitBackdropFilter: "blur(28px)",
+          boxShadow: "inset -1px 0 0 var(--border-dim), 4px 0 24px rgba(0,0,0,0.2)"
+        }}
       >
+        {/* Decorative top-left glow */}
+        <div className="pointer-events-none absolute -top-20 -left-12 h-48 w-48 rounded-full opacity-30"
+          style={{ background: "radial-gradient(circle, rgba(0,229,255,0.4) 0%, transparent 70%)", filter: "blur(40px)" }} />
+
         {/* Logo */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-lg font-bold tracking-wide">
-            <div className="grid h-10 w-10 place-items-center rounded-xl" style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", boxShadow: "0 0 18px rgba(0,212,255,0.4)" }}>
+        <div className="relative flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="relative grid h-9 w-9 place-items-center rounded-xl shrink-0"
+              style={{ background: "linear-gradient(135deg,#00e5ff,#8b5cf6)", boxShadow: "0 0 20px rgba(0,229,255,0.35), 0 0 40px rgba(139,92,246,0.15)" }}>
               <CloudIcon />
             </div>
-            <span style={{ background: "linear-gradient(90deg,#fff,#00d4ff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>TeleDrive</span>
+            <div>
+              <p className="text-[15px] font-[800] leading-none tracking-tight gradient-text">TeleDrive</p>
+              <p className="mt-0.5 text-[9px] tracking-[0.2em] uppercase" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono), monospace" }}>Personal Cloud</p>
+            </div>
           </div>
-          <button className="lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" style={{ color: "#64748b" }}>
-            <X className="h-5 w-5" />
+          <button className="lg:hidden grid h-8 w-8 place-items-center rounded-lg" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" style={{ color: "var(--text-secondary)", border: "1px solid var(--border-dim)" }}>
+            <X className="h-4 w-4" />
           </button>
         </div>
 
@@ -323,11 +422,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         <button
           onClick={open}
           disabled={uploading}
-          className="btn-ripple mt-7 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl font-semibold text-sm transition active:scale-[0.96] disabled:opacity-60"
-          style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: "0 0 18px rgba(0,212,255,0.35)", cursor: uploading ? "not-allowed" : "pointer" }}
+          className="btn-ripple relative mt-6 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl font-[700] text-sm tracking-wide transition active:scale-[0.97] disabled:opacity-50"
+          style={{
+            background: "linear-gradient(135deg, #00e5ff 0%, #8b5cf6 100%)",
+            color: "#fff",
+            boxShadow: "0 0 22px rgba(0,229,255,0.28), 0 0 44px rgba(139,92,246,0.12)",
+            cursor: uploading ? "not-allowed" : "pointer"
+          }}
         >
           <Upload className="h-4 w-4" />
-          {uploading ? "Uploading…" : "Upload"}
+          {uploading ? "Uploading…" : "Upload Files"}
         </button>
 
         <AnimatePresence>
@@ -337,7 +441,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
               className="mt-3 overflow-hidden rounded-xl border"
-              style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(0,212,255,0.04)" }}
+              style={{ borderColor: "var(--cyan-border)", background: "rgba(0,229,255,0.04)" }}
             >
               <div className="max-h-52 overflow-y-auto p-2 space-y-1.5">
                 {uploadQueue.map(item => (
@@ -346,7 +450,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                       <span className="truncate font-medium" style={{ color: "#e2e8f0", maxWidth: "75%" }}>{item.name}</span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {item.status === "pending" && <span style={{ color: "#475569" }}>Waiting</span>}
-                        {item.status === "uploading" && <span style={{ color: "#00d4ff" }}>{item.percent}%</span>}
+                        {item.status === "uploading" && <span style={{ color: "var(--cyan)", fontFamily: "var(--font-mono),monospace", fontSize: "10px" }}>{item.percent}%</span>}
                         {item.status === "done" && <CheckCircle2 className="h-3.5 w-3.5" style={{ color: "#34d399" }} />}
                         {item.status === "error" && (
                           <button onClick={() => setUploadQueue(q => q.filter(it => it.id !== item.id))}>
@@ -358,7 +462,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     <div className="h-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.07)" }}>
                       <motion.div
                         className="h-full rounded-full"
-                        style={{ background: item.status === "error" ? "#f87171" : item.status === "done" ? "#34d399" : item.status === "pending" ? "rgba(255,255,255,0.1)" : "linear-gradient(90deg,#00d4ff,#0284c7)" }}
+                        style={{ background: item.status === "error" ? "var(--danger)" : item.status === "done" ? "var(--emerald)" : item.status === "pending" ? "rgba(255,255,255,0.08)" : "linear-gradient(90deg,var(--cyan),var(--violet))" }}
                         initial={{ width: 0 }}
                         animate={{ width: item.status === "pending" ? "100%" : `${item.status === "done" ? 100 : item.percent}%` }}
                         transition={{ ease: "easeOut" }}
@@ -373,22 +477,30 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         </AnimatePresence>
 
         {/* Nav */}
-        <nav className="mt-6 flex-1 space-y-1 overflow-y-auto pb-4">
+        <nav className="mt-5 flex-1 space-y-0.5 overflow-y-auto pb-4">
           {navItems.map(({ icon: Icon, label, view: itemView }) => {
             const active = appView === itemView;
             return (
               <button
                 key={label}
                 onClick={() => selectView(itemView)}
-                className={cn("nav-item-drive relative flex min-h-10 w-full items-center gap-3 rounded-xl px-3 py-2 text-sm transition focus:outline-none")}
+                className="nav-item-drive relative flex min-h-[40px] w-full items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-[500] transition focus:outline-none"
                 style={{
-                  color: active ? "#00d4ff" : "#64748b",
-                  background: active ? "rgba(0,212,255,0.08)" : "transparent",
-                  border: active ? "1px solid rgba(0,212,255,0.2)" : "1px solid transparent",
+                  color: active ? "#fff" : "var(--text-secondary)",
+                  background: active ? "linear-gradient(135deg, rgba(0,229,255,0.12), rgba(139,92,246,0.1))" : "transparent",
+                  border: active ? "1px solid rgba(0,229,255,0.18)" : "1px solid transparent",
+                  boxShadow: active ? "inset 0 1px 0 rgba(0,229,255,0.1)" : "none"
                 }}
               >
-                {active ? <motion.span layoutId="nav-active" className="absolute left-0 h-6 w-1 rounded-r-full" style={{ background: "#00d4ff", boxShadow: "0 0 8px #00d4ff" }} /> : null}
-                <Icon className="h-4 w-4" />
+                {active && (
+                  <motion.span
+                    layoutId="nav-pill"
+                    className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r-full"
+                    style={{ background: "linear-gradient(180deg,#00e5ff,#8b5cf6)", boxShadow: "0 0 12px rgba(0,229,255,0.6)" }}
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  />
+                )}
+                <Icon className="h-4 w-4 shrink-0" style={{ color: active ? "var(--cyan)" : undefined }} />
                 {label}
               </button>
             );
@@ -396,87 +508,159 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         </nav>
 
         {/* User card — mt-auto keeps it at bottom without absolute overlap */}
-        <div className="mt-auto rounded-xl border p-4" style={{ borderColor: "rgba(0,212,255,0.12)", background: "rgba(0,212,255,0.04)" }}>
-          <p className="text-sm font-semibold" style={{ color: "#e2e8f0" }}>{user.name}</p>
-          <p className="truncate text-xs" style={{ color: "#475569" }}>{user.username ? `@${user.username}` : "Telegram account"}</p>
-          <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: "#64748b" }}>
-            {authStatus === "connected" ? <CheckCircle2 className="h-4 w-4" style={{ color: "#34d399" }} /> : authStatus === "failed" ? <AlertCircle className="h-4 w-4" style={{ color: "#f87171" }} /> : <RotateCw className="h-4 w-4 animate-spin" style={{ color: "#00d4ff" }} />}
-            <span>{authStatus === "connected" ? "Connected" : authStatus === "failed" ? "Reconnect needed" : "Checking…"}</span>
+        <div className="mt-auto rounded-2xl p-4" style={{ border: "1px solid rgba(0,229,255,0.1)", background: "linear-gradient(135deg, rgba(0,229,255,0.04), rgba(139,92,246,0.04))" }}>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-[700]"
+              style={{ background: "linear-gradient(135deg,#00e5ff,#8b5cf6)", color: "#fff" }}>
+              {user.name.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <p className="text-[13px] font-[600] truncate" style={{ color: "var(--text-primary)" }}>{user.name}</p>
+              <p className="truncate text-[11px]" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>{user.username ? `@${user.username}` : "Telegram"}</p>
+            </div>
           </div>
-          <p className="mt-3 text-xs" style={{ color: "#475569" }}>Storage used</p>
-          <p className="text-sm font-bold" style={{ color: "#00d4ff" }}>{formatBytes(storageUsed)}</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
+              {authStatus === "connected" ? <CheckCircle2 className="h-3.5 w-3.5" style={{ color: "var(--emerald)" }} /> : authStatus === "failed" ? <AlertCircle className="h-3.5 w-3.5" style={{ color: "var(--danger)" }} /> : <RotateCw className="h-3.5 w-3.5 animate-spin" style={{ color: "var(--cyan)" }} />}
+              <span>{authStatus === "connected" ? "Connected" : authStatus === "failed" ? "Reconnect" : "Checking…"}</span>
+            </div>
+            <span className="tag-cyan">{formatBytes(storageUsed)}</span>
+          </div>
         </div>
       </motion.aside>
 
       {/* ── Main ── */}
-      <motion.main className="lg:pl-72 min-h-screen" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }}>
+      <motion.main className="lg:pl-[272px] min-h-screen" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>
         {/* Header */}
-        <header className="sticky top-0 z-30" style={{ background: "rgba(7,13,26,0.92)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "1px solid rgba(0,212,255,0.1)" }}>
-          <div className="flex h-14 items-center gap-2 px-3 md:h-16 md:gap-3 md:px-6">
-            <button className="grid h-9 w-9 shrink-0 place-items-center rounded-xl lg:hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }} onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
-              <Menu className="h-4 w-4" />
+        <header className="sticky top-0 z-30" style={{ background: "color-mix(in srgb, var(--bg-0) 92%, transparent)", backdropFilter: "blur(28px)", WebkitBackdropFilter: "blur(28px)", borderBottom: "1px solid var(--border-dim)", boxShadow: "0 1px 0 rgba(0,229,255,0.05)" }}>
+          <div className="flex h-14 items-center gap-2 px-3 md:h-[58px] md:gap-3 md:px-5">
+            {/* Hamburger — mobile only */}
+            <button className="grid h-9 w-9 shrink-0 place-items-center rounded-xl lg:hidden" style={{ border: "1px solid var(--border-med)" }} onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
+              <Menu className="h-4 w-4" style={{ color: "var(--text-secondary)" }} />
             </button>
+
+            {/* Brand logo — visible on mobile (lg: hidden because sidebar shows it) */}
+            <div className="flex items-center gap-2 shrink-0 lg:hidden">
+              <div className="grid h-8 w-8 place-items-center rounded-xl shrink-0"
+                style={{ background: "linear-gradient(135deg,#00e5ff,#8b5cf6)", boxShadow: "0 0 14px rgba(0,229,255,0.4)" }}>
+                <CloudIcon size={16} />
+              </div>
+              <span className="text-[14px] font-[800] gradient-text tracking-tight hidden sm:block">TeleDrive</span>
+            </div>
+
+            {/* Search */}
             <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 pointer-events-none" style={{ color: "#475569" }} />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} />
               <input
                 value={query}
                 onChange={event => setQuery(event.target.value)}
                 placeholder="Search files…"
-                style={{ cursor: "text", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "#e2e8f0", borderRadius: 12 }}
-                className="h-10 w-full pl-10 pr-3 text-sm outline-none transition focus:border-[#00d4ff] focus:ring-2 focus:ring-[rgba(0,212,255,0.15)]"
+                style={{
+                  cursor: "text",
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid var(--border-dim)",
+                  color: "var(--text-primary)",
+                  borderRadius: 12,
+                  fontFamily: "var(--font-mono), monospace",
+                  fontSize: "0.8125rem"
+                }}
+                className="h-9 w-full pl-9 pr-3 outline-none transition focus:border-[rgba(0,229,255,0.4)] focus:ring-2 focus:ring-[rgba(0,229,255,0.1)]"
               />
             </div>
+
+            {/* Upload badge — show active upload progress */}
+            <AnimatePresence>
+              {uploading && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  className="hidden sm:flex items-center gap-2 shrink-0 rounded-xl px-3 py-1.5"
+                  style={{ border: "1px solid var(--cyan-border)", background: "rgba(0,229,255,0.06)" }}
+                >
+                  <div className="h-1.5 w-20 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
+                    <motion.div
+                      className="h-full rounded-full upload-progress-bar"
+                      animate={{ width: `${uploadQueue.reduce((a, b) => a + b.percent, 0) / Math.max(uploadQueue.length, 1)}%` }}
+                      transition={{ ease: "easeOut", duration: 0.3 }}
+                    />
+                  </div>
+                  <span className="text-[11px] font-[700] tabular-nums" style={{ color: "var(--cyan)", fontFamily: "var(--font-mono),monospace" }}>
+                    {Math.round(uploadQueue.reduce((a, b) => a + b.percent, 0) / Math.max(uploadQueue.length, 1))}%
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <div className="flex items-center gap-1.5 shrink-0">
               <button
-                onClick={() => setTheme(current => (current === "system" ? "light" : current === "light" ? "dark" : "system"))}
-                className="grid h-9 w-9 place-items-center rounded-xl transition hover:text-[#00d4ff] active:scale-[0.96]"
-                style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+                onClick={() => setTheme(current => (current === "system" ? "dark" : current === "dark" ? "light" : "system"))}
+                className="grid h-9 w-9 place-items-center rounded-xl transition active:scale-[0.94]"
+                style={{ border: "1px solid var(--border-dim)", color: "var(--text-secondary)" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--cyan)"; (e.currentTarget as HTMLElement).style.borderColor = "var(--cyan-border)"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)"; (e.currentTarget as HTMLElement).style.borderColor = "var(--border-dim)"; }}
+                title={`Theme: ${theme} — click to cycle`}
                 aria-label="Toggle theme"
               >
-                {theme === "system" ? <Monitor className="h-4 w-4" /> : theme === "light" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                {theme === "system" ? <Monitor className="h-4 w-4" /> : theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
               </button>
               <button
                 onClick={logout}
-                className="grid h-9 w-9 place-items-center rounded-xl transition hover:text-red-400 active:scale-[0.96]"
-                style={{ border: "1px solid rgba(255,255,255,0.08)" }}
+                className="grid h-9 w-9 place-items-center rounded-xl transition active:scale-[0.94]"
+                style={{ border: "1px solid var(--border-dim)", color: "var(--text-secondary)" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--danger)"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,77,109,0.35)"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)"; (e.currentTarget as HTMLElement).style.borderColor = "var(--border-dim)"; }}
                 aria-label="Logout"
               >
                 <LogOut className="h-4 w-4" />
               </button>
             </div>
           </div>
+          {/* Thin upload progress line */}
+          <AnimatePresence>
+            {uploading && (
+              <motion.div
+                initial={{ scaleX: 0, opacity: 0 }}
+                animate={{ scaleX: 1, opacity: 1 }}
+                exit={{ opacity: 0 }}
+                style={{ transformOrigin: "left", height: 2 }}
+                className="upload-progress-bar"
+              />
+            )}
+          </AnimatePresence>
         </header>
 
-        <section className="px-3 py-5 md:px-6 md:py-6 max-w-7xl mx-auto">
-          <div className="mb-5 flex items-center justify-between gap-3">
+        <section className="px-4 py-5 md:px-6 md:py-6 max-w-7xl mx-auto">
+          <div className="mb-6 flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5 text-xs" style={{ color: "#475569" }}>
-                <button onClick={goHome} className="transition hover:text-[#00d4ff]">My Files</button>
+              {/* Breadcrumb */}
+              <div className="flex flex-wrap items-center gap-1 text-[11px] mb-1.5" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace", letterSpacing: "0.03em" }}>
+                <button onClick={goHome} className="transition hover:text-[var(--cyan)]">~/</button>
                 {folderTrail.map(folder => (
-                  <span key={folder.id} className="flex items-center gap-1.5">
-                    <span>/</span>
-                    <button onClick={() => enterFolder(folder)} className="transition hover:text-[#00d4ff]" style={{ color: "#94a3b8" }}>{folder.name}</button>
+                  <span key={folder.id} className="flex items-center gap-1">
+                    <span style={{ color: "var(--text-muted)" }}>›</span>
+                    <button onClick={() => navigateBackInTrail(folder)} className="transition hover:text-[var(--cyan)]" style={{ color: "var(--text-secondary)" }}>{folder.name}</button>
                   </span>
                 ))}
               </div>
-              <h1 className="mt-1 text-lg font-bold md:text-2xl truncate" style={{ color: "#e2e8f0" }}>
-                {appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : appView === "about" ? "About & Contact" : "Personal cloud storage"}
+              <h1 className="text-xl font-[800] md:text-[26px] leading-tight truncate tracking-tight gradient-text">
+                {appView === "settings" ? "Settings" : appView === "trash" ? "Trash" : appView === "favorites" ? "Favorites" : appView === "shared" ? "Shared" : appView === "about" ? "About & Contact" : folderTrail.length > 0 ? folderTrail[folderTrail.length - 1].name : "My Files"}
               </h1>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 pt-1">
               <button
                 onClick={() => setFolderModal({ mode: "create", value: "" })}
                 disabled={appView === "settings" || appView === "trash" || appView === "shared" || appView === "about"}
-                className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition active:scale-[0.96] disabled:opacity-40"
-                style={{ border: "1px solid rgba(0,212,255,0.3)", color: "#00d4ff", background: "rgba(0,212,255,0.06)" }}
+                className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] tracking-wide transition active:scale-[0.96] disabled:opacity-30"
+                style={{ border: "1px solid var(--cyan-border)", color: "var(--cyan)", background: "var(--cyan-dim)" }}
               >
-                <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Folder</span>
+                <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">New Folder</span>
               </button>
-              <div className="flex items-center rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }}>
+              <div className="flex items-center rounded-xl overflow-hidden" style={{ border: "1px solid var(--border-med)" }}>
                 <button
                   onClick={() => setView("grid")}
                   className="grid h-9 w-9 place-items-center transition active:scale-[0.9]"
-                  style={{ background: view === "grid" ? "rgba(0,212,255,0.15)" : "transparent", color: view === "grid" ? "#00d4ff" : "#64748b", borderRight: "1px solid rgba(255,255,255,0.08)" }}
+                  style={{ background: view === "grid" ? "rgba(0,229,255,0.12)" : "transparent", color: view === "grid" ? "var(--cyan)" : "var(--text-secondary)", borderRight: "1px solid var(--border-dim)" }}
                   aria-label="Grid view"
                 >
                   <Grid2X2 className="h-3.5 w-3.5" />
@@ -484,7 +668,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                 <button
                   onClick={() => setView("list")}
                   className="grid h-9 w-9 place-items-center transition active:scale-[0.9]"
-                  style={{ background: view === "list" ? "rgba(0,212,255,0.15)" : "transparent", color: view === "list" ? "#00d4ff" : "#64748b" }}
+                  style={{ background: view === "list" ? "rgba(0,229,255,0.12)" : "transparent", color: view === "list" ? "var(--cyan)" : "var(--text-secondary)" }}
                   aria-label="List view"
                 >
                   <List className="h-3.5 w-3.5" />
@@ -493,26 +677,55 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             </div>
           </div>
 
-          <AnimatePresence mode="wait">
+          <AnimatePresence mode="wait" custom={navDirection}>
           {appView === "settings" ? (
-            <motion.div key="settings" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.22 }}>
+            <motion.div key="settings" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
               <SettingsPanel theme={theme} setTheme={setTheme} authStatus={authStatus} />
             </motion.div>
           ) : appView === "about" ? (
-            <motion.div key="about" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.22 }}>
+            <motion.div key="about" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
               <AboutPanel />
             </motion.div>
           ) : (
-          <motion.div key="files" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={{ duration: 0.22 }}>
+          <motion.div
+            key={`${appView}-${folderId ?? "root"}`}
+            custom={navDirection}
+            variants={{
+              initial: (dir: number) => ({ opacity: 0, x: dir !== 0 ? dir * 48 : 0, y: dir === 0 ? 12 : 0 }),
+              animate: { opacity: 1, x: 0, y: 0 },
+              exit: (dir: number) => ({ opacity: 0, x: dir !== 0 ? dir * -36 : 0, y: dir === 0 ? -8 : 0 })
+            }}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          >
             {/* Drop zone */}
-            <div
-              className={cn("mb-6 rounded-2xl border-2 border-dashed transition", isDragActive && "dropzone-active scale-[1.01]")}
-              style={{ borderColor: isDragActive ? "#00d4ff" : "rgba(0,212,255,0.2)", background: isDragActive ? "rgba(0,212,255,0.06)" : "rgba(0,212,255,0.02)", cursor: "crosshair", padding: "clamp(1rem,4vw,2.5rem)", textAlign: "center" }}
+            <motion.div
+              animate={{ scale: isDragActive ? 1.012 : 1, borderColor: isDragActive ? "var(--cyan)" : "rgba(0,229,255,0.18)" }}
+              transition={{ type: "spring", stiffness: 320, damping: 26 }}
+              className={cn("mb-6 rounded-2xl border border-dashed", isDragActive && "dropzone-active")}
+              style={{
+                background: isDragActive ? "rgba(0,229,255,0.05)" : "rgba(0,229,255,0.015)",
+                cursor: "crosshair",
+                padding: "clamp(1.25rem,5vw,2.25rem)",
+                textAlign: "center"
+              }}
             >
-              <Upload className="mx-auto mb-2 h-7 w-7" style={{ color: "#00d4ff" }} />
-              <p className="font-semibold text-sm md:text-base" style={{ color: "#e2e8f0" }}>Drop files or folders here</p>
-              <p className="mt-0.5 text-xs md:text-sm" style={{ color: "#475569" }}>Auto-routes large files to Telegram storage.</p>
-            </div>
+              <motion.div
+                animate={{ scale: isDragActive ? 1.15 : 1, rotate: isDragActive ? -8 : 0 }}
+                transition={{ type: "spring", stiffness: 360, damping: 20 }}
+                className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-2xl"
+                style={{ background: isDragActive ? "rgba(0,229,255,0.2)" : "rgba(0,229,255,0.08)", border: "1px solid var(--cyan-border)" }}>
+                <Upload className="h-5 w-5" style={{ color: "var(--cyan)" }} />
+              </motion.div>
+              <p className="font-[700] text-sm md:text-[15px]" style={{ color: "var(--text-primary)" }}>
+                {isDragActive ? "Release to upload" : "Drop files or folders here"}
+              </p>
+              <p className="mt-1 text-xs md:text-sm" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>
+                Auto-routes · BOT ≤ 2 GB · MTProto ≤ 4 GB
+              </p>
+            </motion.div>
 
             {/* Folders */}
             {folders.length > 0 ? (
@@ -521,16 +734,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                   <motion.div
                     key={folder.id}
                     layout
-                    whileHover={{ y: -4, scale: 1.02 }}
+                    whileHover={{ y: -3, scale: 1.015 }}
                     whileTap={{ scale: 0.97 }}
-                    className="drive-card relative flex items-center gap-3 rounded-xl border p-4 text-left transition"
-                    style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", cursor: "pointer" }}
+                    transition={{ type: "spring", stiffness: 400, damping: 28 }}
+                    className="folder-card grad-border relative flex items-center gap-3 rounded-xl border p-3.5 text-left transition"
+                    style={{ borderColor: "rgba(139,92,246,0.15)", background: "rgba(139,92,246,0.04)", cursor: "pointer" }}
                   >
                     <button className="flex flex-1 min-w-0 items-center gap-3" onClick={() => enterFolder(folder)}>
-                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl" style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.2)" }}>
-                        <Folder className="h-5 w-5" style={{ color: "#fbbf24" }} />
+                      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl"
+                        style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.2), rgba(0,229,255,0.1))", border: "1px solid rgba(139,92,246,0.3)" }}>
+                        <Folder className="h-4 w-4" style={{ color: "#a78bfa" }} />
                       </div>
-                      <span className="truncate text-sm font-semibold" style={{ color: "#e2e8f0" }}>{folder.name}</span>
+                      <span className="truncate text-[13px] font-[600]" style={{ color: "var(--text-primary)" }}>{folder.name}</span>
                     </button>
                     <DropdownMenu.Root>
                       <DropdownMenu.Trigger asChild>
@@ -539,11 +754,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                         </button>
                       </DropdownMenu.Trigger>
                       <DropdownMenu.Portal>
-                        <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[150px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid rgba(255,255,255,0.1)", background: "rgba(13,24,41,0.95)", backdropFilter: "blur(20px)" }}>
-                          <DropdownMenu.Item onSelect={() => setFolderModal({ mode: "rename", id: folder.id, value: folder.name })} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "#e2e8f0" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.1)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
-                            <Pencil className="h-4 w-4" style={{ color: "#00d4ff" }} /> Rename
+                        <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[160px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid var(--border-med)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}>
+                          <DropdownMenu.Item onSelect={() => setFolderModal({ mode: "rename", id: folder.id, value: folder.name })} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                            <Pencil className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Rename
                           </DropdownMenu.Item>
-                          <DropdownMenu.Item onSelect={() => deleteFolder(folder.id)} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "#f87171" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                          <DropdownMenu.Item onSelect={() => shareFolder(folder.id)} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                            <Link2 className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Share Folder
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item onSelect={() => deleteFolder(folder.id)} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--danger)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(255,77,109,0.08)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
                             <Trash2 className="h-4 w-4" /> Delete
                           </DropdownMenu.Item>
                         </DropdownMenu.Content>
@@ -564,6 +782,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     file={file}
                     index={index}
                     grid={view === "grid"}
+                    appView={appView}
                     onPreview={() => setPreviewFile(file)}
                     onDownload={() => {
                       toast.info("Preparing download…");
@@ -571,18 +790,25 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     }}
                     onShare={() => shareFile(file.id)}
                     onDelete={() => deleteFile(file.id)}
+                    onFavorite={() => toggleFavorite(file.id)}
+                    onRestore={() => restoreFile(file.id)}
                   />
                 ))}
               </AnimatePresence>
             </motion.div>
 
             {!loading && !files.length && !folders.length ? (
-              <div className="rounded-2xl border p-12 text-center" style={{ borderColor: "rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.02)" }}>
-                <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl" style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.15)" }}>
-                  <FileIcon className="h-8 w-8" style={{ color: "#00d4ff" }} />
+              <div className="rounded-2xl border p-12 text-center" style={{ borderColor: "var(--border-dim)", background: "rgba(0,229,255,0.015)" }}>
+                <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl"
+                  style={{ background: "linear-gradient(135deg, rgba(0,229,255,0.1), rgba(139,92,246,0.08))", border: "1px solid var(--cyan-border)" }}>
+                  <CloudIcon />
                 </div>
-                <p className="font-semibold" style={{ color: "#e2e8f0" }}>No files yet</p>
-                <p className="mt-1 text-sm" style={{ color: "#475569" }}>Upload something and TeleDrive will route it automatically.</p>
+                <p className="font-[700] text-[15px]" style={{ color: "var(--text-primary)" }}>
+                  {appView === "trash" ? "Trash is empty" : appView === "favorites" ? "No favorites yet" : "Nothing here yet"}
+                </p>
+                <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>
+                  {appView === "trash" ? "Deleted files appear here" : appView === "favorites" ? "Star files to save them here" : "Upload files and they'll appear here"}
+                </p>
               </div>
             ) : null}
           </motion.div>
@@ -593,7 +819,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
       {/* Preview modal */}
       <AnimatePresence>
-        {previewFile && <PreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />}
+        {previewFile && (
+          <PreviewModal
+            file={previewFile}
+            allFiles={files}
+            onClose={() => setPreviewFile(null)}
+            onNavigate={setPreviewFile}
+          />
+        )}
       </AnimatePresence>
 
       {/* Folder create/rename modal */}
@@ -624,31 +857,45 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   );
 }
 
-function FileTile({ file, grid, index, onPreview, onDownload, onShare, onDelete }: { file: DriveFile; grid: boolean; index: number; onPreview: () => void; onDownload: () => void; onShare: () => void; onDelete: () => void }) {
+function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, onDelete, onFavorite, onRestore }: {
+  file: DriveFile; grid: boolean; index: number; appView: AppView;
+  onPreview: () => void; onDownload: () => void; onShare: () => void; onDelete: () => void;
+  onFavorite: () => void; onRestore: () => void;
+}) {
   const Icon = file.mimeType.startsWith("image/") ? Image : file.mimeType.startsWith("video/") ? Video : FileIcon;
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const isImage = file.mimeType.startsWith("image/");
   const isVideo = file.mimeType.startsWith("video/");
   const preview = isImage ? `/api/preview/${file.id}` : isVideo ? `/api/stream/${file.id}` : "";
+  const inTrash = appView === "trash";
+
+  const actionBtn = (color: string, hoverBg: string, hoverBorder: string) => ({
+    base: { borderColor: "var(--border-med)", background: "transparent", color } as React.CSSProperties,
+    hover: { borderColor: hoverBorder, background: hoverBg, color } as React.CSSProperties
+  });
+  const cyanBtn = actionBtn("var(--text-secondary)", "var(--cyan-dim)", "var(--cyan-border)");
+  const redBtn = actionBtn("#f87171", "rgba(255,77,109,0.1)", "rgba(255,77,109,0.45)");
+  const greenBtn = actionBtn("#34d399", "rgba(16,255,160,0.08)", "rgba(16,255,160,0.4)");
+
   return (
     <motion.article
       layout
-      initial={{ opacity: 0, y: 16, scale: 0.96 }}
+      initial={{ opacity: 0, y: 14, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      whileHover={{ y: grid ? -4 : 0, boxShadow: "0 8px 32px rgba(0,212,255,0.12)" }}
-      transition={{ duration: 0.2, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 1, 0.36, 1] }}
-      className={cn("drive-card rounded-xl border p-3 md:p-4 transition", !grid && "flex items-center gap-3")}
-      style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}
+      whileHover={{ y: grid ? -3 : 0, boxShadow: "0 8px 32px rgba(0,212,255,0.12)" }}
+      transition={{ type: "spring", stiffness: 380, damping: 32, delay: Math.min(index * 0.035, 0.2) }}
+      className={cn("drive-card grad-border rounded-xl border p-3 transition", !grid && "flex items-center gap-3")}
+      style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}
     >
       <div
-        className={cn("relative grid overflow-hidden place-items-center rounded-lg", grid ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")}
+        className={cn("relative grid overflow-hidden place-items-center rounded-lg", grid ? "mb-3 aspect-video" : "h-12 w-12 shrink-0")}
         style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)", cursor: "zoom-in" }}
         onClick={onPreview}
         title="Click to preview"
       >
         {(isImage || isVideo) && !mediaLoaded ? (
-          <div className="absolute inset-0 animate-pulse" style={{ background: "linear-gradient(90deg, rgba(255,255,255,0.04), rgba(0,212,255,0.06), rgba(255,255,255,0.04))" }} />
+          <div className="skeleton absolute inset-0" />
         ) : null}
         {isImage ? (
           <img
@@ -663,21 +910,56 @@ function FileTile({ file, grid, index, onPreview, onDownload, onShare, onDelete 
         ) : isVideo ? (
           <video src={preview} className="h-full w-full rounded-lg object-cover" muted preload="metadata" onLoadedData={() => setMediaLoaded(true)} />
         ) : (
-          <Icon className="h-8 w-8" style={{ color: "#00d4ff" }} />
+          <Icon className="h-8 w-8" style={{ color: "var(--cyan)" }} />
+        )}
+        {/* Star button overlay on thumbnail */}
+        {grid && (
+          <button
+            onClick={e => { e.stopPropagation(); onFavorite(); }}
+            className="absolute top-1.5 right-1.5 grid h-7 w-7 place-items-center rounded-lg transition z-10 active:scale-90"
+            style={{ background: "rgba(0,0,0,0.55)", border: file.isFavorite ? "1px solid rgba(251,191,36,0.6)" : "1px solid rgba(255,255,255,0.12)" }}
+            aria-label={file.isFavorite ? "Remove from favorites" : "Add to favorites"}
+            title={file.isFavorite ? "Remove from favorites" : "Add to favorites"}
+          >
+            <Star className="h-3.5 w-3.5" style={{ color: file.isFavorite ? "#fbbf24" : "#64748b", fill: file.isFavorite ? "#fbbf24" : "none" }} />
+          </button>
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <h3 className="truncate text-sm font-semibold" style={{ color: "#e2e8f0" }}>{file.originalName}</h3>
-        <p className="mt-1 text-xs" style={{ color: "#475569" }}>{formatBytes(file.size)} · {file.storageMode}</p>
+        <h3 className="truncate text-[13px] font-[600]" style={{ color: "var(--text-primary)" }}>{file.originalName}</h3>
+        <p className="mt-0.5 text-[11px]" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>{formatBytes(file.size)} · {file.storageMode}</p>
       </div>
-      {/* Desktop list view & all grid views: show 3 buttons */}
-      <div className={cn("flex gap-2", grid ? "mt-4" : "ml-auto hidden sm:flex")}>
+      {/* Desktop list view & all grid views: show action buttons */}
+      <div className={cn("flex gap-1.5 items-center", grid ? "mt-3" : "ml-auto hidden sm:flex")}>
+        {!grid && (
+          <button
+            onClick={e => { e.stopPropagation(); onFavorite(); }}
+            className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
+            style={{ borderColor: file.isFavorite ? "rgba(251,191,36,0.5)" : "rgba(255,255,255,0.1)", background: "transparent" }}
+            aria-label="Toggle favorite"
+          >
+            <Star className="h-4 w-4" style={{ color: file.isFavorite ? "#fbbf24" : "#94a3b8", fill: file.isFavorite ? "#fbbf24" : "none" }} />
+          </button>
+        )}
+        {inTrash && (
+          <button
+            onClick={onRestore}
+            className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
+            style={greenBtn.base}
+            onMouseEnter={e => Object.assign((e.currentTarget as HTMLElement).style, greenBtn.hover)}
+            onMouseLeave={e => Object.assign((e.currentTarget as HTMLElement).style, greenBtn.base)}
+            aria-label="Restore file"
+            title="Restore"
+          >
+            <RotateCw className="h-4 w-4" />
+          </button>
+        )}
         <button
           onClick={onDownload}
           className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
-          style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(0,212,255,0.5)"; (e.currentTarget as HTMLElement).style.color = "#00d4ff"; (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.08)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.1)"; (e.currentTarget as HTMLElement).style.color = "#94a3b8"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          style={cyanBtn.base}
+          onMouseEnter={e => Object.assign((e.currentTarget as HTMLElement).style, cyanBtn.hover)}
+          onMouseLeave={e => Object.assign((e.currentTarget as HTMLElement).style, cyanBtn.base)}
           aria-label="Download"
         >
           <Download className="h-4 w-4" />
@@ -685,9 +967,9 @@ function FileTile({ file, grid, index, onPreview, onDownload, onShare, onDelete 
         <button
           onClick={onShare}
           className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
-          style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#94a3b8", cursor: "pointer" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(0,212,255,0.5)"; (e.currentTarget as HTMLElement).style.color = "#00d4ff"; (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.08)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.1)"; (e.currentTarget as HTMLElement).style.color = "#94a3b8"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          style={cyanBtn.base}
+          onMouseEnter={e => Object.assign((e.currentTarget as HTMLElement).style, cyanBtn.hover)}
+          onMouseLeave={e => Object.assign((e.currentTarget as HTMLElement).style, cyanBtn.base)}
           aria-label="Share"
         >
           <Link2 className="h-4 w-4" />
@@ -695,9 +977,9 @@ function FileTile({ file, grid, index, onPreview, onDownload, onShare, onDelete 
         <button
           onClick={onDelete}
           className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]"
-          style={{ borderColor: "rgba(255,255,255,0.1)", background: "transparent", color: "#f87171" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(239,68,68,0.5)"; (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,255,255,0.1)"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+          style={redBtn.base}
+          onMouseEnter={e => Object.assign((e.currentTarget as HTMLElement).style, redBtn.hover)}
+          onMouseLeave={e => Object.assign((e.currentTarget as HTMLElement).style, redBtn.base)}
           aria-label="Delete"
         >
           <Trash2 className="h-4 w-4" />
@@ -721,31 +1003,51 @@ function FileTile({ file, grid, index, onPreview, onDownload, onShare, onDelete 
                 align="end"
                 sideOffset={4}
                 className="z-50 min-w-[150px] overflow-hidden rounded-xl p-1 shadow-2xl"
-                style={{ border: "1px solid rgba(255,255,255,0.1)", background: "rgba(13,24,41,0.95)", backdropFilter: "blur(20px)" }}
+                style={{ border: "1px solid var(--border-med)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}
               >
+                {inTrash && (
+                  <DropdownMenu.Item
+                    onSelect={onRestore}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
+                    style={{ color: "var(--emerald)" }}
+                    onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(16,255,160,0.08)"}
+                    onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+                  >
+                    <RotateCw className="h-4 w-4" /> Restore
+                  </DropdownMenu.Item>
+                )}
+                <DropdownMenu.Item
+                  onSelect={onFavorite}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
+                  style={{ color: "var(--text-primary)" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(251,191,36,0.08)"}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+                >
+                  <Star className="h-4 w-4" style={{ color: "#fbbf24", fill: file.isFavorite ? "#fbbf24" : "none" }} /> {file.isFavorite ? "Unfavorite" : "Favorite"}
+                </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onSelect={onDownload}
                   className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
-                  style={{ color: "#e2e8f0" }}
-                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.1)"}
+                  style={{ color: "var(--text-primary)" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
                 >
-                  <Download className="h-4 w-4" style={{ color: "#00d4ff" }} /> Download
+                  <Download className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Download
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onSelect={onShare}
                   className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
-                  style={{ color: "#e2e8f0" }}
-                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(0,212,255,0.1)"}
+                  style={{ color: "var(--text-primary)" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
                 >
-                  <Link2 className="h-4 w-4" style={{ color: "#00d4ff" }} /> Share
+                  <Link2 className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Share
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onSelect={onDelete}
                   className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
-                  style={{ color: "#f87171" }}
-                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"}
+                  style={{ color: "var(--danger)" }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "rgba(255,77,109,0.08)"}
                   onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
                 >
                   <Trash2 className="h-4 w-4" /> Delete
@@ -763,20 +1065,20 @@ function FileSkeletonGrid({ view }: { view: "grid" | "list" }) {
   return (
     <div className={view === "grid" ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" : "space-y-2"}>
       {Array.from({ length: view === "grid" ? 8 : 5 }).map((_, index) => (
-        <div
+        <motion.div
           key={index}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: index * 0.04, type: "spring", stiffness: 300, damping: 28 }}
           className={cn("rounded-xl border p-4", view === "list" && "flex items-center gap-4")}
-          style={{ borderColor: "rgba(255,255,255,0.07)", background: "rgba(255,255,255,0.02)" }}
+          style={{ borderColor: "var(--border-dim)", background: "rgba(255,255,255,0.02)" }}
         >
-          <div
-            className={cn("animate-pulse rounded-lg", view === "grid" ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")}
-            style={{ background: "linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(0,212,255,0.06) 50%, rgba(255,255,255,0.04) 100%)", backgroundSize: "200% 100%", animation: "pulse 1.5s ease-in-out infinite" }}
-          />
-          <div className="space-y-2">
-            <div className="h-4 w-40 animate-pulse rounded-md" style={{ background: "rgba(255,255,255,0.06)" }} />
-            <div className="h-3 w-24 animate-pulse rounded-md" style={{ background: "rgba(255,255,255,0.04)" }} />
+          <div className={cn("skeleton rounded-lg", view === "grid" ? "mb-4 aspect-video" : "h-12 w-12 shrink-0")} />
+          <div className="space-y-2 flex-1">
+            <div className="skeleton h-4 rounded-md" style={{ width: "60%" }} />
+            <div className="skeleton h-3 rounded-md" style={{ width: "40%" }} />
           </div>
-        </div>
+        </motion.div>
       ))}
     </div>
   );
@@ -789,8 +1091,8 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
       animate={{ opacity: 1, y: 0 }}
       className="grid gap-4 lg:grid-cols-2"
     >
-      <section className="rounded-xl border p-5" style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
-        <h2 className="font-semibold" style={{ color: "#e2e8f0" }}>Appearance</h2>
+      <section className="rounded-2xl border p-5" style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}>
+        <h2 className="font-[700] text-[15px]" style={{ color: "var(--text-primary)" }}>Appearance</h2>
         <div className="mt-4 grid grid-cols-3 gap-2">
           {[
             { value: "light" as ThemeMode, icon: Sun, label: "Light" },
@@ -800,10 +1102,10 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
             <button
               key={item.value}
               onClick={() => setTheme(item.value)}
-              className="flex min-h-11 items-center justify-center gap-2 rounded-xl border text-sm transition active:scale-[0.96]"
+              className="flex min-h-11 items-center justify-center gap-2 rounded-xl border text-[13px] font-[500] transition active:scale-[0.95]"
               style={theme === item.value
-                ? { borderColor: "#00d4ff", background: "rgba(0,212,255,0.12)", color: "#00d4ff", boxShadow: "0 0 14px rgba(0,212,255,0.2)" }
-                : { borderColor: "rgba(255,255,255,0.08)", background: "transparent", color: "#94a3b8" }
+                ? { borderColor: "var(--cyan-border)", background: "var(--cyan-dim)", color: "var(--cyan)", boxShadow: "0 0 18px rgba(0,229,255,0.15)" }
+                : { borderColor: "var(--border-dim)", background: "transparent", color: "var(--text-secondary)" }
               }
             >
               <item.icon className="h-4 w-4" />
@@ -812,21 +1114,21 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
           ))}
         </div>
       </section>
-      <section className="rounded-xl border p-5" style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
-        <h2 className="font-semibold" style={{ color: "#e2e8f0" }}>Telegram Connection</h2>
-        <div className="mt-4 flex items-center gap-2 text-sm">
+      <section className="rounded-2xl border p-5" style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}>
+        <h2 className="font-[700] text-[15px]" style={{ color: "var(--text-primary)" }}>Telegram Connection</h2>
+        <div className="mt-4 flex items-center gap-2 text-[13px]">
           {authStatus === "connected"
-            ? <CheckCircle2 className="h-5 w-5" style={{ color: "#34d399" }} />
-            : <AlertCircle className="h-5 w-5" style={{ color: "#f87171" }} />}
-          <span style={{ color: "#94a3b8" }}>{authStatus === "connected" ? "Connected with Telegram login" : "Session needs attention"}</span>
+            ? <CheckCircle2 className="h-5 w-5" style={{ color: "var(--emerald)" }} />
+            : <AlertCircle className="h-5 w-5" style={{ color: "var(--danger)" }} />}
+          <span style={{ color: "var(--text-secondary)" }}>{authStatus === "connected" ? "Session active and authenticated" : "Session needs attention"}</span>
         </div>
-        <p className="mt-3 text-sm" style={{ color: "#475569" }}>
-          If Telegram login stops working, set the production domain in BotFather and sign in again. Large personal-storage uploads also require a valid GramJS session.
+        <p className="mt-3 text-[13px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+          If Telegram login stops working, set the production domain in BotFather and sign in again. Large personal-storage uploads require a valid GramJS session.
         </p>
         <button
           onClick={() => { window.location.href = "/"; }}
-          className="btn-ripple mt-4 inline-flex min-h-10 items-center gap-2 rounded-xl border px-4 text-sm transition active:scale-[0.96]"
-          style={{ borderColor: "rgba(0,212,255,0.3)", background: "rgba(0,212,255,0.06)", color: "#00d4ff" }}
+          className="btn-ripple mt-4 inline-flex min-h-10 items-center gap-2 rounded-xl border px-4 text-[13px] font-[600] transition active:scale-[0.96]"
+          style={{ borderColor: "var(--cyan-border)", background: "var(--cyan-dim)", color: "var(--cyan)" }}
         >
           <RotateCw className="h-4 w-4" />
           Reconnect Telegram
@@ -836,11 +1138,11 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
   );
 }
 
-function CloudIcon() {
+function CloudIcon({ size = 20 }: { size?: number }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden="true">
-      <path d="M12 3C9.24 3 7 5.24 7 8c0 .18.01.36.03.54A5.5 5.5 0 0 0 2 14a5.5 5.5 0 0 0 5.5 5.5h9A4.5 4.5 0 0 0 21 15a4.5 4.5 0 0 0-4.16-4.49A5.002 5.002 0 0 0 12 3Z" fill="currentColor" opacity="0.3" />
-      <path d="M12 15V9m0 6-2.5-2.5M12 15l2.5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <svg viewBox="0 0 24 24" fill="none" width={size} height={size} aria-hidden="true" style={{ color: "#fff" }}>
+      <path d="M12 3C9.24 3 7 5.24 7 8c0 .18.01.36.03.54A5.5 5.5 0 0 0 2 14a5.5 5.5 0 0 0 5.5 5.5h9A4.5 4.5 0 0 0 21 15a4.5 4.5 0 0 0-4.16-4.49A5.002 5.002 0 0 0 12 3Z" fill="currentColor" opacity="0.55" />
+      <path d="M12 15.5V9.5m0 6-2.5-2.5M12 15.5l2.5-2.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -868,25 +1170,26 @@ function FolderModal({ mode, initialValue, onConfirm, onClose }: { mode: "create
         exit={{ scale: 0.88, opacity: 0, y: 20 }}
         transition={{ type: "spring", damping: 22, stiffness: 340 }}
         className="w-full max-w-sm rounded-2xl p-6"
-        style={{ border: "1px solid rgba(0,212,255,0.2)", background: "rgba(7,13,26,0.97)", boxShadow: "0 0 40px rgba(0,212,255,0.1)" }}
+        style={{ border: "1px solid rgba(0,229,255,0.18)", background: "rgba(6,11,20,0.98)", boxShadow: "0 0 50px rgba(0,229,255,0.08), 0 0 100px rgba(139,92,246,0.05)" }}
         onClick={e => e.stopPropagation()}
       >
-        <h2 className="text-lg font-bold mb-4" style={{ color: "#e2e8f0" }}>{mode === "create" ? "New Folder" : "Rename Folder"}</h2>
+        <h2 className="text-[17px] font-[800] mb-1 gradient-text">{mode === "create" ? "New Folder" : "Rename Folder"}</h2>
+        <p className="text-[12px] mb-4" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>{mode === "create" ? "Enter a name for the new folder" : "Enter a new name"}</p>
         <input
           autoFocus
           value={value}
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter" && value.trim()) onConfirm(value.trim()); }}
-          placeholder="Folder name"
-          className="w-full rounded-xl px-4 py-3 text-sm outline-none transition"
-          style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(0,212,255,0.25)", color: "#e2e8f0" }}
+          placeholder="folder-name"
+          className="w-full rounded-xl px-4 py-3 text-[13px] outline-none transition"
+          style={{ background: "rgba(0,229,255,0.04)", border: "1px solid var(--cyan-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono),monospace" }}
         />
         <div className="mt-4 flex gap-3 justify-end">
-          <button onClick={onClose} className="rounded-xl px-4 py-2 text-sm transition" style={{ border: "1px solid rgba(255,255,255,0.1)", color: "#64748b" }}>Cancel</button>
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-[13px] font-[500] transition" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>Cancel</button>
           <button
             onClick={() => { if (value.trim()) onConfirm(value.trim()); }}
-            className="btn-ripple rounded-xl px-5 py-2 text-sm font-semibold transition"
-            style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: "0 0 14px rgba(0,212,255,0.3)" }}
+            className="btn-ripple rounded-xl px-5 py-2 text-[13px] font-[700] transition"
+            style={{ background: "linear-gradient(135deg,var(--cyan),var(--violet))", color: "#fff", boxShadow: "0 0 18px rgba(0,229,255,0.25)" }}
           >
             {mode === "create" ? "Create" : "Save"}
           </button>
@@ -898,51 +1201,52 @@ function FolderModal({ mode, initialValue, onConfirm, onClose }: { mode: "create
 
 function AboutPanel() {
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="grid gap-5 lg:grid-cols-2">
       {/* About card */}
-      <div className="rounded-2xl border p-6" style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
+      <div className="rounded-2xl border p-6" style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}>
         <div className="flex items-center gap-4 mb-5">
-          <div className="grid h-14 w-14 place-items-center rounded-2xl" style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", boxShadow: "0 0 24px rgba(0,212,255,0.4)" }}>
-            <CloudIcon />
+          <div className="grid h-12 w-12 place-items-center rounded-2xl shrink-0"
+            style={{ background: "linear-gradient(135deg,var(--cyan),var(--violet))", boxShadow: "0 0 28px rgba(0,229,255,0.35), 0 0 56px rgba(139,92,246,0.15)" }}>
+            <CloudIcon size={22} />
           </div>
           <div>
-            <h2 className="text-xl font-bold" style={{ background: "linear-gradient(90deg,#fff,#00d4ff)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>TeleDrive</h2>
-            <p className="text-sm" style={{ color: "#475569" }}>Personal cloud powered by Telegram</p>
+            <h2 className="text-[19px] font-[800] gradient-text">TeleDrive</h2>
+            <p className="text-[12px]" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>Personal cloud · Telegram backend</p>
           </div>
         </div>
-        <p className="text-sm leading-relaxed" style={{ color: "#94a3b8" }}>
-          TeleDrive lets you store unlimited files using your personal Telegram account as a backend. Files are securely sent to a private Telegram channel and served back through a fast API — completely free, with no storage limits beyond Telegram's own.
+        <p className="text-[13px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+          TeleDrive routes files to your personal Telegram account as a backend. Files are sent to a private channel and served via a fast API — completely free, with no limits beyond Telegram&apos;s own.
         </p>
-        <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="mt-4 grid grid-cols-2 gap-2.5">
           {[["Storage", "Unlimited*"], ["Backend", "Telegram MTProto"], ["Hosting", "Render.com"], ["Auth", "JWT + Bot OTP"]].map(([label, val]) => (
-            <div key={label} className="rounded-xl p-3" style={{ background: "rgba(0,212,255,0.05)", border: "1px solid rgba(0,212,255,0.1)" }}>
-              <p className="text-xs" style={{ color: "#475569" }}>{label}</p>
-              <p className="text-sm font-semibold mt-0.5" style={{ color: "#e2e8f0" }}>{val}</p>
+            <div key={label} className="rounded-xl p-3" style={{ background: "rgba(0,229,255,0.04)", border: "1px solid var(--cyan-border)" }}>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>{label}</p>
+              <p className="text-[13px] font-[600] mt-1" style={{ color: "var(--text-primary)" }}>{val}</p>
             </div>
           ))}
         </div>
-        <p className="mt-3 text-xs" style={{ color: "#334155" }}>* Subject to Telegram's per-file limits (2GB bot / 4GB personal)</p>
+        <p className="mt-3 text-[11px]" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>* Bot ≤2GB / MTProto ≤4GB per file</p>
       </div>
 
       {/* Contact card */}
-      <div className="rounded-2xl border p-6" style={{ borderColor: "rgba(0,212,255,0.15)", background: "rgba(255,255,255,0.03)", backdropFilter: "blur(12px)" }}>
-        <h2 className="text-lg font-bold mb-2" style={{ color: "#e2e8f0" }}>Contact Developer</h2>
-        <p className="text-sm mb-5" style={{ color: "#64748b" }}>Built and maintained by Mohit Gautam. Feel free to reach out for feedback, bugs, or collaborations.</p>
+      <div className="rounded-2xl border p-6" style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}>
+        <h2 className="text-[17px] font-[800] mb-1" style={{ color: "var(--text-primary)" }}>Contact Developer</h2>
+        <p className="text-[13px] mb-5" style={{ color: "var(--text-secondary)" }}>Built by Mohit Gautam. Reach out for feedback, bugs, or collaborations.</p>
         <a
           href="mailto:mohitgautam905835@gmail.com"
-          className="btn-ripple flex items-center gap-3 rounded-xl px-5 py-3.5 font-semibold transition active:scale-[0.97]"
-          style={{ background: "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: "0 0 20px rgba(0,212,255,0.3)", cursor: "pointer", textDecoration: "none" }}
+          className="btn-ripple flex items-center gap-3 rounded-xl px-5 py-3.5 text-[13px] font-[700] tracking-wide transition active:scale-[0.97]"
+          style={{ background: "linear-gradient(135deg,var(--cyan),var(--violet))", color: "#fff", boxShadow: "0 0 24px rgba(0,229,255,0.25), 0 0 48px rgba(139,92,246,0.1)", textDecoration: "none" }}
         >
-          <Mail className="h-5 w-5" />
+          <Mail className="h-4 w-4" />
           mohitgautam905835@gmail.com
         </a>
-        <div className="mt-4 rounded-xl p-4" style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.1)" }}>
-          <p className="text-sm font-semibold mb-1" style={{ color: "#e2e8f0" }}>Response time</p>
-          <p className="text-sm" style={{ color: "#64748b" }}>Usually within 24–48 hours. Include "TeleDrive" in the subject line.</p>
+        <div className="mt-4 rounded-xl p-4" style={{ background: "var(--cyan-dim)", border: "1px solid var(--cyan-border)" }}>
+          <p className="text-[12px] font-[600] mb-1" style={{ color: "var(--cyan)" }}>Response time</p>
+          <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Usually within 24–48 hours. Include &ldquo;TeleDrive&rdquo; in the subject line.</p>
         </div>
-        <div className="mt-4 rounded-xl p-4" style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.1)" }}>
-          <p className="text-sm font-semibold mb-1" style={{ color: "#fbbf24" }}>Open Source</p>
-          <p className="text-sm" style={{ color: "#64748b" }}>This project is built with Next.js, Prisma, Framer Motion, and the Telegram Bot/MTProto APIs.</p>
+        <div className="mt-3 rounded-xl p-4" style={{ background: "rgba(139,92,246,0.06)", border: "1px solid var(--violet-border)" }}>
+          <p className="text-[12px] font-[600] mb-1" style={{ color: "#a78bfa" }}>Stack</p>
+          <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Next.js · Prisma · Framer Motion · Telegram Bot / MTProto APIs</p>
         </div>
       </div>
     </div>
@@ -971,17 +1275,17 @@ function ConfirmModal({ title, body, danger, onConfirm, onClose }: { title: stri
         exit={{ scale: 0.88, opacity: 0, y: 20 }}
         transition={{ type: "spring", damping: 22, stiffness: 340 }}
         className="w-full max-w-sm rounded-2xl p-6"
-        style={{ border: `1px solid ${danger ? "rgba(239,68,68,0.25)" : "rgba(0,212,255,0.2)"}`, background: "rgba(7,13,26,0.97)", boxShadow: danger ? "0 0 40px rgba(239,68,68,0.08)" : "0 0 40px rgba(0,212,255,0.08)" }}
+        style={{ border: `1px solid ${danger ? "rgba(255,77,109,0.25)" : "rgba(0,229,255,0.18)"}`, background: "rgba(6,11,20,0.98)", boxShadow: danger ? "0 0 50px rgba(255,77,109,0.07)" : "0 0 50px rgba(0,229,255,0.07)" }}
         onClick={e => e.stopPropagation()}
       >
-        <h2 className="text-lg font-bold mb-2" style={{ color: danger ? "#f87171" : "#e2e8f0" }}>{title}</h2>
-        <p className="text-sm mb-5" style={{ color: "#94a3b8" }}>{body}</p>
+        <h2 className="text-[17px] font-[800] mb-2" style={{ color: danger ? "var(--danger)" : "var(--text-primary)" }}>{title}</h2>
+        <p className="text-[13px] mb-5 leading-relaxed" style={{ color: "var(--text-secondary)" }}>{body}</p>
         <div className="flex gap-3 justify-end">
-          <button onClick={onClose} className="rounded-xl px-4 py-2 text-sm transition" style={{ border: "1px solid rgba(255,255,255,0.1)", color: "#64748b" }}>Cancel</button>
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-[13px] font-[500] transition" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>Cancel</button>
           <button
             onClick={onConfirm}
-            className="btn-ripple rounded-xl px-5 py-2 text-sm font-semibold transition active:scale-[0.96]"
-            style={{ background: danger ? "linear-gradient(135deg,#ef4444,#b91c1c)" : "linear-gradient(135deg,#00d4ff,#0284c7)", color: "#fff", boxShadow: danger ? "0 0 14px rgba(239,68,68,0.3)" : "0 0 14px rgba(0,212,255,0.3)" }}
+            className="btn-ripple rounded-xl px-5 py-2 text-[13px] font-[700] transition active:scale-[0.96]"
+            style={{ background: danger ? "linear-gradient(135deg,#ff4d6d,#c0152b)" : "linear-gradient(135deg,var(--cyan),var(--violet))", color: "#fff", boxShadow: danger ? "0 0 18px rgba(255,77,109,0.3)" : "0 0 18px rgba(0,229,255,0.25)" }}
           >
             Confirm
           </button>
@@ -991,96 +1295,184 @@ function ConfirmModal({ title, body, danger, onConfirm, onClose }: { title: stri
   );
 }
 
-function PreviewModal({ file, onClose }: { file: DriveFile; onClose: () => void }) {
+function PreviewModal({ file, allFiles, onClose, onNavigate }: {
+  file: DriveFile;
+  allFiles: DriveFile[];
+  onClose: () => void;
+  onNavigate: (file: DriveFile) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const isImage = file.mimeType.startsWith("image/") && !file.mimeType.includes("heic") && !file.mimeType.includes("heif");
   const isVideo = file.mimeType.startsWith("video/");
   const previewUrl = isImage ? `/api/preview/${file.id}` : isVideo ? `/api/stream/${file.id}` : "";
   const Icon = isImage ? Image : isVideo ? Video : FileIcon;
 
+  const previewableFiles = allFiles.filter(f => f.mimeType.startsWith("image/") || f.mimeType.startsWith("video/"));
+  const currentIndex = previewableFiles.findIndex(f => f.id === file.id);
+  const hasPrev = currentIndex > 0;
+  const hasNext = currentIndex < previewableFiles.length - 1;
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const handleFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handleFsChange);
+    return () => document.removeEventListener("fullscreenchange", handleFsChange);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { if (isFullscreen) document.exitFullscreen(); else onClose(); return; }
+      if (e.key === "f" || e.key === "F") toggleFullscreen();
+      if ((e.key === "ArrowLeft" || e.key === "ArrowUp") && hasPrev) onNavigate(previewableFiles[currentIndex - 1]);
+      if ((e.key === "ArrowRight" || e.key === "ArrowDown") && hasNext) onNavigate(previewableFiles[currentIndex + 1]);
+    };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, isFullscreen, hasPrev, hasNext, currentIndex, previewableFiles, onNavigate]);
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      containerRef.current?.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+  }
 
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.18 }}
+      transition={{ duration: 0.15 }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
-      style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)" }}
+      style={{ background: "rgba(0,0,0,0.88)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}
       onClick={onClose}
     >
       <motion.div
+        ref={containerRef}
         initial={{ scale: 0.9, opacity: 0, y: 40 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.9, opacity: 0, y: 40 }}
-        transition={{ type: "spring", damping: 22, stiffness: 320 }}
+        transition={{ type: "spring", stiffness: 380, damping: 30 }}
         className="relative w-full sm:max-w-3xl rounded-t-3xl sm:rounded-2xl overflow-hidden"
-        style={{ border: "1px solid rgba(0,212,255,0.18)", background: "rgba(7,13,26,0.97)", maxHeight: "92vh" }}
+        style={{ border: "1px solid var(--cyan-border)", background: "var(--bg-1)", maxHeight: "92vh", boxShadow: "0 0 60px rgba(0,229,255,0.08), 0 32px 80px rgba(0,0,0,0.5)" }}
         onClick={e => e.stopPropagation()}
       >
         {/* Handle bar for mobile */}
         <div className="flex justify-center pt-3 pb-1 sm:hidden">
-          <div className="h-1 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.2)" }} />
+          <div className="h-1 w-10 rounded-full" style={{ background: "var(--border-med)" }} />
         </div>
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        <div className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: "1px solid var(--border-dim)" }}>
           <div className="min-w-0">
-            <h3 className="truncate font-semibold text-sm" style={{ color: "#e2e8f0" }}>{file.originalName}</h3>
-            <p className="text-xs" style={{ color: "#475569" }}>{formatBytes(file.size)} · {file.storageMode} · {file.mimeType}</p>
+            <h3 className="truncate font-[700] text-sm" style={{ color: "var(--text-primary)" }}>{file.originalName}</h3>
+            <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>{formatBytes(file.size)} · {file.storageMode} · {file.mimeType}</p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               onClick={() => { window.location.href = `/api/download/${file.id}`; }}
-              className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition"
-              style={{ border: "1px solid rgba(0,212,255,0.3)", background: "rgba(0,212,255,0.08)", color: "#00d4ff" }}
+              className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-[700] transition active:scale-95"
+              style={{ border: "1px solid var(--cyan-border)", background: "var(--cyan-dim)", color: "var(--cyan)" }}
             >
               <Download className="h-3.5 w-3.5" /> Download
             </button>
             <button
+              onClick={toggleFullscreen}
+              className="grid h-8 w-8 place-items-center rounded-xl transition active:scale-90"
+              style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--cyan)"; (e.currentTarget as HTMLElement).style.borderColor = "var(--cyan-border)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)"; (e.currentTarget as HTMLElement).style.borderColor = "var(--border-med)"; }}
+              title="Toggle fullscreen (F)"
+            >
+              {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+            </button>
+            <button
               onClick={onClose}
-              className="grid h-8 w-8 place-items-center rounded-xl transition"
-              style={{ border: "1px solid rgba(255,255,255,0.1)", color: "#64748b" }}
+              className="grid h-8 w-8 place-items-center rounded-xl transition active:scale-90"
+              style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--danger)"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(255,77,109,0.35)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)"; (e.currentTarget as HTMLElement).style.borderColor = "var(--border-med)"; }}
             >
               <X className="h-4 w-4" />
             </button>
           </div>
         </div>
         {/* Content */}
-        <div className="flex items-center justify-center overflow-auto" style={{ minHeight: 220, maxHeight: "74vh", padding: "1rem" }}>
-          {isImage ? (
-            <motion.img
-              initial={{ opacity: 0, scale: 0.96 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.3 }}
-              src={previewUrl}
-              alt={file.originalName}
-              className="rounded-xl object-contain"
-              style={{ maxWidth: "100%", maxHeight: "70vh" }}
-            />
-          ) : isVideo ? (
-            <video
-              src={previewUrl}
-              controls
-              autoPlay
-              className="rounded-xl"
-              style={{ maxWidth: "100%", maxHeight: "70vh" }}
-            />
-          ) : (
-            <div className="text-center py-8">
-              <div className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-2xl" style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.15)" }}>
-                <Icon className="h-10 w-10" style={{ color: "#00d4ff" }} />
-              </div>
-              <p className="font-semibold" style={{ color: "#94a3b8" }}>No preview available</p>
-              {(file.mimeType.includes("heic") || file.mimeType.includes("heif")) && (
-                <p className="mt-1 text-sm" style={{ color: "#475569" }}>HEIC/HEIF isn't supported by browsers. Download to view.</p>
-              )}
-            </div>
+        <div className="relative flex items-center justify-center overflow-auto" style={{ minHeight: 220, maxHeight: "74vh", padding: "1rem", background: "var(--bg-0)" }}>
+          <AnimatePresence mode="wait">
+            {isImage ? (
+              <motion.img
+                key={file.id}
+                initial={{ opacity: 0, scale: 0.92 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.92 }}
+                transition={{ type: "spring", stiffness: 380, damping: 28 }}
+                src={previewUrl}
+                alt={file.originalName}
+                className="rounded-xl object-contain"
+                style={{ maxWidth: "100%", maxHeight: "70vh" }}
+              />
+            ) : isVideo ? (
+              <motion.video
+                key={file.id}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                src={previewUrl}
+                controls
+                autoPlay
+                className="rounded-xl"
+                style={{ maxWidth: "100%", maxHeight: "70vh" }}
+              />
+            ) : (
+              <motion.div
+                key="no-preview"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-center py-8"
+              >
+                <div className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-2xl" style={{ background: "var(--cyan-dim)", border: "1px solid var(--cyan-border)" }}>
+                  <Icon className="h-10 w-10" style={{ color: "var(--cyan)" }} />
+                </div>
+                <p className="font-[700]" style={{ color: "var(--text-secondary)" }}>No preview available</p>
+                {(file.mimeType.includes("heic") || file.mimeType.includes("heif")) && (
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>HEIC/HEIF isn&apos;t supported by browsers. Download to view.</p>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {/* Prev / Next nav arrows */}
+          {hasPrev && (
+            <motion.button
+              whileHover={{ scale: 1.1, x: -2 }}
+              whileTap={{ scale: 0.92 }}
+              onClick={() => onNavigate(previewableFiles[currentIndex - 1])}
+              className="absolute left-2 top-1/2 -translate-y-1/2 grid h-10 w-10 place-items-center rounded-xl"
+              style={{ background: "rgba(6,11,20,0.8)", border: "1px solid var(--border-med)", color: "var(--text-primary)", backdropFilter: "blur(8px)" }}
+              aria-label="Previous file"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </motion.button>
+          )}
+          {hasNext && (
+            <motion.button
+              whileHover={{ scale: 1.1, x: 2 }}
+              whileTap={{ scale: 0.92 }}
+              onClick={() => onNavigate(previewableFiles[currentIndex + 1])}
+              className="absolute right-2 top-1/2 -translate-y-1/2 grid h-10 w-10 place-items-center rounded-xl"
+              style={{ background: "rgba(6,11,20,0.8)", border: "1px solid var(--border-med)", color: "var(--text-primary)", backdropFilter: "blur(8px)" }}
+              aria-label="Next file"
+            >
+              <ChevronRight className="h-5 w-5" />
+            </motion.button>
           )}
         </div>
+        {/* Counter */}
+        {previewableFiles.length > 1 && (
+          <div className="flex justify-center py-2 text-[11px]" style={{ color: "var(--text-muted)", borderTop: "1px solid var(--border-dim)", fontFamily: "var(--font-mono),monospace" }}>
+            {currentIndex + 1} / {previewableFiles.length} &nbsp;·&nbsp; ← → navigate &nbsp;·&nbsp; F fullscreen
+          </div>
+        )}
       </motion.div>
     </motion.div>
   );
