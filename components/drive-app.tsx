@@ -143,6 +143,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       .catch(() => setAuthStatus("failed"));
   }, []);
 
+  useEffect(() => {
+    if (!uploading) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Upload in progress — leaving will cancel it.";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [uploading]);
+
   const uploadFiles = useCallback(
     async (acceptedFiles: File[]) => {
       const maxSize = 2 * 1024 * 1024 * 1024;
