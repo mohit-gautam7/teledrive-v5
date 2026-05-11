@@ -47,7 +47,7 @@ export function setSessionCookie(response: NextResponse, token: string) {
   response.cookies.set(AUTH_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" && process.env.SECURE_COOKIES !== "false",
     path: "/",
     maxAge: 60 * 60 * 24 * 30
   });
@@ -57,7 +57,7 @@ export function clearSessionCookie(response: NextResponse) {
   response.cookies.set(AUTH_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" && process.env.SECURE_COOKIES !== "false",
     path: "/",
     maxAge: 0
   });
