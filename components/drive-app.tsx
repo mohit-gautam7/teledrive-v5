@@ -164,11 +164,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "pending" as const }));
       setUploadQueue(items);
       setUploading(true);
-      let anyError = false;
-      for (let i = 0; i < acceptedFiles.length; i++) {
-        const file = acceptedFiles[i];
-        const itemId = items[i].id;
-        try {
+      const results = await Promise.allSettled(
+        acceptedFiles.map(async (file, i) => {
+          const itemId = items[i].id;
           setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "uploading" } : it));
           const form = new FormData();
           form.append("file", file);
@@ -177,14 +175,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent } : it));
           });
           setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: 100, status: "done" } : it));
-        } catch (error) {
-          anyError = true;
-          const msg = error instanceof Error ? error.message : "Upload failed";
+        })
+      );
+      results.forEach((result, i) => {
+        if (result.status === "rejected") {
+          const itemId = items[i].id;
+          const msg = result.reason instanceof Error ? result.reason.message : "Upload failed";
           setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "error", error: msg } : it));
         }
-      }
+      });
       await refresh();
       setUploading(false);
+      const anyError = results.some(r => r.status === "rejected");
       if (!anyError) {
         setTimeout(() => setUploadQueue([]), 2500);
       }
