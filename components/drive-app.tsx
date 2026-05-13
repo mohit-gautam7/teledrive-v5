@@ -80,7 +80,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [view, setView] = useState<"grid" | "list">("grid");
   const [appView, setAppView] = useState<AppView>("files");
   const [uploading, setUploading] = useState(false);
-  const [uploadQueue, setUploadQueue] = useState<{ id: string; name: string; size: number; percent: number; status: "pending" | "uploading" | "done" | "error"; error?: string }[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<{ id: string; name: string; size: number; percent: number; status: "pending" | "uploading" | "done" | "error"; error?: string; file: File }[]>([]);
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{ title: string; body: string; danger?: boolean; onConfirm: () => void } | null>(null);
@@ -153,29 +153,40 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return () => window.removeEventListener("beforeunload", handler);
   }, [uploading]);
 
+  const uploadSingleFile = useCallback(async (itemId: string, file: File) => {
+    setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "uploading", percent: 0, error: undefined } : it));
+    const form = new FormData();
+    form.append("file", file);
+    if (folderId) form.append("folderId", folderId);
+    await uploadFile<{ routing: { storageMode: "BOT" | "PERSONAL" } }>("/api/upload", form, percent => {
+      setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent } : it));
+    });
+    setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: 100, status: "done" } : it));
+  }, [folderId]);
+
+  const retryUpload = useCallback(async (itemId: string, file: File) => {
+    try {
+      await uploadSingleFile(itemId, file);
+      refresh();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Upload failed";
+      setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "error", error: msg } : it));
+    }
+  }, [uploadSingleFile, refresh]);
+
   const uploadFiles = useCallback(
     async (acceptedFiles: File[]) => {
-      const maxSize = 2 * 1024 * 1024 * 1024;
-      const tooLarge = acceptedFiles.find(f => f.size > maxSize);
+      const botLimit = 50 * 1024 * 1024;
+      const tooLarge = acceptedFiles.find(f => f.size > botLimit);
       if (tooLarge) {
-        toast.error(`"${tooLarge.name}" exceeds Telegram's 2 GB file limit.`);
+        toast.error(`"${tooLarge.name}" exceeds the 50 MB bot upload limit.`);
         return;
       }
-      const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "pending" as const }));
+      const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "pending" as const, file: f }));
       setUploadQueue(items);
       setUploading(true);
       const results = await Promise.allSettled(
-        acceptedFiles.map(async (file, i) => {
-          const itemId = items[i].id;
-          setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "uploading" } : it));
-          const form = new FormData();
-          form.append("file", file);
-          if (folderId) form.append("folderId", folderId);
-          await uploadFile<{ routing: { storageMode: "BOT" | "PERSONAL" } }>("/api/upload", form, percent => {
-            setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent } : it));
-          });
-          setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: 100, status: "done" } : it));
-        })
+        acceptedFiles.map((file, i) => uploadSingleFile(items[i].id, file))
       );
       results.forEach((result, i) => {
         if (result.status === "rejected") {
@@ -191,7 +202,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         setTimeout(() => setUploadQueue([]), 2500);
       }
     },
-    [folderId, refresh]
+    [uploadSingleFile, refresh]
   );
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
@@ -455,7 +466,29 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               className="mt-3 overflow-hidden rounded-xl border"
               style={{ borderColor: "var(--cyan-border)", background: "rgba(0,229,255,0.04)" }}
             >
-              <div className="max-h-52 overflow-y-auto p-2 space-y-1.5">
+              {(() => {
+                const done = uploadQueue.filter(i => i.status === "done").length;
+                const failed = uploadQueue.filter(i => i.status === "error").length;
+                const total = uploadQueue.length;
+                return (
+                  <div className="flex items-center justify-between px-3 pt-2.5 pb-1.5 text-xs" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                    <span style={{ color: "#94a3b8" }}>
+                      {done}/{total} done
+                      {failed > 0 && <span style={{ color: "#f87171", marginLeft: 6 }}>{failed} failed</span>}
+                    </span>
+                    {failed > 0 && (
+                      <button
+                        onClick={() => uploadQueue.filter(i => i.status === "error").forEach(i => retryUpload(i.id, i.file))}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium"
+                        style={{ background: "rgba(96,165,250,0.15)", color: "#60a5fa" }}
+                      >
+                        <RotateCw className="h-3 w-3" /> Retry all failed
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+              <div className="max-h-48 overflow-y-auto p-2 space-y-1.5">
                 {uploadQueue.map(item => (
                   <div key={item.id} className="rounded-lg p-2.5" style={{ background: "rgba(255,255,255,0.03)" }}>
                     <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
@@ -465,9 +498,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                         {item.status === "uploading" && <span style={{ color: "var(--cyan)", fontFamily: "var(--font-mono),monospace", fontSize: "10px" }}>{item.percent}%</span>}
                         {item.status === "done" && <CheckCircle2 className="h-3.5 w-3.5" style={{ color: "#34d399" }} />}
                         {item.status === "error" && (
-                          <button onClick={() => setUploadQueue(q => q.filter(it => it.id !== item.id))}>
-                            <X className="h-3.5 w-3.5" style={{ color: "#f87171" }} />
-                          </button>
+                          <>
+                            <button onClick={() => retryUpload(item.id, item.file)} title="Retry">
+                              <RotateCw className="h-3.5 w-3.5" style={{ color: "#60a5fa" }} />
+                            </button>
+                            <button onClick={() => setUploadQueue(q => q.filter(it => it.id !== item.id))}>
+                              <X className="h-3.5 w-3.5" style={{ color: "#f87171" }} />
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
@@ -1097,6 +1135,44 @@ function FileSkeletonGrid({ view }: { view: "grid" | "list" }) {
 }
 
 function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setTheme: (theme: ThemeMode) => void; authStatus: "connected" | "pending" | "failed" }) {
+  const [sessionInput, setSessionInput] = useState("");
+  const [sessionSaved, setSessionSaved] = useState<boolean | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/settings/storage").then(r => r.json()).then((d: { configured: { personal: boolean } }) => {
+      setSessionSaved(d.configured.personal);
+    }).catch(() => {});
+  }, []);
+
+  async function saveSession() {
+    if (!sessionInput.trim()) return;
+    setSessionLoading(true);
+    try {
+      await fetch("/api/settings/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramSession: sessionInput.trim() }) });
+      setSessionSaved(true);
+      setSessionInput("");
+      toast.success("Session saved — large file uploads enabled.");
+    } catch {
+      toast.error("Failed to save session.");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
+  async function clearSession() {
+    setSessionLoading(true);
+    try {
+      await fetch("/api/settings/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramSession: "" }) });
+      setSessionSaved(false);
+      toast.success("Session cleared.");
+    } catch {
+      toast.error("Failed to clear session.");
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -1145,6 +1221,54 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
           <RotateCw className="h-4 w-4" />
           Reconnect Telegram
         </button>
+      </section>
+
+      <section className="rounded-2xl border p-5 lg:col-span-2" style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="font-[700] text-[15px]" style={{ color: "var(--text-primary)" }}>Large File Uploads (up to 2 GB)</h2>
+          {sessionSaved === true && (
+            <span className="flex items-center gap-1.5 text-[12px] font-[600]" style={{ color: "#34d399" }}>
+              <CheckCircle2 className="h-3.5 w-3.5" /> Session active
+            </span>
+          )}
+          {sessionSaved === false && (
+            <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>No session configured</span>
+          )}
+        </div>
+        <p className="text-[13px] leading-relaxed mb-3" style={{ color: "var(--text-muted)" }}>
+          Paste your Telegram session string below to enable MTProto uploads for files over 50 MB. For files over 100 MB always use the VM URL, not Render.
+        </p>
+        <textarea
+          value={sessionInput}
+          onChange={e => setSessionInput(e.target.value)}
+          placeholder="Paste session string here…"
+          rows={3}
+          className="w-full rounded-xl px-4 py-3 text-[11px] outline-none transition resize-none"
+          style={{ background: "rgba(0,229,255,0.04)", border: "1px solid var(--cyan-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono),monospace", filter: sessionInput ? "blur(3px)" : "none" }}
+          onFocus={e => (e.target.style.filter = "none")}
+          onBlur={e => { if (sessionInput) e.target.style.filter = "blur(3px)"; }}
+        />
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={saveSession}
+            disabled={!sessionInput.trim() || sessionLoading}
+            className="btn-ripple inline-flex min-h-9 items-center gap-1.5 rounded-xl px-4 text-[13px] font-[600] transition active:scale-[0.96] disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg,var(--cyan),var(--violet))", color: "#fff" }}
+          >
+            {sessionLoading ? <RotateCw className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+            Save Session
+          </button>
+          {sessionSaved && (
+            <button
+              onClick={clearSession}
+              disabled={sessionLoading}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border px-4 text-[13px] font-[500] transition active:scale-[0.96] disabled:opacity-40"
+              style={{ borderColor: "var(--border-med)", color: "var(--text-secondary)" }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </section>
     </motion.div>
   );

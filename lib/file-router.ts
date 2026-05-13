@@ -1,12 +1,10 @@
 import { StorageMode } from "@prisma/client";
 
-const TWO_GB = 2 * 1024 * 1024 * 1024;
+const FIFTY_MB = 50 * 1024 * 1024;
 
-export function decideStorage(mimeType: string, size: number) {
-  // Use BOT for everything up to 2GB — MTProto only if session is configured and file exceeds bot limit
-  const hasSession = !!process.env.TELEGRAM_SESSION;
-  if (hasSession && size > TWO_GB) {
-    return { storageMode: StorageMode.PERSONAL, reason: "Files over 2GB use personal Telegram storage." };
+export function decideStorage(mimeType: string, size: number, hasPersonalSession: boolean) {
+  if (hasPersonalSession && size > FIFTY_MB) {
+    return { storageMode: StorageMode.PERSONAL, reason: "Files over 50 MB use personal Telegram storage." };
   }
   return { storageMode: StorageMode.BOT, reason: "Using bot channel storage." };
 }
