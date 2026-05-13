@@ -176,10 +176,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const uploadFiles = useCallback(
     async (acceptedFiles: File[]) => {
-      const botLimit = 50 * 1024 * 1024;
-      const tooLarge = acceptedFiles.find(f => f.size > botLimit);
+      const tooLarge = acceptedFiles.find(f => f.size > 2 * 1024 * 1024 * 1024);
       if (tooLarge) {
-        toast.error(`"${tooLarge.name}" exceeds the 50 MB bot upload limit.`);
+        toast.error(`"${tooLarge.name}" exceeds Telegram's 2 GB file limit.`);
         return;
       }
       const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "pending" as const, file: f }));
