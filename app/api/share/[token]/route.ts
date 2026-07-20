@@ -34,7 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: { token: 
     });
     return NextResponse.json({
       folder: { id: s.folder.id, name: s.folder.name },
-      files: files.map(f => toPublicFile(f))
+      files: files.map((f: Parameters<typeof toPublicFile>[0]) => toPublicFile(f))
     });
   }
 

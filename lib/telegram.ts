@@ -1,74 +1,57 @@
-import TelegramBot from "node-telegram-bot-api";
-import { Api, TelegramClient } from "telegram";
+import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
-import { CustomFile } from "telegram/client/uploads";
 import { env, requireEnv } from "@/lib/env";
 
-export async function uploadWithBot(file: File, botToken?: string | null, channelId?: string | null) {
-  const token = botToken || env.BOT_TOKEN;
-  const chatId = channelId || env.BOT_CHANNEL_ID;
-  if (!token || !chatId) {
-    throw new Error("Bot token and channel id are required for bot storage.");
+/**
+ * LEGACY ONLY — MTProto access for files uploaded by earlier versions of
+ * TeleDrive (owner's Saved Messages / personal-session uploads).
+ * All new storage goes through lib/telegram-bot.ts (Bot API, per-user chat).
+ */
+
+const _clients = new Map<string, TelegramClient>();
+
+async function getLegacyClient(sessionOverride?: string | null): Promise<TelegramClient> {
+  const sessionString = sessionOverride || env.TELEGRAM_SESSION;
+  if (!sessionString) {
+    throw new Error(
+      "This file was stored with a legacy Telegram session that is not configured. Add TELEGRAM_SESSION (or your session in Settings) to recover it."
+    );
   }
-  const bot = new TelegramBot(token);
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const message = await bot.sendDocument(
-    chatId,
-    bytes,
-    {},
-    {
-      filename: file.name,
-      contentType: file.type || "application/octet-stream"
-    }
-  );
-  const document = message.document;
-  return {
-    fileId: document?.file_id,
-    messageId: String(message.message_id),
-    filePath: undefined
-  };
-}
+  const cached = _clients.get(sessionString);
+  if (cached && cached.connected) return cached;
 
-export async function getBotFileUrl(fileId: string, botToken?: string | null) {
-  const token = botToken || env.BOT_TOKEN;
-  if (!token) throw new Error("Bot token is required.");
-  const bot = new TelegramBot(token);
-  return bot.getFileLink(fileId);
-}
-
-async function createTelegramClient(session?: string | null) {
   const apiId = Number(requireEnv("API_ID"));
   const apiHash = String(requireEnv("API_HASH"));
-  const sessionString = session || env.TELEGRAM_SESSION;
-  if (!sessionString) {
-    throw new Error("TELEGRAM_SESSION is required for personal storage uploads.");
-  }
   const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
     connectionRetries: 3
   });
   await client.connect();
+  _clients.set(sessionString, client);
   return client;
 }
 
-export async function uploadWithPersonalTelegram(file: File, session?: string | null) {
-  const client = await createTelegramClient(session);
-  const bytes = Buffer.from(await file.arrayBuffer());
-  const customFile = new CustomFile(file.name, bytes.length, file.name, bytes);
-  const uploaded = await client.uploadFile({ file: customFile, workers: 1 });
-  const result = await client.invoke(
-    new Api.messages.SendMedia({
-      peer: "me",
-      media: new Api.InputMediaUploadedDocument({
-        file: uploaded,
-        mimeType: file.type || "application/octet-stream",
-        attributes: [new Api.DocumentAttributeFilename({ fileName: file.name })]
-      }),
-      message: file.name,
-      randomId: Date.now() as never
-    })
-  );
-  const update = Array.isArray((result as { updates?: unknown[] }).updates)
-    ? ((result as { updates: Array<{ message?: { id?: number } }> }).updates.find(item => item.message?.id))
-    : undefined;
-  return { messageId: update?.message?.id ? String(update.message.id) : undefined };
+export function legacySessionAvailable(userSession?: string | null) {
+  return Boolean(env.TELEGRAM_SESSION || userSession);
+}
+
+export async function downloadChunkFromTelegram(msgId: number, sessionOverride?: string | null): Promise<Buffer> {
+  const client = await getLegacyClient(sessionOverride);
+  const msgs = await client.getMessages("me", { ids: [msgId] });
+  const msg = msgs[0];
+  if (!msg?.media) throw new Error(`No media on message ${msgId}`);
+  const data = (await client.downloadMedia(msg.media, {})) as Buffer | null;
+  if (!data) throw new Error(`downloadMedia returned null for msg ${msgId}`);
+  return Buffer.isBuffer(data) ? data : Buffer.from(data);
+}
+
+export async function deleteChunkMessages(msgIds: number[], sessionOverride?: string | null): Promise<void> {
+  if (!msgIds.length) return;
+  try {
+    const client = await getLegacyClient(sessionOverride);
+    for (let i = 0; i < msgIds.length; i += 100) {
+      await client.deleteMessages("me", msgIds.slice(i, i + 100), { revoke: true });
+    }
+  } catch (err) {
+    console.error("[deleteChunkMessages] failed:", err);
+  }
 }

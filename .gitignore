@@ -114,3 +114,12 @@ temp/
 client/public/__manus__/version.json
 
 .vercel
+
+# Local deploy helper (contains secrets, never commit)
+.env.vercel
+
+# Local junk
+desktop.ini
+.claude/
+vercel-env.txt
+*.log

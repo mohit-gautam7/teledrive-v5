@@ -1,4 +1,4 @@
-const CACHE = 'teledrive-v3';
+const CACHE = 'teledrive-v4';
 const OFFLINE = '/offline.html';
 
 self.addEventListener('install', (e) => {

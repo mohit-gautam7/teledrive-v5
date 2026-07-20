@@ -40,16 +40,34 @@ model File {
   telegramFileId    String?
   telegramMessageId String?
   telegramFilePath  String?
+  storageChatId     String?
   folderId          String?
   isDeleted         Boolean     @default(false)
   isFavorite        Boolean     @default(false)
+  isChunked         Boolean     @default(false)
+  totalChunks       Int         @default(0)
+  uploadStatus      String      @default("complete")
   createdAt         DateTime    @default(now())
   user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   folder            Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
   shares            Share[]
+  chunks            Chunk[]
 
   @@index([userId, folderId])
   @@index([userId, createdAt])
+}
+
+model Chunk {
+  id             String  @id @default(cuid())
+  fileId         String
+  chunkIndex     Int
+  telegramMsgId  Int
+  telegramFileId String?
+  chunkSize      Int
+  file           File    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, chunkIndex])
+  @@index([fileId])
 }
 
 model Folder {

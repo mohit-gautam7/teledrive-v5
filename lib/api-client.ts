@@ -48,7 +48,19 @@ type UploadResult<T> = {
   data: T;
 };
 
-export function uploadFile<T>(url: string, form: FormData, onProgress: (progress: number) => void): Promise<UploadResult<T>> {
+export class UploadAbortedError extends Error {
+  constructor() {
+    super("Upload cancelled.");
+    this.name = "UploadAbortedError";
+  }
+}
+
+export function uploadFile<T>(
+  url: string,
+  form: FormData,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal
+): Promise<UploadResult<T>> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
@@ -59,6 +71,7 @@ export function uploadFile<T>(url: string, form: FormData, onProgress: (progress
       }
     };
     xhr.onerror = () => reject(new ApiError("Network error during upload. Please retry.", xhr.status || 0));
+    xhr.onabort = () => reject(new UploadAbortedError());
     xhr.onload = () => {
       const contentType = xhr.getResponseHeader("content-type") || "";
       const text = xhr.responseText || "";
@@ -86,6 +99,13 @@ export function uploadFile<T>(url: string, form: FormData, onProgress: (progress
         reject(new ApiError("Upload succeeded, but the server returned invalid JSON.", xhr.status));
       }
     };
+    if (signal) {
+      if (signal.aborted) {
+        reject(new UploadAbortedError());
+        return;
+      }
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
     xhr.send(form);
   });
 }

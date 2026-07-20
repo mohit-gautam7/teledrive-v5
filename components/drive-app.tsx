@@ -40,7 +40,9 @@ import {
 } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Button } from "@/components/button";
-import { apiFetch, uploadFile } from "@/lib/api-client";
+import { apiFetch, uploadFile, UploadAbortedError } from "@/lib/api-client";
+import { uploadFileInChunks } from "@/lib/chunked-upload";
+import { CHUNK_SIZE, MAX_FILE_SIZE } from "@/lib/upload-config";
 import { cn, formatBytes } from "@/lib/utils";
 
 type DriveFile = {
@@ -74,6 +76,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [folderTrail, setFolderTrail] = useState<DriveFolder[]>([]);
   const [navDirection, setNavDirection] = useState(0);
   const trailsByFolder = useRef<Map<string | null, DriveFolder[]>>(new Map([[null, []]]));
+  const abortControllers = useRef<Map<string, AbortController>>(new Map());
+  const cancelAllRef = useRef<AbortController | null>(null);
 
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -89,8 +93,27 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [theme, setTheme] = useState<ThemeMode>("system");
   const [authStatus, setAuthStatus] = useState<"connected" | "pending" | "failed">("pending");
 
+  // ── Listing cache: paint instantly from localStorage, revalidate silently ──
+  const cacheUser = user.username || user.name;
+  const cacheKey = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
+  const loadedKeyRef = useRef<string | null>(null);
+
   const refresh = useCallback(async () => {
-    setLoading(true);
+    const key = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
+    let hasCache = false;
+    try {
+      const cached = window.localStorage.getItem(key);
+      if (cached) {
+        const parsed = JSON.parse(cached) as { files: DriveFile[]; folders: DriveFolder[] };
+        setFiles(parsed.files);
+        setFolders(parsed.folders);
+        loadedKeyRef.current = key;
+        hasCache = true;
+        setLoading(false);
+      }
+    } catch { /* corrupt cache — fall through to network */ }
+    if (!hasCache) setLoading(true);
+
     const params = new URLSearchParams();
     if (folderId) params.set("folderId", folderId);
     if (debouncedQuery) params.set("q", debouncedQuery);
@@ -104,16 +127,28 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       ]);
       setFiles(fileData.files);
       setFolders(folderData.folders);
+      loadedKeyRef.current = key;
+      try {
+        window.localStorage.setItem(key, JSON.stringify({ files: fileData.files, folders: folderData.folders }));
+      } catch { /* storage full — cache is best-effort */ }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not load files.");
+      if (!hasCache) toast.error(error instanceof Error ? error.message : "Could not load files.");
     } finally {
       setLoading(false);
     }
-  }, [folderId, debouncedQuery, appView]);
+  }, [folderId, debouncedQuery, appView, cacheUser]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Keep the cache in sync with in-place mutations (upload, rename, delete…)
+  useEffect(() => {
+    if (loadedKeyRef.current !== cacheKey) return;
+    try {
+      window.localStorage.setItem(cacheKey, JSON.stringify({ files, folders }));
+    } catch { /* best-effort */ }
+  }, [files, folders, cacheKey]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 220);
@@ -153,30 +188,76 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return () => window.removeEventListener("beforeunload", handler);
   }, [uploading]);
 
+  const cancelUpload = useCallback((itemId: string) => {
+    const controller = abortControllers.current.get(itemId);
+    if (controller) {
+      controller.abort();
+      abortControllers.current.delete(itemId);
+    }
+    setUploadQueue(q => q.filter(it => it.id !== itemId));
+  }, []);
+
+  const cancelAllUploads = useCallback(() => {
+    abortControllers.current.forEach(ctrl => ctrl.abort());
+    abortControllers.current.clear();
+    if (cancelAllRef.current) cancelAllRef.current.abort();
+    setUploadQueue([]);
+    setUploading(false);
+  }, []);
+
+  // Files above one chunk (4 MB) go through the chunked uploader; smaller ones
+  // use a single request. Both are stored in the user's own Telegram bot chat.
+  const addFileToState = useCallback((created: DriveFile | null | undefined) => {
+    if (!created) return;
+    const inThisFolder = (created.folderId ?? null) === (folderId ?? null);
+    const visibleHere = appView === "recent" || (appView === "files" && inThisFolder && !debouncedQuery);
+    if (!visibleHere) return;
+    setFiles(fs => (fs.some(f => f.id === created.id) ? fs : [created, ...fs]));
+  }, [folderId, appView, debouncedQuery]);
+
   const uploadSingleFile = useCallback(async (itemId: string, file: File) => {
     setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "uploading", percent: 0, error: undefined } : it));
-    const form = new FormData();
-    form.append("file", file);
-    if (folderId) form.append("folderId", folderId);
-    await uploadFile<{ routing: { storageMode: "BOT" | "PERSONAL" } }>("/api/upload", form, percent => {
-      setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent } : it));
-    });
-    setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: 100, status: "done" } : it));
-  }, [folderId]);
+    const controller = new AbortController();
+    abortControllers.current.set(itemId, controller);
+    try {
+      let created: DriveFile | null = null;
+      if (file.size > CHUNK_SIZE) {
+        const result = await uploadFileInChunks({
+          file,
+          folderId,
+          onProgress: pct => setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: pct } : it)),
+          signal: controller.signal,
+        });
+        created = (result.file as DriveFile) ?? null;
+      } else {
+        const form = new FormData();
+        form.append("file", file);
+        if (folderId) form.append("folderId", folderId);
+        const result = await uploadFile<{ file: DriveFile }>("/api/upload", form, percent => {
+          setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent } : it));
+        }, controller.signal);
+        created = result.data.file ?? null;
+      }
+      addFileToState(created);
+      setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, percent: 100, status: "done" } : it));
+    } finally {
+      abortControllers.current.delete(itemId);
+    }
+  }, [folderId, addFileToState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const retryUpload = useCallback(async (itemId: string, file: File) => {
     try {
       await uploadSingleFile(itemId, file);
-      refresh();
     } catch (error) {
+      if (error instanceof UploadAbortedError) return;
       const msg = error instanceof Error ? error.message : "Upload failed";
       setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "error", error: msg } : it));
     }
-  }, [uploadSingleFile, refresh]);
+  }, [uploadSingleFile]);
 
   const uploadFiles = useCallback(
     async (acceptedFiles: File[]) => {
-      const tooLarge = acceptedFiles.find(f => f.size > 2 * 1024 * 1024 * 1024);
+      const tooLarge = acceptedFiles.find(f => f.size > MAX_FILE_SIZE);
       if (tooLarge) {
         toast.error(`"${tooLarge.name}" exceeds Telegram's 2 GB file limit.`);
         return;
@@ -184,19 +265,26 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       const items = acceptedFiles.map(f => ({ id: Math.random().toString(36).slice(2), name: f.name, size: f.size, percent: 0, status: "pending" as const, file: f }));
       setUploadQueue(items);
       setUploading(true);
-      const results = await Promise.allSettled(
-        acceptedFiles.map((file, i) => uploadSingleFile(items[i].id, file))
-      );
-      results.forEach((result, i) => {
-        if (result.status === "rejected") {
-          const itemId = items[i].id;
-          const msg = result.reason instanceof Error ? result.reason.message : "Upload failed";
+      const batchController = new AbortController();
+      cancelAllRef.current = batchController;
+      let anyError = false;
+      for (let i = 0; i < acceptedFiles.length; i++) {
+        if (batchController.signal.aborted) break;
+        const itemId = items[i].id;
+        try {
+          await uploadSingleFile(itemId, acceptedFiles[i]);
+        } catch (error) {
+          if (error instanceof UploadAbortedError) {
+            setUploadQueue(q => q.filter(it => it.id !== itemId));
+            continue;
+          }
+          anyError = true;
+          const msg = error instanceof Error ? error.message : "Upload failed";
           setUploadQueue(q => q.map(it => it.id === itemId ? { ...it, status: "error", error: msg } : it));
         }
-      });
-      await refresh();
+      }
+      cancelAllRef.current = null;
       setUploading(false);
-      const anyError = results.some(r => r.status === "rejected");
       if (!anyError) {
         setTimeout(() => setUploadQueue([]), 2500);
       }
@@ -216,14 +304,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     if (!folderModal) return;
     try {
       if (folderModal.mode === "create") {
-        await apiFetch("/api/folders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, parentId: folderId }) });
+        const { folder } = await apiFetch<{ folder: DriveFolder }>("/api/folders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, parentId: folderId }) });
+        setFolders(fs => [...fs, folder].sort((a, b) => a.name.localeCompare(b.name)));
         toast.success("Folder created");
       } else {
         await apiFetch(`/api/folders/${folderModal.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+        setFolders(fs => fs.map(f => f.id === folderModal.id ? { ...f, name } : f));
         toast.success("Folder renamed");
       }
       setFolderModal(null);
-      refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save folder.");
     }
@@ -237,8 +326,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       onConfirm: async () => {
         try {
           await apiFetch(`/api/folders/${id}`, { method: "DELETE" });
+          setFolders(fs => fs.filter(f => f.id !== id));
           toast.success("Folder and its files moved to trash");
-          refresh();
         } catch (error) {
           toast.error(error instanceof Error ? error.message : "Could not delete folder.");
         }
@@ -269,8 +358,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       onConfirm: async () => {
         try {
           await apiFetch(`/api/files/${fileId}`, { method: "DELETE" });
+          setFiles(fs => fs.filter(f => f.id !== fileId));
           toast.success(inTrash ? "File permanently deleted" : "File moved to trash");
-          refresh();
         } catch (error) {
           toast.error(error instanceof Error ? error.message : "Could not delete file.");
         }
@@ -281,6 +370,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   async function logout() {
     try {
       await apiFetch("/api/auth/logout", { method: "POST" });
+      // Clear cached listings so the next user on this device sees nothing stale
+      Object.keys(window.localStorage)
+        .filter(k => k.startsWith("td:"))
+        .forEach(k => window.localStorage.removeItem(k));
     } finally {
       window.location.href = "/";
     }
@@ -302,7 +395,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     const file = files.find(f => f.id === fileId);
     if (!file) return;
     const newValue = !file.isFavorite;
-    setFiles(fs => fs.map(f => f.id === fileId ? { ...f, isFavorite: newValue } : f));
+    setFiles(fs => appView === "favorites" && !newValue
+      ? fs.filter(f => f.id !== fileId)
+      : fs.map(f => f.id === fileId ? { ...f, isFavorite: newValue } : f));
     try {
       await apiFetch(`/api/files/${fileId}`, {
         method: "PATCH",
@@ -322,8 +417,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ restore: true })
       });
+      setFiles(fs => fs.filter(f => f.id !== fileId));
       toast.success("File restored");
-      refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not restore file.");
     }
@@ -475,15 +570,26 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                       {done}/{total} done
                       {failed > 0 && <span style={{ color: "#f87171", marginLeft: 6 }}>{failed} failed</span>}
                     </span>
-                    {failed > 0 && (
-                      <button
-                        onClick={() => uploadQueue.filter(i => i.status === "error").forEach(i => retryUpload(i.id, i.file))}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium"
-                        style={{ background: "rgba(96,165,250,0.15)", color: "#60a5fa" }}
-                      >
-                        <RotateCw className="h-3 w-3" /> Retry all failed
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {failed > 0 && (
+                        <button
+                          onClick={() => uploadQueue.filter(i => i.status === "error").forEach(i => retryUpload(i.id, i.file))}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium"
+                          style={{ background: "rgba(96,165,250,0.15)", color: "#60a5fa" }}
+                        >
+                          <RotateCw className="h-3 w-3" /> Retry all
+                        </button>
+                      )}
+                      {uploading && (
+                        <button
+                          onClick={cancelAllUploads}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium"
+                          style={{ background: "rgba(248,113,113,0.15)", color: "#f87171" }}
+                        >
+                          <X className="h-3 w-3" /> Cancel all
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })()}
@@ -493,8 +599,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     <div className="flex items-center justify-between gap-2 text-xs mb-1.5">
                       <span className="truncate font-medium" style={{ color: "#e2e8f0", maxWidth: "75%" }}>{item.name}</span>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {item.status === "pending" && <span style={{ color: "#475569" }}>Waiting</span>}
-                        {item.status === "uploading" && <span style={{ color: "var(--cyan)", fontFamily: "var(--font-mono),monospace", fontSize: "10px" }}>{item.percent}%</span>}
+                        {item.status === "pending" && (
+                          <>
+                            <span style={{ color: "#475569" }}>Waiting</span>
+                            <button onClick={() => cancelUpload(item.id)} title="Cancel" className="ml-1">
+                              <X className="h-3.5 w-3.5" style={{ color: "#64748b" }} />
+                            </button>
+                          </>
+                        )}
+                        {item.status === "uploading" && item.percent < 100 && (
+                          <>
+                            <span style={{ color: "var(--cyan)", fontFamily: "var(--font-mono),monospace", fontSize: "10px" }}>{item.percent}%</span>
+                            <button onClick={() => cancelUpload(item.id)} title="Cancel" className="ml-1">
+                              <X className="h-3.5 w-3.5" style={{ color: "#f87171" }} />
+                            </button>
+                          </>
+                        )}
+                        {item.status === "uploading" && item.percent >= 100 && <span style={{ color: "var(--violet)", fontFamily: "var(--font-mono),monospace", fontSize: "10px" }}>Sending…</span>}
                         {item.status === "done" && <CheckCircle2 className="h-3.5 w-3.5" style={{ color: "#34d399" }} />}
                         {item.status === "error" && (
                           <>
@@ -1151,7 +1272,7 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
       await fetch("/api/settings/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramSession: sessionInput.trim() }) });
       setSessionSaved(true);
       setSessionInput("");
-      toast.success("Session saved — large file uploads enabled.");
+      toast.success("Session saved — legacy files can be downloaded again.");
     } catch {
       toast.error("Failed to save session.");
     } finally {
@@ -1210,7 +1331,7 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
           <span style={{ color: "var(--text-secondary)" }}>{authStatus === "connected" ? "Session active and authenticated" : "Session needs attention"}</span>
         </div>
         <p className="mt-3 text-[13px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          If Telegram login stops working, set the production domain in BotFather and sign in again. Large personal-storage uploads require a valid GramJS session.
+          Your files are stored in your own Telegram — open your chat with the bot to see them. Any file up to 2 GB uploads without extra setup. If login stops working, message the bot again for a fresh code.
         </p>
         <button
           onClick={() => { window.location.href = "/"; }}
@@ -1224,7 +1345,7 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
 
       <section className="rounded-2xl border p-5 lg:col-span-2" style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}>
         <div className="flex items-center justify-between mb-1">
-          <h2 className="font-[700] text-[15px]" style={{ color: "var(--text-primary)" }}>Large File Uploads (up to 2 GB)</h2>
+          <h2 className="font-[700] text-[15px]" style={{ color: "var(--text-primary)" }}>Legacy File Recovery (optional)</h2>
           {sessionSaved === true && (
             <span className="flex items-center gap-1.5 text-[12px] font-[600]" style={{ color: "#34d399" }}>
               <CheckCircle2 className="h-3.5 w-3.5" /> Session active
@@ -1235,7 +1356,7 @@ function SettingsPanel({ theme, setTheme, authStatus }: { theme: ThemeMode; setT
           )}
         </div>
         <p className="text-[13px] leading-relaxed mb-3" style={{ color: "var(--text-muted)" }}>
-          Paste your Telegram session string below to enable MTProto uploads for files over 50 MB. For files over 100 MB always use the VM URL, not Render.
+          Only needed for files uploaded with older TeleDrive versions that used a personal Telegram session. New uploads never need this — they go through the bot into your own chat.
         </p>
         <textarea
           value={sessionInput}

@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { StorageMode } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
-import { decideStorage, safeName, toPublicFile } from "@/lib/file-router";
+import { safeName, toPublicFile } from "@/lib/file-router";
 import { prisma } from "@/lib/prisma";
-import { uploadWithBot, uploadWithPersonalTelegram } from "@/lib/telegram";
-import { decryptSecret } from "@/lib/crypto";
+import { sendDocumentToChat } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
+import { CHUNK_SIZE } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+/**
+ * Fast path for small files (≤ one chunk): a single request that stores the
+ * document in the user's own bot chat. Larger files use init/chunk/complete.
+ */
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
@@ -18,23 +23,20 @@ export async function POST(request: NextRequest) {
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Missing file." }, { status: 400 });
     }
-
-    const config = await prisma.storageConfig.findUnique({ where: { userId: user.id } });
-    const hasPersonalSession = !!(config?.telegramSession || process.env.TELEGRAM_SESSION);
-
-    if (!hasPersonalSession && file.size > 50 * 1024 * 1024) {
-      return NextResponse.json({ error: "Files over 50 MB require a Telegram personal session. Configure it in Settings → Large Files." }, { status: 413 });
-    }
-    if (file.size > 2 * 1024 * 1024 * 1024) {
-      return NextResponse.json({ error: "Telegram's maximum file size is 2 GB." }, { status: 413 });
+    if (file.size > CHUNK_SIZE) {
+      return NextResponse.json({ error: "Files over 4 MB must use the chunked upload." }, { status: 413 });
     }
 
     const mimeType = file.type || "application/octet-stream";
-    const decision = decideStorage(mimeType, file.size, hasPersonalSession);
-    const storageResult: { fileId?: string; messageId?: string; filePath?: string } =
-      decision.storageMode === "BOT"
-        ? await uploadWithBot(file, config?.botToken, config?.botChannelId)
-        : await uploadWithPersonalTelegram(file, decryptSecret(config?.telegramSession));
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    const sent = await sendDocumentToChat({
+      chatId: user.telegramId,
+      data: buffer,
+      filename: safeName(file.name),
+      mimeType,
+      caption: `📄 ${file.name}`
+    });
 
     const record = await prisma.file.create({
       data: {
@@ -43,14 +45,18 @@ export async function POST(request: NextRequest) {
         originalName: file.name,
         mimeType,
         size: BigInt(file.size),
-        storageMode: decision.storageMode,
-        telegramFileId: storageResult.fileId || null,
-        telegramMessageId: storageResult.messageId || null,
-        telegramFilePath: storageResult.filePath || null,
-        folderId: typeof folderId === "string" && folderId ? folderId : null
+        storageMode: StorageMode.BOT,
+        storageChatId: user.telegramId,
+        isChunked: true,
+        totalChunks: 1,
+        uploadStatus: "complete",
+        folderId: typeof folderId === "string" && folderId ? folderId : null,
+        chunks: {
+          create: { chunkIndex: 0, telegramMsgId: sent.messageId, telegramFileId: sent.fileId, chunkSize: buffer.length }
+        }
       }
     });
-    return NextResponse.json({ file: toPublicFile(record), routing: decision });
+    return NextResponse.json({ file: toPublicFile(record) });
   } catch (error) {
     return jsonError(error, "Upload failed.");
   }

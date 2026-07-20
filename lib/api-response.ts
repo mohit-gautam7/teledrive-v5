@@ -8,7 +8,7 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
   }
   if (error instanceof Error) {
     const message = error.message;
-    if (message.includes("FLOOD_WAIT")) {
+    if (message.includes("FLOOD_WAIT") || message.includes("Too Many Requests")) {
       return NextResponse.json({ error: "Telegram is rate limiting this action. Please wait and retry." }, { status: 429 });
     }
     if (message.includes("AUTH_KEY_UNREGISTERED")) {
