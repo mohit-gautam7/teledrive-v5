@@ -89,6 +89,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{ title: string; body: string; danger?: boolean; onConfirm: () => void } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("system");
   const [authStatus, setAuthStatus] = useState<"connected" | "pending" | "failed">("pending");
@@ -97,6 +100,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const cacheUser = user.username || user.name;
   const cacheKey = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
   const loadedKeyRef = useRef<string | null>(null);
+
+  const listParams = useCallback((extra?: Record<string, string>) => {
+    const params = new URLSearchParams();
+    if (folderId) params.set("folderId", folderId);
+    if (debouncedQuery) params.set("q", debouncedQuery);
+    if (appView === "recent" || appView === "favorites" || appView === "trash") params.set("view", appView);
+    for (const [k, v] of Object.entries(extra ?? {})) params.set(k, v);
+    return params;
+  }, [folderId, debouncedQuery, appView]);
 
   const refresh = useCallback(async () => {
     const key = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
@@ -114,39 +126,66 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     } catch { /* corrupt cache — fall through to network */ }
     if (!hasCache) setLoading(true);
 
-    const params = new URLSearchParams();
-    if (folderId) params.set("folderId", folderId);
-    if (debouncedQuery) params.set("q", debouncedQuery);
-    if (appView === "recent" || appView === "favorites" || appView === "trash") params.set("view", appView);
+    const foldersOff = appView === "shared" || appView === "recent" || appView === "favorites" || appView === "trash";
     try {
       const [fileData, folderData] = await Promise.all([
-        apiFetch<{ files: DriveFile[] }>(`/api/files?${params}`, { cache: "no-store" }),
-        appView === "shared" || appView === "recent" || appView === "favorites" || appView === "trash"
+        apiFetch<{ files: DriveFile[]; hasMore: boolean }>(`/api/files?${listParams({ skip: "0" })}`, { cache: "no-store" }),
+        foldersOff
           ? Promise.resolve({ folders: [] as DriveFolder[] })
           : apiFetch<{ folders: DriveFolder[] }>(`/api/folders?${folderId ? `parentId=${folderId}` : ""}`, { cache: "no-store" })
       ]);
       setFiles(fileData.files);
       setFolders(folderData.folders);
+      setHasMore(Boolean(fileData.hasMore));
       loadedKeyRef.current = key;
       try {
-        window.localStorage.setItem(key, JSON.stringify({ files: fileData.files, folders: folderData.folders }));
+        window.localStorage.setItem(key, JSON.stringify({ files: fileData.files.slice(0, 48), folders: folderData.folders }));
       } catch { /* storage full — cache is best-effort */ }
     } catch (error) {
       if (!hasCache) toast.error(error instanceof Error ? error.message : "Could not load files.");
     } finally {
       setLoading(false);
     }
-  }, [folderId, debouncedQuery, appView, cacheUser]);
+  }, [folderId, debouncedQuery, appView, cacheUser, listParams]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const data = await apiFetch<{ files: DriveFile[]; hasMore: boolean }>(
+        `/api/files?${listParams({ skip: String(files.length) })}`,
+        { cache: "no-store" }
+      );
+      setFiles(prev => {
+        const seen = new Set(prev.map(f => f.id));
+        return [...prev, ...data.files.filter(f => !seen.has(f.id))];
+      });
+      setHasMore(Boolean(data.hasMore));
+    } catch { /* keep what we have; sentinel will retry on next scroll */ }
+    finally { setLoadingMore(false); }
+  }, [loadingMore, hasMore, files.length, listParams]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Keep the cache in sync with in-place mutations (upload, rename, delete…)
+  // Infinite scroll: load the next page as the sentinel nears the viewport.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      entries => { if (entries[0]?.isIntersecting) loadMore(); },
+      { rootMargin: "800px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore]);
+
+  // Keep the first page cached in sync with in-place mutations (upload, delete…)
   useEffect(() => {
     if (loadedKeyRef.current !== cacheKey) return;
     try {
-      window.localStorage.setItem(cacheKey, JSON.stringify({ files, folders }));
+      window.localStorage.setItem(cacheKey, JSON.stringify({ files: files.slice(0, 48), folders }));
     } catch { /* best-effort */ }
   }, [files, folders, cacheKey]);
 
@@ -177,6 +216,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       .then(data => setAuthStatus(data.user ? "connected" : "failed"))
       .catch(() => setAuthStatus("failed"));
   }, []);
+
+  // Aggregate storage total (all files, not just the loaded page).
+  const refreshStats = useCallback(() => {
+    apiFetch<{ totalSize: number }>("/api/files/stats")
+      .then(data => setTotalStorage(data.totalSize))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshStats(); }, [refreshStats]);
 
   useEffect(() => {
     if (!uploading) return;
@@ -298,7 +345,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     multiple: true
   });
 
-  const storageUsed = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
+  const loadedSize = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
+  const [totalStorage, setTotalStorage] = useState<number | null>(null);
+  const storageUsed = totalStorage ?? loadedSize;
 
   async function submitFolderModal(name: string) {
     if (!folderModal) return;
@@ -967,6 +1016,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               </AnimatePresence>
             </motion.div>
 
+            {/* Infinite-scroll sentinel + loading indicator */}
+            {!loading && hasMore ? (
+              <div ref={sentinelRef} className="flex items-center justify-center py-8">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-transparent" style={{ borderTopColor: "var(--cyan)", borderRightColor: "var(--cyan)" }} />
+                <span className="ml-3 text-[13px]" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>
+                  {loadingMore ? "Loading more…" : "Scroll for more"}
+                </span>
+              </div>
+            ) : null}
+
             {!loading && !files.length && !folders.length ? (
               <div className="rounded-2xl border p-12 text-center" style={{ borderColor: "var(--border-dim)", background: "rgba(0,229,255,0.015)" }}>
                 <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl"
@@ -1036,7 +1095,8 @@ function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, 
   const [mediaLoaded, setMediaLoaded] = useState(false);
   const isImage = file.mimeType.startsWith("image/");
   const isVideo = file.mimeType.startsWith("video/");
-  const preview = isImage ? `/api/preview/${file.id}` : isVideo ? `/api/stream/${file.id}` : "";
+  // Grid tiles use a tiny resized thumbnail; the full image opens in the modal.
+  const preview = isImage ? `/api/preview/${file.id}?thumb=1` : isVideo ? `/api/stream/${file.id}` : "";
   const inTrash = appView === "trash";
 
   const actionBtn = (color: string, hoverBg: string, hoverBorder: string) => ({
@@ -1064,7 +1124,7 @@ function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, 
         onClick={onPreview}
         title="Click to preview"
       >
-        {(isImage || isVideo) && !mediaLoaded ? (
+        {isImage && !mediaLoaded ? (
           <div className="skeleton absolute inset-0" />
         ) : null}
         {isImage ? (
@@ -1078,7 +1138,10 @@ function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, 
             onError={() => setMediaLoaded(true)}
           />
         ) : isVideo ? (
-          <video src={preview} className="h-full w-full rounded-lg object-cover" muted preload="metadata" onLoadedData={() => setMediaLoaded(true)} />
+          <div className="relative grid h-full w-full place-items-center">
+            <Video className="h-8 w-8" style={{ color: "var(--cyan)" }} />
+            <span className="absolute bottom-1 right-1 rounded px-1.5 py-0.5 text-[9px] font-[700]" style={{ background: "rgba(0,0,0,0.55)", color: "#fff" }}>VIDEO</span>
+          </div>
         ) : (
           <Icon className="h-8 w-8" style={{ color: "var(--cyan)" }} />
         )}

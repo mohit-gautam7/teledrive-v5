@@ -2,7 +2,7 @@
 const nextConfig = {
   output: "standalone",
   experimental: {
-    serverComponentsExternalPackages: ["node-telegram-bot-api", "telegram"],
+    serverComponentsExternalPackages: ["node-telegram-bot-api", "telegram", "sharp"],
     instrumentationHook: true,
   }
 };

@@ -85,6 +85,31 @@ async function fetchBotChunkBuffer(fileId: string, botToken?: string | null): Pr
   return Buffer.from(await res.arrayBuffer());
 }
 
+/**
+ * Read a whole bot-stored file into memory (for thumbnail generation only).
+ * Returns null for storage kinds we don't want to buffer (legacy MTProto,
+ * or anything over ~25 MB) — the caller falls back to normal streaming.
+ */
+export async function readEntireFile(file: StreamableFile): Promise<Buffer | null> {
+  const totalSize = Number(file.size);
+  if (totalSize > 25 * 1024 * 1024) return null;
+  const userBotToken = file.user?.storageConfig?.botToken || null;
+
+  if (file.isChunked) {
+    if (file.uploadStatus !== "complete" || !file.chunks.length) return null;
+    if (!file.chunks.every(c => !!c.telegramFileId)) return null; // legacy MTProto chunks
+    const ordered = [...file.chunks].sort((a, b) => a.chunkIndex - b.chunkIndex);
+    const parts: Buffer[] = [];
+    for (const c of ordered) parts.push(await fetchBotChunkBuffer(c.telegramFileId as string, userBotToken));
+    return Buffer.concat(parts);
+  }
+
+  if (file.storageMode === StorageMode.BOT && file.telegramFileId) {
+    return fetchBotChunkBuffer(file.telegramFileId, userBotToken);
+  }
+  return null;
+}
+
 export function streamFileResponse(
   file: StreamableFile,
   rangeHeader: string | null,
