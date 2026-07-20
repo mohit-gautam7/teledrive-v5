@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && node scripts/db-sync.mjs && next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "check": "tsc --noEmit",
     "db:push": "prisma db push",
