@@ -103,6 +103,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [sortOpen, setSortOpen] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video" | "doc">("all");
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -123,9 +124,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     if (appView === "recent" || appView === "favorites" || appView === "trash") params.set("view", appView);
     params.set("sort", sortField);
     params.set("dir", sortDir);
+    if (typeFilter !== "all") params.set("type", typeFilter);
     for (const [k, v] of Object.entries(extra ?? {})) params.set(k, v);
     return params;
-  }, [folderId, debouncedQuery, appView, sortField, sortDir]);
+  }, [folderId, debouncedQuery, appView, sortField, sortDir, typeFilter]);
 
   const refresh = useCallback(async () => {
     const key = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
@@ -574,8 +576,50 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     toast.info(`Downloading ${ids.length} file${ids.length > 1 ? "s" : ""}…`);
   }
 
+  const selectAllLoaded = useCallback(() => setSelected(new Set(files.map(f => f.id))), [files]);
+
+  function emptyTrash() {
+    setConfirmModal({
+      title: "Empty Trash",
+      body: "Permanently delete everything in Trash? This cannot be undone.",
+      danger: true,
+      onConfirm: async () => {
+        setFiles([]);
+        try {
+          await apiFetch("/api/files/bulk", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ action: "emptyTrash" })
+          });
+          toast.success("Trash emptied");
+          refreshStats();
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Could not empty trash.");
+          refresh();
+        }
+      }
+    });
+  }
+
   // Clear any selection when moving between folders or views.
   useEffect(() => { clearSelection(); }, [appView, folderId, clearSelection]);
+
+  // Keyboard shortcuts: Esc clears selection, Ctrl/Cmd+A selects all, Delete trashes.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const el = document.activeElement as HTMLElement | null;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (typing || previewFile || folderModal || confirmModal || moveModal || renameFile || propsTarget) return;
+      if (e.key === "Escape" && selected.size) { clearSelection(); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && files.length) { e.preventDefault(); selectAllLoaded(); }
+      else if ((e.key === "Delete" || e.key === "Backspace") && selected.size) {
+        const ids = [...selected];
+        setConfirmModal({ title: appView === "trash" ? "Permanently Delete" : "Move to Trash", body: `${ids.length} file${ids.length > 1 ? "s" : ""} will be ${appView === "trash" ? "permanently deleted" : "moved to trash"}.`, danger: true, onConfirm: () => bulkAction(appView === "trash" ? "delete" : "trash", ids) });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selected, files.length, previewFile, folderModal, confirmModal, moveModal, renameFile, propsTarget, appView, clearSelection, selectAllLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function shareFolder(folderId: string) {
     try {
@@ -971,14 +1015,49 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               </h1>
             </div>
             <div className="flex items-center gap-2 shrink-0 pt-1">
-              <button
-                onClick={() => setFolderModal({ mode: "create", value: "" })}
-                disabled={appView === "settings" || appView === "trash" || appView === "shared" || appView === "about"}
-                className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] tracking-wide transition active:scale-[0.96] disabled:opacity-30"
-                style={{ border: "1px solid var(--cyan-border)", color: "var(--cyan)", background: "var(--cyan-dim)" }}
-              >
-                <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">New Folder</span>
-              </button>
+              {appView === "trash" ? (
+                <button
+                  onClick={emptyTrash}
+                  disabled={!files.length}
+                  className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] tracking-wide transition active:scale-[0.96] disabled:opacity-30"
+                  style={{ border: "1px solid rgba(255,77,109,0.45)", color: "#f87171", background: "rgba(255,77,109,0.08)" }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Empty Trash</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => setFolderModal({ mode: "create", value: "" })}
+                  disabled={appView === "settings" || appView === "shared" || appView === "about"}
+                  className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] tracking-wide transition active:scale-[0.96] disabled:opacity-30"
+                  style={{ border: "1px solid var(--cyan-border)", color: "var(--cyan)", background: "var(--cyan-dim)" }}
+                >
+                  <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">New Folder</span>
+                </button>
+              )}
+
+              {appView !== "settings" && appView !== "about" && (
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger asChild>
+                    <button
+                      className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-[0.96]"
+                      style={{ border: "1px solid var(--border-med)", color: typeFilter === "all" ? "var(--text-secondary)" : "var(--cyan)" }}
+                      aria-label="Filter by type"
+                    >
+                      <Grid2X2 className="h-3.5 w-3.5" />
+                      <span className="hidden md:inline">{typeFilter === "all" ? "All" : typeFilter === "image" ? "Images" : typeFilter === "video" ? "Videos" : "Docs"}</span>
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[160px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid var(--border-med)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}>
+                      {([["all", "All files"], ["image", "Images"], ["video", "Videos"], ["doc", "Documents"]] as [typeof typeFilter, string][]).map(([val, label]) => (
+                        <DropdownMenu.Item key={val} onSelect={() => setTypeFilter(val)} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: typeFilter === val ? "var(--cyan)" : "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                          {label}
+                        </DropdownMenu.Item>
+                      ))}
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
+              )}
 
               <DropdownMenu.Root open={sortOpen} onOpenChange={setSortOpen}>
                 <DropdownMenu.Trigger asChild>
@@ -1285,6 +1364,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             style={{ borderColor: "var(--cyan-border)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}
           >
             <span className="px-2 text-[13px] font-[700]" style={{ color: "var(--cyan)" }}>{selected.size} selected</span>
+            {selected.size < files.length && (
+              <button onClick={selectAllLoaded} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>
+                <CheckSquare className="h-4 w-4" /> <span className="hidden sm:inline">All ({files.length})</span>
+              </button>
+            )}
             <button onClick={() => bulkDownload([...selected])} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>
               <Download className="h-4 w-4" /> <span className="hidden sm:inline">Download</span>
             </button>

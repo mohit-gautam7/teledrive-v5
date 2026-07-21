@@ -7,16 +7,38 @@ import { deleteChunkMessages } from "@/lib/telegram";
 import { decryptSecret } from "@/lib/crypto";
 import { jsonError } from "@/lib/api-response";
 
-const schema = z.object({
-  ids: z.array(z.string()).min(1).max(500),
-  action: z.enum(["move", "trash", "restore", "favorite", "unfavorite", "delete"]),
-  folderId: z.string().nullable().optional()
-});
+const schema = z.union([
+  z.object({
+    ids: z.array(z.string()).min(1).max(500),
+    action: z.enum(["move", "trash", "restore", "favorite", "unfavorite", "delete"]),
+    folderId: z.string().nullable().optional()
+  }),
+  z.object({ action: z.literal("emptyTrash") })
+]);
 
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
-    const { ids, action, folderId } = schema.parse(await request.json());
+    const body = schema.parse(await request.json());
+
+    // Empty trash: permanently delete every trashed file for this user.
+    if (body.action === "emptyTrash") {
+      const trashed = await prisma.file.findMany({
+        where: { userId: user.id, isDeleted: true },
+        include: { chunks: true, user: { include: { storageConfig: true } } }
+      });
+      type ChunkLite = { telegramFileId: string | null; telegramMsgId: number };
+      for (const file of trashed) {
+        const botMsgIds = file.chunks.filter((c: ChunkLite) => c.telegramFileId && c.telegramMsgId > 0).map((c: ChunkLite) => c.telegramMsgId);
+        const legacyMsgIds = file.chunks.filter((c: ChunkLite) => !c.telegramFileId).map((c: ChunkLite) => c.telegramMsgId);
+        if (botMsgIds.length && file.storageChatId) await deleteMessagesBot(file.storageChatId, botMsgIds);
+        if (legacyMsgIds.length) await deleteChunkMessages(legacyMsgIds, decryptSecret(file.user.storageConfig?.telegramSession));
+      }
+      await prisma.file.deleteMany({ where: { userId: user.id, isDeleted: true } });
+      return NextResponse.json({ ok: true, count: trashed.length });
+    }
+
+    const { ids, action, folderId } = body;
     const scope = { id: { in: ids }, userId: user.id };
 
     if (action === "move") {

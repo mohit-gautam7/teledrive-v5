@@ -1,80 +1,66 @@
-# TeleDrive Personal
+# TeleDrive — Personal Cloud on Telegram
 
-A personal cloud drive built with Next.js 14, Prisma, Supabase PostgreSQL, Telegram Login, Telegram Bot API, and GramJS MTProto (`telegram` on npm).
-
-## Security First
-
-The secrets pasted into chat must be rotated before deployment:
-
-- Telegram bot token
-- Telegram `API_ID` / `API_HASH`
-- Supabase database password / connection string
-- Supabase anon key if you consider it exposed
-- `JWT_SECRET`
-
-Never commit `.env.local`. This repo already ignores `.env*` files.
+A private, self-hostable cloud drive that stores your files in **your own Telegram** — up to 2 GB per file, free. Sign in with a one-time code from a Telegram bot; every file you upload is chunked and sent to your own chat with the bot, so your data lives in your Telegram account, under your control.
 
 ## Features
 
-- Telegram Login Widget auth with HTTP-only JWT cookies
-- Drive-style responsive UI with grid/list modes and dark mode
-- Drag-and-drop multiple uploads
-- Automatic routing:
-  - videos: personal Telegram Saved Messages
-  - images up to 50MB: bot channel
-  - images above 50MB: personal Telegram
-  - other files up to 50MB: bot channel
-  - other files above 50MB: personal Telegram
-- Folder creation and browsing
-- File listing, soft delete, download, video streaming for bot-stored media
-- Public share links
-- Prisma schema for `User`, `StorageConfig`, `File`, `Folder`, and `Share`
+- **Telegram login** — message the bot, get a 6-digit code, sign in. No passwords.
+- **Your storage** — files are stored in each user's own Telegram chat with the bot.
+- **Big files** — up to 2 GB per file via chunked upload (4 MB chunks).
+- **Fast browsing** — paginated listing, resized WebP thumbnails cached for a year, instant localStorage paint.
+- **Folders** — nested folders with recursive size + item counts.
+- **Files** — rename, move, favorite, share via public link, download, preview.
+- **Bulk actions** — multi-select to download, move, favorite, or delete.
+- **Sort & filter** — by date / name / size, filter by images / videos / documents.
+- **Trash** — soft-delete with restore, and one-click empty trash.
+- **Keyboard shortcuts** — `Esc` clear selection, `Ctrl/⌘+A` select all, `Del` trash.
+- **Multi-user** — anyone can sign up; each user only ever sees their own files.
 
-## Environment
+## Tech
 
-Create `.env.local` from `.env.example`:
+Next.js 14 (App Router) · TypeScript · Prisma + PostgreSQL · Telegram Bot API + MTProto (legacy) · sharp · Tailwind · Framer Motion. Deploys on Vercel's free tier with a free Supabase Postgres database.
 
-```env
-BOT_TOKEN=
-BOT_CHANNEL_ID=
-API_ID=
-API_HASH=
-TELEGRAM_SESSION=
-SESSION_ENCRYPTION_KEY=
-DATABASE_URL=
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-JWT_SECRET=
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=
-```
+## Setup
 
-`NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` is the bot username without `@`.
+1. **Create a bot** with [@BotFather](https://t.me/BotFather) and copy its token.
+2. **Create a Postgres database** (e.g. a free [Supabase](https://supabase.com) project). Use the **transaction pooler** connection string (port `6543`) for the app.
+3. **Copy `.env.example` to `.env.local`** and fill it in (see below).
+4. Install and push the schema:
+   ```bash
+   pnpm install
+   pnpm db:push
+   pnpm dev
+   ```
+5. In development the bot is driven by long-polling automatically. In production, register the webhook once after deploying:
+   `https://<your-domain>/api/bot/setup?key=<WEBHOOK_SECRET>`
 
-## Local Setup
+## Environment variables
 
-```bash
-pnpm install
-pnpm prisma generate
-pnpm db:push
-pnpm dev
-```
+| Variable | Required | Notes |
+|---|---|---|
+| `BOT_TOKEN` | yes | From @BotFather. |
+| `DATABASE_URL` | yes | Postgres. On serverless use the transaction pooler (`:6543`, `?pgbouncer=true&connection_limit=1`). |
+| `JWT_SECRET` | yes | Long random string for signing login cookies. |
+| `WEBHOOK_SECRET` | yes | Long random string; protects the webhook + setup route. |
+| `NEXT_PUBLIC_APP_URL` | yes | Public URL of the deployed app. |
+| `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` | yes | Bot username without `@`. |
+| `API_ID`, `API_HASH`, `TELEGRAM_SESSION`, `BOT_CHANNEL_ID`, `SESSION_ENCRYPTION_KEY` | no | Legacy only — for recovering files uploaded by older versions. |
 
-Open `http://localhost:3000`.
+> **Never commit real secrets.** `.env*` files are gitignored; only `.env.example` (with blank values) is tracked.
 
-## Vercel Deployment
+## Deploy (Vercel + Supabase, free)
 
-1. Push this repository to GitHub.
-2. Import the repo in Vercel.
-3. Add all `.env.example` variables in Vercel Project Settings.
-4. Use Supabase's pooled PostgreSQL connection string for `DATABASE_URL` if available.
-5. Run `pnpm db:push` locally once against the Supabase database, or run it from a secure CI job.
-6. Deploy.
+1. Push this repo to GitHub and import it in Vercel.
+2. Add the environment variables above in Vercel → Settings → Environment Variables.
+3. Deploy, then visit `/api/bot/setup?key=<WEBHOOK_SECRET>` once to register the Telegram webhook.
 
-## Telegram Notes
+The build runs `prisma generate && next build`. Apply schema changes with `pnpm db:push` from a machine that has `DATABASE_URL` (session-mode `:5432` works well for migrations).
 
-Bot storage works with `BOT_TOKEN` and `BOT_CHANNEL_ID`. Add the bot as an admin to the private channel.
+## Notes
 
-Personal storage uses GramJS through the npm package named `telegram`. To upload large media to Saved Messages on Vercel, provide a valid `TELEGRAM_SESSION`. Generating that session requires an OTP flow; this MVP stores the session string if you provide it in env or through the storage settings API.
+- The first time an image thumbnail is viewed it's generated from the original and cached; afterwards it loads instantly.
+- Supabase free-tier databases pause after ~1 week idle — keep them warm with a scheduled ping if you rely on uptime.
 
-Vercel free tier can time out on very large uploads. The code keeps the routing architecture compatible with a future VPS worker for 500MB-2GB uploads and long-range MTProto streaming.
+## License
+
+MIT — do what you like; no warranty.

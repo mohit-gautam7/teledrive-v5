@@ -14,6 +14,7 @@ export async function GET(request: NextRequest) {
     const folderId = searchParams.get("folderId");
     const q = searchParams.get("q")?.trim();
     const view = searchParams.get("view");
+    const type = searchParams.get("type"); // image | video | doc
 
     const take = Math.min(Number(searchParams.get("take")) || PAGE_SIZE, MAX_PAGE_SIZE);
     const skip = Math.max(Number(searchParams.get("skip")) || 0, 0);
@@ -32,6 +33,13 @@ export async function GET(request: NextRequest) {
       isDeleted: view === "trash" ? true : false,
       ...(view === "favorites" ? { isFavorite: true } : {}),
       ...(folderId && view !== "recent" ? { folderId } : view === "recent" ? {} : { folderId: null }),
+      ...(type === "image"
+        ? { mimeType: { startsWith: "image/" } }
+        : type === "video"
+          ? { mimeType: { startsWith: "video/" } }
+          : type === "doc"
+            ? { NOT: [{ mimeType: { startsWith: "image/" } }, { mimeType: { startsWith: "video/" } }] }
+            : {}),
       ...(q
         ? {
             OR: [
