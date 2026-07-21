@@ -41,6 +41,7 @@ model File {
   telegramMessageId String?
   telegramFilePath  String?
   storageChatId     String?
+  thumbFileId       String?
   folderId          String?
   isDeleted         Boolean     @default(false)
   isFavorite        Boolean     @default(false)

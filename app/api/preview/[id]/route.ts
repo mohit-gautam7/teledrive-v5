@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { streamFileResponse, streamInclude, readEntireFile } from "@/lib/file-stream";
+import { sendDocumentToChat, fetchBotFile } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
 
 export const runtime = "nodejs";
@@ -22,17 +23,49 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     const wantThumb = new URL(request.url).searchParams.get("thumb") === "1";
     const isImage = (file.mimeType || "").startsWith("image/");
 
-    // ── Small thumbnail for grid tiles: resize to ~400px WebP (~20-40 KB) ──────
+    // ── Small thumbnail for grid tiles ────────────────────────────────────────
     if (wantThumb && isImage) {
+      const userBotToken = file.user?.storageConfig?.botToken || null;
+
+      // Fast path: a thumbnail was already generated and stored in Telegram.
+      if (file.thumbFileId) {
+        try {
+          const res = await fetchBotFile(file.thumbFileId, userBotToken);
+          return new NextResponse(res.body, {
+            status: 200,
+            headers: { "Content-Type": "image/webp", "Cache-Control": IMMUTABLE }
+          });
+        } catch {
+          // stored thumb vanished — fall through and regenerate
+        }
+      }
+
+      // Slow path (once per image): download original, resize, store the thumb.
       try {
         const buf = await readEntireFile(file);
         if (buf) {
           const sharp = (await import("sharp")).default;
           const out = await sharp(buf)
-            .rotate() // honor EXIF orientation
+            .rotate()
             .resize(400, 400, { fit: "inside", withoutEnlargement: true })
             .webp({ quality: 72 })
             .toBuffer();
+
+          // Persist the thumbnail so it never has to be regenerated.
+          try {
+            const chatId = file.storageChatId || user.telegramId;
+            const sent = await sendDocumentToChat({
+              chatId,
+              data: out,
+              filename: `${file.id}.thumb.webp`,
+              mimeType: "image/webp",
+              caption: `🖼 thumb: ${file.originalName}`
+            });
+            await prisma.file.update({ where: { id: file.id }, data: { thumbFileId: sent.fileId } });
+          } catch (err) {
+            console.warn("[preview] could not persist thumb:", (err as Error).message);
+          }
+
           return new NextResponse(new Uint8Array(out), {
             status: 200,
             headers: { "Content-Type": "image/webp", "Cache-Control": IMMUTABLE }
@@ -40,7 +73,6 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         }
       } catch (err) {
         console.warn("[preview] thumbnail failed, streaming full image:", (err as Error).message);
-        // fall through to full stream
       }
     }
 

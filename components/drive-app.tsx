@@ -6,10 +6,13 @@ import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
 import {
   AlertCircle,
+  ArrowUpDown,
   CheckCircle2,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
   Download,
+  FolderInput,
   File as FileIcon,
   Folder,
   Grid2X2,
@@ -62,10 +65,15 @@ type DriveFolder = {
   name: string;
   parentId: string | null;
   createdAt: string;
+  size?: number;
+  fileCount?: number;
 };
 
 type AppView = "home" | "files" | "shared" | "recent" | "favorites" | "trash" | "settings" | "about";
 type ThemeMode = "light" | "dark" | "system";
+type SortField = "date" | "name" | "size";
+type SortDir = "asc" | "desc";
+type PropsTarget = { kind: "file"; file: DriveFile } | { kind: "folder"; folder: DriveFolder };
 
 export default function DriveApp({ user }: { user: { name: string; username?: string | null; avatar?: string | null } }) {
   const [files, setFiles] = useState<DriveFile[]>([]);
@@ -88,6 +96,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{ title: string; body: string; danger?: boolean; onConfirm: () => void } | null>(null);
+  const [renameFile, setRenameFile] = useState<{ id: string; value: string } | null>(null);
+  const [moveModal, setMoveModal] = useState<{ ids: string[] } | null>(null);
+  const [propsTarget, setPropsTarget] = useState<PropsTarget | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [sortField, setSortField] = useState<SortField>("date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [sortOpen, setSortOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -106,9 +121,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     if (folderId) params.set("folderId", folderId);
     if (debouncedQuery) params.set("q", debouncedQuery);
     if (appView === "recent" || appView === "favorites" || appView === "trash") params.set("view", appView);
+    params.set("sort", sortField);
+    params.set("dir", sortDir);
     for (const [k, v] of Object.entries(extra ?? {})) params.set(k, v);
     return params;
-  }, [folderId, debouncedQuery, appView]);
+  }, [folderId, debouncedQuery, appView, sortField, sortDir]);
 
   const refresh = useCallback(async () => {
     const key = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
@@ -472,6 +489,93 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       toast.error(error instanceof Error ? error.message : "Could not restore file.");
     }
   }
+
+  // ── Rename a file ──────────────────────────────────────────────────────────
+  async function submitRenameFile(name: string) {
+    if (!renameFile) return;
+    const id = renameFile.id;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setFiles(fs => fs.map(f => f.id === id ? { ...f, originalName: trimmed, filename: trimmed } : f));
+    setRenameFile(null);
+    try {
+      await apiFetch(`/api/files/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: trimmed })
+      });
+      toast.success("File renamed");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not rename file.");
+      refresh();
+    }
+  }
+
+  // ── Move one or more files into a folder ───────────────────────────────────
+  async function moveFilesTo(ids: string[], targetFolderId: string | null) {
+    setMoveModal(null);
+    // If moving out of the current folder view, drop them from the list.
+    const leavingView = (targetFolderId ?? null) !== (folderId ?? null) && appView === "files";
+    if (leavingView) setFiles(fs => fs.filter(f => !ids.includes(f.id)));
+    clearSelection();
+    try {
+      await apiFetch("/api/files/bulk", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids, action: "move", folderId: targetFolderId })
+      });
+      toast.success(ids.length > 1 ? `Moved ${ids.length} files` : "File moved");
+      refreshStats();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not move.");
+      refresh();
+    }
+  }
+
+  // ── Selection + bulk actions ───────────────────────────────────────────────
+  const toggleSelect = useCallback((id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  async function bulkAction(action: "trash" | "delete" | "favorite" | "restore", ids: string[]) {
+    if (!ids.length) return;
+    const removes = action === "trash" || action === "delete" || action === "restore" || (action === "favorite" && appView === "favorites");
+    if (removes) setFiles(fs => fs.filter(f => !ids.includes(f.id)));
+    else setFiles(fs => fs.map(f => ids.includes(f.id) ? { ...f, isFavorite: true } : f));
+    clearSelection();
+    try {
+      await apiFetch("/api/files/bulk", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids, action })
+      });
+      toast.success(`${ids.length} file${ids.length > 1 ? "s" : ""} updated`);
+      refreshStats();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Bulk action failed.");
+      refresh();
+    }
+  }
+
+  function bulkDownload(ids: string[]) {
+    ids.forEach((id, i) => setTimeout(() => {
+      const a = document.createElement("a");
+      a.href = `/api/download/${id}`;
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }, i * 400));
+    toast.info(`Downloading ${ids.length} file${ids.length > 1 ? "s" : ""}…`);
+  }
+
+  // Clear any selection when moving between folders or views.
+  useEffect(() => { clearSelection(); }, [appView, folderId, clearSelection]);
 
   async function shareFolder(folderId: string) {
     try {
@@ -875,6 +979,44 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               >
                 <Plus className="h-3.5 w-3.5" /> <span className="hidden sm:inline">New Folder</span>
               </button>
+
+              <DropdownMenu.Root open={sortOpen} onOpenChange={setSortOpen}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    className="btn-ripple flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-[0.96]"
+                    style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}
+                    aria-label="Sort"
+                  >
+                    <ArrowUpDown className="h-3.5 w-3.5" />
+                    <span className="hidden md:inline">{sortField === "date" ? "Date" : sortField === "name" ? "Name" : "Size"}</span>
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[180px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid var(--border-med)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}>
+                    {([
+                      ["date", "Date"],
+                      ["name", "Name"],
+                      ["size", "Size"]
+                    ] as [SortField, string][]).map(([field, label]) => (
+                      <DropdownMenu.Item
+                        key={field}
+                        onSelect={() => {
+                          if (sortField === field) setSortDir(d => (d === "asc" ? "desc" : "asc"));
+                          else { setSortField(field); setSortDir(field === "name" ? "asc" : "desc"); }
+                        }}
+                        className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
+                        style={{ color: sortField === field ? "var(--cyan)" : "var(--text-primary)" }}
+                        onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"}
+                        onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+                      >
+                        {label}
+                        {sortField === field ? <span className="text-[11px]">{sortDir === "asc" ? "↑" : "↓"}</span> : null}
+                      </DropdownMenu.Item>
+                    ))}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+
               <div className="flex items-center rounded-xl overflow-hidden" style={{ border: "1px solid var(--border-med)" }}>
                 <button
                   onClick={() => setView("grid")}
@@ -964,7 +1106,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                         style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.2), rgba(0,229,255,0.1))", border: "1px solid rgba(139,92,246,0.3)" }}>
                         <Folder className="h-4 w-4" style={{ color: "#a78bfa" }} />
                       </div>
-                      <span className="truncate text-[13px] font-[600]" style={{ color: "var(--text-primary)" }}>{folder.name}</span>
+                      <span className="min-w-0 flex flex-col">
+                        <span className="truncate text-[13px] font-[600]" style={{ color: "var(--text-primary)" }}>{folder.name}</span>
+                        {typeof folder.size === "number" ? (
+                          <span className="truncate text-[10px]" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>
+                            {folder.fileCount ?? 0} item{(folder.fileCount ?? 0) === 1 ? "" : "s"} · {formatBytes(folder.size)}
+                          </span>
+                        ) : null}
+                      </span>
                     </button>
                     <DropdownMenu.Root>
                       <DropdownMenu.Trigger asChild>
@@ -974,6 +1123,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                       </DropdownMenu.Trigger>
                       <DropdownMenu.Portal>
                         <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[160px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid var(--border-med)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}>
+                          <DropdownMenu.Item onSelect={() => setPropsTarget({ kind: "folder", folder })} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                            <Info className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Properties
+                          </DropdownMenu.Item>
                           <DropdownMenu.Item onSelect={() => setFolderModal({ mode: "rename", id: folder.id, value: folder.name })} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
                             <Pencil className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Rename
                           </DropdownMenu.Item>
@@ -1011,6 +1163,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     onDelete={() => deleteFile(file.id)}
                     onFavorite={() => toggleFavorite(file.id)}
                     onRestore={() => restoreFile(file.id)}
+                    onRename={() => setRenameFile({ id: file.id, value: file.originalName })}
+                    onMove={() => setMoveModal({ ids: selected.size > 0 && selected.has(file.id) ? [...selected] : [file.id] })}
+                    onProperties={() => setPropsTarget({ kind: "file", file })}
+                    selected={selected.has(file.id)}
+                    selectionActive={selected.size > 0}
+                    onToggleSelect={() => toggleSelect(file.id)}
                   />
                 ))}
               </AnimatePresence>
@@ -1082,14 +1240,87 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           />
         )}
       </AnimatePresence>
+
+      {/* Rename file modal */}
+      <AnimatePresence>
+        {renameFile && (
+          <FolderModal
+            mode="rename"
+            initialValue={renameFile.value}
+            title="Rename File"
+            onConfirm={submitRenameFile}
+            onClose={() => setRenameFile(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Move-to-folder modal */}
+      <AnimatePresence>
+        {moveModal && (
+          <MoveModal
+            count={moveModal.ids.length}
+            currentFolderId={folderId}
+            onMove={target => moveFilesTo(moveModal.ids, target)}
+            onClose={() => setMoveModal(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Properties panel */}
+      <AnimatePresence>
+        {propsTarget && (
+          <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} />
+        )}
+      </AnimatePresence>
+
+      {/* Bulk-action bar */}
+      <AnimatePresence>
+        {selected.size > 0 && (
+          <motion.div
+            initial={{ y: 80, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 80, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 380, damping: 30 }}
+            className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-2xl border px-3 py-2 shadow-2xl"
+            style={{ borderColor: "var(--cyan-border)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}
+          >
+            <span className="px-2 text-[13px] font-[700]" style={{ color: "var(--cyan)" }}>{selected.size} selected</span>
+            <button onClick={() => bulkDownload([...selected])} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>
+              <Download className="h-4 w-4" /> <span className="hidden sm:inline">Download</span>
+            </button>
+            {appView !== "trash" && (
+              <button onClick={() => setMoveModal({ ids: [...selected] })} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>
+                <FolderInput className="h-4 w-4" /> <span className="hidden sm:inline">Move</span>
+              </button>
+            )}
+            {appView === "trash" ? (
+              <button onClick={() => bulkAction("restore", [...selected])} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid rgba(16,255,160,0.4)", color: "#34d399" }}>
+                <RotateCw className="h-4 w-4" /> <span className="hidden sm:inline">Restore</span>
+              </button>
+            ) : (
+              <button onClick={() => bulkAction("favorite", [...selected])} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid rgba(251,191,36,0.4)", color: "#fbbf24" }}>
+                <Star className="h-4 w-4" /> <span className="hidden sm:inline">Favorite</span>
+              </button>
+            )}
+            <button onClick={() => { const ids = [...selected]; setConfirmModal({ title: appView === "trash" ? "Permanently Delete" : "Move to Trash", body: `${ids.length} file${ids.length > 1 ? "s" : ""} will be ${appView === "trash" ? "permanently deleted" : "moved to trash"}.`, danger: true, onConfirm: () => bulkAction(appView === "trash" ? "delete" : "trash", ids) }); }} className="flex h-9 items-center gap-1.5 rounded-xl px-3 text-[12px] font-[600] transition active:scale-95" style={{ border: "1px solid rgba(255,77,109,0.45)", color: "#f87171" }}>
+              <Trash2 className="h-4 w-4" /> <span className="hidden sm:inline">Delete</span>
+            </button>
+            <button onClick={clearSelection} className="grid h-9 w-9 place-items-center rounded-xl transition active:scale-90" style={{ color: "var(--text-muted)" }} aria-label="Clear selection">
+              <X className="h-4 w-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, onDelete, onFavorite, onRestore }: {
+function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, onDelete, onFavorite, onRestore, onRename, onMove, onProperties, selected, selectionActive, onToggleSelect }: {
   file: DriveFile; grid: boolean; index: number; appView: AppView;
   onPreview: () => void; onDownload: () => void; onShare: () => void; onDelete: () => void;
   onFavorite: () => void; onRestore: () => void;
+  onRename: () => void; onMove: () => void; onProperties: () => void;
+  selected: boolean; selectionActive: boolean; onToggleSelect: () => void;
 }) {
   const Icon = file.mimeType.startsWith("image/") ? Image : file.mimeType.startsWith("video/") ? Video : FileIcon;
   const [mediaLoaded, setMediaLoaded] = useState(false);
@@ -1115,15 +1346,24 @@ function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, 
       exit={{ opacity: 0, scale: 0.95 }}
       whileHover={{ y: grid ? -3 : 0, boxShadow: "0 8px 32px rgba(0,212,255,0.12)" }}
       transition={{ type: "spring", stiffness: 380, damping: 32, delay: Math.min(index * 0.035, 0.2) }}
-      className={cn("drive-card grad-border rounded-xl border p-3 transition", !grid && "flex items-center gap-3")}
-      style={{ borderColor: "var(--border-dim)", background: "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}
+      className={cn("drive-card grad-border group rounded-xl border p-3 transition", !grid && "flex items-center gap-3")}
+      style={{ borderColor: selected ? "var(--cyan)" : "var(--border-dim)", background: selected ? "rgba(0,229,255,0.06)" : "rgba(10,16,32,0.6)", backdropFilter: "blur(16px)" }}
     >
       <div
         className={cn("relative grid overflow-hidden place-items-center rounded-lg", grid ? "mb-3 aspect-video" : "h-12 w-12 shrink-0")}
-        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)", cursor: "zoom-in" }}
-        onClick={onPreview}
-        title="Click to preview"
+        style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)", cursor: selectionActive ? "pointer" : "zoom-in" }}
+        onClick={() => (selectionActive ? onToggleSelect() : onPreview())}
+        title={selectionActive ? "Select" : "Click to preview"}
       >
+        {/* Selection checkbox (appears on hover, sticks when selected) */}
+        <button
+          onClick={e => { e.stopPropagation(); onToggleSelect(); }}
+          className={cn("absolute top-1.5 left-1.5 z-20 grid h-7 w-7 place-items-center rounded-lg transition active:scale-90", selected || selectionActive ? "opacity-100" : "opacity-0 group-hover:opacity-100")}
+          style={{ background: "rgba(0,0,0,0.55)", border: selected ? "1px solid var(--cyan)" : "1px solid rgba(255,255,255,0.15)" }}
+          aria-label={selected ? "Deselect" : "Select"}
+        >
+          <CheckSquare className="h-4 w-4" style={{ color: selected ? "var(--cyan)" : "#94a3b8", fill: selected ? "rgba(0,229,255,0.15)" : "none" }} />
+        </button>
         {isImage && !mediaLoaded ? (
           <div className="skeleton absolute inset-0" />
         ) : null}
@@ -1217,6 +1457,31 @@ function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, 
         >
           <Trash2 className="h-4 w-4" />
         </button>
+        {!inTrash && (
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button className="grid h-9 w-9 place-items-center rounded-lg border transition active:scale-[0.96]" style={cyanBtn.base} aria-label="More actions">
+                <MoreVertical className="h-4 w-4" />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-[170px] overflow-hidden rounded-xl p-1 shadow-2xl" style={{ border: "1px solid var(--border-med)", background: "var(--bg-1)", backdropFilter: "blur(24px)" }}>
+                <DropdownMenu.Item onSelect={onRename} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                  <Pencil className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Rename
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={onMove} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                  <FolderInput className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Move to…
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={onToggleSelect} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                  <CheckSquare className="h-4 w-4" style={{ color: "var(--cyan)" }} /> {selected ? "Deselect" : "Select"}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={onProperties} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                  <Info className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Properties
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        )}
       </div>
       {/* Mobile list view only: collapse into ⋯ dropdown */}
       {!grid && (
@@ -1276,6 +1541,19 @@ function FileTile({ file, grid, index, appView, onPreview, onDownload, onShare, 
                 >
                   <Link2 className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Share
                 </DropdownMenu.Item>
+                {!inTrash && (
+                  <>
+                    <DropdownMenu.Item onSelect={onRename} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                      <Pencil className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Rename
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item onSelect={onMove} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                      <FolderInput className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Move to…
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item onSelect={onProperties} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition" style={{ color: "var(--text-primary)" }} onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"} onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}>
+                      <Info className="h-4 w-4" style={{ color: "var(--cyan)" }} /> Properties
+                    </DropdownMenu.Item>
+                  </>
+                )}
                 <DropdownMenu.Item
                   onSelect={onDelete}
                   className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm outline-none transition"
@@ -1466,7 +1744,7 @@ function CloudIcon({ size = 20 }: { size?: number }) {
   );
 }
 
-function FolderModal({ mode, initialValue, onConfirm, onClose }: { mode: "create" | "rename"; initialValue: string; onConfirm: (name: string) => void; onClose: () => void }) {
+function FolderModal({ mode, initialValue, onConfirm, onClose, title }: { mode: "create" | "rename"; initialValue: string; onConfirm: (name: string) => void; onClose: () => void; title?: string }) {
   const [value, setValue] = useState(initialValue);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -1492,14 +1770,14 @@ function FolderModal({ mode, initialValue, onConfirm, onClose }: { mode: "create
         style={{ border: "1px solid rgba(0,229,255,0.18)", background: "rgba(6,11,20,0.98)", boxShadow: "0 0 50px rgba(0,229,255,0.08), 0 0 100px rgba(139,92,246,0.05)" }}
         onClick={e => e.stopPropagation()}
       >
-        <h2 className="text-[17px] font-[800] mb-1 gradient-text">{mode === "create" ? "New Folder" : "Rename Folder"}</h2>
+        <h2 className="text-[17px] font-[800] mb-1 gradient-text">{title ?? (mode === "create" ? "New Folder" : "Rename Folder")}</h2>
         <p className="text-[12px] mb-4" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>{mode === "create" ? "Enter a name for the new folder" : "Enter a new name"}</p>
         <input
           autoFocus
           value={value}
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter" && value.trim()) onConfirm(value.trim()); }}
-          placeholder="folder-name"
+          placeholder="name"
           className="w-full rounded-xl px-4 py-3 text-[13px] outline-none transition"
           style={{ background: "rgba(0,229,255,0.04)", border: "1px solid var(--cyan-border)", color: "var(--text-primary)", fontFamily: "var(--font-mono),monospace" }}
         />
@@ -1569,6 +1847,133 @@ function AboutPanel() {
         </div>
       </div>
     </div>
+  );
+}
+
+function MoveModal({ count, currentFolderId, onMove, onClose }: { count: number; currentFolderId: string | null; onMove: (folderId: string | null) => void; onClose: () => void }) {
+  const [folders, setFolders] = useState<DriveFolder[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    apiFetch<{ folders: DriveFolder[] }>("/api/folders?flat=1")
+      .then(d => setFolders(d.folders))
+      .catch(() => toast.error("Could not load folders."))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const nameById = new Map(folders.map(f => [f.id, f.name]));
+  const pathOf = (f: DriveFolder) => {
+    const parts = [f.name];
+    let pid = f.parentId;
+    let guard = 0;
+    while (pid && guard++ < 20) { const n = nameById.get(pid); if (!n) break; parts.unshift(n); pid = folders.find(x => x.id === pid)?.parentId ?? null; }
+    return parts.join(" / ");
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(12px)" }} onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.88, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.88, opacity: 0, y: 20 }} transition={{ type: "spring", damping: 22, stiffness: 340 }}
+        className="w-full max-w-sm rounded-2xl p-6" style={{ border: "1px solid rgba(0,229,255,0.18)", background: "rgba(6,11,20,0.98)" }} onClick={e => e.stopPropagation()}
+      >
+        <h2 className="text-[17px] font-[800] mb-1 gradient-text">Move {count > 1 ? `${count} files` : "file"}</h2>
+        <p className="text-[12px] mb-4" style={{ color: "var(--text-secondary)", fontFamily: "var(--font-mono),monospace" }}>Choose a destination folder</p>
+        <div className="max-h-[46vh] overflow-y-auto space-y-1 pr-1">
+          <button
+            onClick={() => onMove(null)}
+            disabled={currentFolderId === null}
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[13px] font-[600] transition disabled:opacity-30"
+            style={{ border: "1px solid var(--border-med)", color: "var(--text-primary)" }}
+          >
+            <Home className="h-4 w-4" style={{ color: "var(--cyan)" }} /> My Files (root)
+          </button>
+          {loading ? (
+            <div className="py-6 text-center text-[12px]" style={{ color: "var(--text-muted)" }}>Loading folders…</div>
+          ) : folders.length === 0 ? (
+            <div className="py-6 text-center text-[12px]" style={{ color: "var(--text-muted)" }}>No folders yet — create one first.</div>
+          ) : (
+            folders.map(f => (
+              <button
+                key={f.id}
+                onClick={() => onMove(f.id)}
+                disabled={f.id === currentFolderId}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-[13px] font-[600] transition disabled:opacity-30"
+                style={{ border: "1px solid var(--border-dim)", color: "var(--text-primary)" }}
+                onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = "var(--cyan-dim)"}
+                onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
+              >
+                <Folder className="h-4 w-4 shrink-0" style={{ color: "#a78bfa" }} />
+                <span className="truncate">{pathOf(f)}</span>
+              </button>
+            ))
+          )}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-[13px] font-[500] transition" style={{ border: "1px solid var(--border-med)", color: "var(--text-secondary)" }}>Cancel</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function PropertiesModal({ target, onClose }: { target: PropsTarget; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const rows: [string, string][] = target.kind === "file"
+    ? [
+        ["Name", target.file.originalName],
+        ["Type", target.file.mimeType || "file"],
+        ["Size", formatBytes(target.file.size)],
+        ["Storage", target.file.storageMode === "BOT" ? "Telegram bot" : "Telegram (personal)"],
+        ["Favorite", target.file.isFavorite ? "Yes" : "No"],
+        ["Added", new Date(target.file.createdAt).toLocaleString()]
+      ]
+    : [
+        ["Name", target.folder.name],
+        ["Items", String(target.folder.fileCount ?? 0)],
+        ["Total size", formatBytes(target.folder.size ?? 0)],
+        ["Created", new Date(target.folder.createdAt).toLocaleString()]
+      ];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(12px)" }} onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.88, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.88, opacity: 0, y: 20 }} transition={{ type: "spring", damping: 22, stiffness: 340 }}
+        className="w-full max-w-sm rounded-2xl p-6" style={{ border: "1px solid rgba(0,229,255,0.18)", background: "rgba(6,11,20,0.98)" }} onClick={e => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-xl" style={{ background: "linear-gradient(135deg, rgba(0,229,255,0.15), rgba(139,92,246,0.12))", border: "1px solid var(--cyan-border)" }}>
+            {target.kind === "folder" ? <Folder className="h-5 w-5" style={{ color: "#a78bfa" }} /> : <Info className="h-5 w-5" style={{ color: "var(--cyan)" }} />}
+          </div>
+          <h2 className="text-[16px] font-[800] gradient-text">Properties</h2>
+        </div>
+        <div className="space-y-2.5">
+          {rows.map(([k, v]) => (
+            <div key={k} className="flex items-start justify-between gap-4">
+              <span className="text-[12px] shrink-0" style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono),monospace" }}>{k}</span>
+              <span className="text-[13px] text-right break-words" style={{ color: "var(--text-primary)" }}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end">
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-[13px] font-[600] transition" style={{ border: "1px solid var(--cyan-border)", background: "var(--cyan-dim)", color: "var(--cyan)" }}>Close</button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

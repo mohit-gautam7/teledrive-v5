@@ -18,6 +18,15 @@ export async function GET(request: NextRequest) {
     const take = Math.min(Number(searchParams.get("take")) || PAGE_SIZE, MAX_PAGE_SIZE);
     const skip = Math.max(Number(searchParams.get("skip")) || 0, 0);
 
+    const dir = searchParams.get("dir") === "asc" ? "asc" : "desc";
+    const sortField = searchParams.get("sort");
+    const orderBy =
+      sortField === "name"
+        ? { originalName: dir as "asc" | "desc" }
+        : sortField === "size"
+          ? { size: dir as "asc" | "desc" }
+          : { createdAt: dir as "asc" | "desc" };
+
     const where = {
       userId: user.id,
       isDeleted: view === "trash" ? true : false,
@@ -36,7 +45,7 @@ export async function GET(request: NextRequest) {
     // take + 1 so we know whether another page exists without a COUNT query.
     const rows = await prisma.file.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy,
       skip,
       take: take + 1
     });
