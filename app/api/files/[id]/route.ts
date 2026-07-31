@@ -5,8 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
 import { env } from "@/lib/env";
 import { deleteMessagesBot } from "@/lib/telegram-bot";
-import { deleteChunkMessages } from "@/lib/telegram";
-import { decryptSecret } from "@/lib/crypto";
+import { purgeTelegramCopies } from "@/lib/file-delete";
 
 const patchSchema = z.union([
   z.object({ name: z.string().min(1).max(180) }),
@@ -50,16 +49,8 @@ export async function DELETE(_request: NextRequest, { params }: { params: { id: 
 
     if (file.isDeleted) {
       // Permanent delete — also try to remove the Telegram copies.
-      type ChunkLite = { telegramFileId: string | null; telegramMsgId: number };
-      const botChunkMsgIds = file.chunks.filter((c: ChunkLite) => c.telegramFileId && c.telegramMsgId > 0).map((c: ChunkLite) => c.telegramMsgId);
-      const legacyChunkMsgIds = file.chunks.filter((c: ChunkLite) => !c.telegramFileId).map((c: ChunkLite) => c.telegramMsgId);
+      await purgeTelegramCopies(file);
 
-      if (botChunkMsgIds.length && file.storageChatId) {
-        await deleteMessagesBot(file.storageChatId, botChunkMsgIds);
-      }
-      if (legacyChunkMsgIds.length) {
-        await deleteChunkMessages(legacyChunkMsgIds, decryptSecret(file.user.storageConfig?.telegramSession));
-      }
       if (!file.isChunked && file.storageMode === "BOT" && file.telegramMessageId) {
         const channelId = file.user.storageConfig?.botChannelId || env.BOT_CHANNEL_ID;
         if (channelId) {

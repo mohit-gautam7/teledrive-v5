@@ -11,7 +11,9 @@ export function toPublicFile(file: {
   mimeType: string;
   size: bigint;
   storageMode: StorageMode;
+  backend: string;
   telegramMessageId: string | null;
+  storageChatId: string | null;
   folderId: string | null;
   isFavorite: boolean;
   createdAt: Date;

@@ -6,4 +6,27 @@
  * far below the 50 MB bot-upload limit.
  */
 export const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MiB
-export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB — Telegram's per-file cap
+
+/** Telegram's per-file ceiling on a normal user account. */
+export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
+/** Telegram Premium raises the per-file ceiling to 4 GB. */
+export const MAX_FILE_SIZE_PREMIUM = 4 * 1024 * 1024 * 1024; // 4 GB
+
+/**
+ * How many chunks of one file are in flight at once.
+ *
+ * Every chunk is a serverless invocation that then does a Telegram sendDocument,
+ * so this is the main dial on how hard one browser leans on the bot's ~30 msg/s
+ * budget. Three is enough to hide per-request latency without a single user
+ * monopolising the bot when several people upload at the same time.
+ */
+export const CHUNK_CONCURRENCY = 3;
+
+/** MTProto splits big files into 512 KiB parts; 4 MiB of payload = 8 parts. */
+export const MTPROTO_PART_SIZE = 512 * 1024;
+
+/** Files at or above this size prefer the user's own MTProto session when one
+ *  is authorised — one Telegram message instead of hundreds of bot chunks. */
+export const MTPROTO_PREFERRED_ABOVE = 64 * 1024 * 1024; // 64 MB
+
+export type UploadBackend = "bot" | "mtproto";

@@ -1,10 +1,10 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
-import { Cloud, HardDrive, Lock, MessageCircle, ShieldCheck, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/button";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { ArrowRight, Check, Infinity as InfinityIcon, KeyRound, Loader2, Lock, MessageCircle, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { Logo } from "@/components/logo";
 
 declare global {
   interface Window {
@@ -12,91 +12,122 @@ declare global {
   }
 }
 
-const BOT_USERNAME = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "YourBotUsername";
+const BOT_USERNAME = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "";
 
-const features = [
-  { icon: Upload, label: "Files up to 2 GB via Telegram" },
-  { icon: Cloud, label: "Personal Telegram storage backend" },
-  { icon: Lock, label: "HTTP-only JWT sessions" }
+type Providers = { botCode: boolean; widget: boolean; google: boolean; ownerKey: boolean };
+type Tab = "code" | "widget";
+
+const PILLARS = [
+  { icon: Lock, title: "Your account, your bytes", body: "Files land in your own Telegram chat. No third-party bucket, nothing to trust but Telegram." },
+  { icon: InfinityIcon, title: "Storage that keeps going", body: "Telegram sets the ceiling, not us — up to 2 GB per file, 4 GB with Premium." },
+  { icon: ShieldCheck, title: "Secrets stay server-side", body: "Bot tokens never reach the browser. Every byte is proxied, every session is an HTTP-only cookie." }
 ];
 
 export default function Login() {
-  const mountRef = useRef<HTMLDivElement>(null);
+  const reduceMotion = useReducedMotion();
+
+  const [providers, setProviders] = useState<Providers | null>(null);
+  const [tab, setTab] = useState<Tab>("code");
   const [error, setError] = useState("");
-  const [isLocalhost, setIsLocalhost] = useState(false);
-  const [botCode, setBotCode] = useState("");
-  const [botLoading, setBotLoading] = useState(false);
-  const [tab, setTab] = useState<"widget" | "bot">("bot");
+  const [notice, setNotice] = useState("");
+  const [linking, setLinking] = useState(false);
+
+  const [code, setCode] = useState("");
+  const [codeLoading, setCodeLoading] = useState(false);
+
   const [showOwner, setShowOwner] = useState(false);
   const [ownerKey, setOwnerKey] = useState("");
   const [ownerLoading, setOwnerLoading] = useState(false);
 
+  const [isLocalhost, setIsLocalhost] = useState(false);
+
   useEffect(() => {
     setIsLocalhost(["localhost", "127.0.0.1"].includes(window.location.hostname));
+
+    const params = new URLSearchParams(window.location.search);
+    const urlError = params.get("error");
+    if (urlError) setError(urlError);
+    if (params.get("link") === "google") {
+      setLinking(true);
+      setNotice("Google verified. Enter a Telegram code once to connect the account that will hold your files.");
+    }
+    if (urlError || params.get("link")) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+
+    apiFetch<Providers>("/api/auth/providers").then(setProviders).catch(() => {
+      setProviders({ botCode: true, widget: Boolean(BOT_USERNAME), google: false, ownerKey: false });
+    });
+  }, []);
+
+  // The Telegram widget calls this global once the user confirms in their app.
+  useEffect(() => {
     window.onTelegramAuth = async (telegramUser: unknown) => {
       setError("");
       try {
-        await authRequestWithRetry("/api/auth/login", {
+        await apiFetch("/api/auth/login", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(telegramUser)
         });
         window.location.href = "/drive";
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Login failed. Check BOT_TOKEN and BotFather domain.");
+        setError(err instanceof Error ? err.message : "Telegram rejected the sign-in. Check the domain set in BotFather.");
       }
+    };
+    return () => {
+      delete window.onTelegramAuth;
     };
   }, []);
 
-  useEffect(() => {
-    if (tab !== "widget") return;
-    if (!mountRef.current || mountRef.current.dataset.loaded) return;
-    mountRef.current.dataset.loaded = "true";
+  // Telegram's widget is a <script> that replaces itself with an iframe, so it
+  // has to be injected into a live node each time the tab becomes visible.
+  const mountWidget = useCallback((node: HTMLDivElement | null) => {
+    if (!node || node.dataset.loaded === "true" || !BOT_USERNAME) return;
+    node.dataset.loaded = "true";
     const script = document.createElement("script");
     script.src = "https://telegram.org/js/telegram-widget.js?22";
     script.async = true;
     script.setAttribute("data-telegram-login", BOT_USERNAME);
     script.setAttribute("data-size", "large");
+    script.setAttribute("data-radius", "12");
     script.setAttribute("data-userpic", "true");
-    script.setAttribute("data-onauth", "onTelegramAuth(user)");
     script.setAttribute("data-request-access", "write");
-    mountRef.current.appendChild(script);
-  }, [tab]);
+    script.setAttribute("data-onauth", "onTelegramAuth(user)");
+    node.appendChild(script);
+  }, []);
 
-  async function handleBotLogin(e: React.FormEvent) {
-    e.preventDefault();
-    setBotLoading(true);
+  async function submitCode(event: React.FormEvent) {
+    event.preventDefault();
+    setCodeLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/auth/bot-login", {
+      const result = await apiFetch<{ linked: string | null }>("/api/auth/bot-login", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code: botCode.trim() })
+        body: JSON.stringify({ code: code.trim() })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Login failed");
+      if (result.linked) setNotice("Account linked. Signing you in…");
       window.location.href = "/drive";
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
-      setBotLoading(false);
+      setError(err instanceof Error ? err.message : "That code didn't work.");
+      setCodeLoading(false);
     }
   }
 
-  async function handleOwnerLogin(e: React.FormEvent) {
-    e.preventDefault();
+  async function submitOwner(event: React.FormEvent) {
+    event.preventDefault();
     setOwnerLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/auth/owner-login", {
+      await apiFetch("/api/auth/owner-login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key: ownerKey })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Invalid key");
       window.location.href = "/drive";
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid key");
+      setError(err instanceof Error ? err.message : "Invalid key.");
       setOwnerLoading(false);
     }
   }
@@ -110,230 +141,287 @@ export default function Login() {
     }
   }
 
+  const fade = reduceMotion
+    ? {}
+    : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] as const } };
+
   return (
-    <main
-      className="relative min-h-screen overflow-x-hidden overflow-y-auto text-white"
-      style={{ background: "linear-gradient(135deg, #020617 0%, #0c1a3a 50%, #020617 100%)" }}
-    >
-      {/* Orbs — clipped so they don't cause horizontal scroll on mobile */}
-      <div style={{ position:"absolute", borderRadius:"50%", pointerEvents:"none", width:"min(600px,150vw)", height:"min(600px,150vw)", top:-120, right:-80, background:"radial-gradient(circle, rgba(56,189,248,0.4) 0%, rgba(56,189,248,0.08) 50%, transparent 70%)", filter:"blur(70px)", animation:"orb-float 9s ease-in-out infinite", zIndex:0 }} />
-      <div style={{ position:"absolute", borderRadius:"50%", pointerEvents:"none", width:"min(500px,120vw)", height:"min(500px,120vw)", bottom:-80, left:-80, background:"radial-gradient(circle, rgba(99,102,241,0.35) 0%, rgba(99,102,241,0.06) 50%, transparent 70%)", filter:"blur(70px)", animation:"orb-float-reverse 11s ease-in-out infinite", zIndex:0 }} />
-      <div style={{ position:"absolute", inset:0, pointerEvents:"none", backgroundImage:"radial-gradient(rgba(148,163,184,0.06) 1px, transparent 1px)", backgroundSize:"32px 32px", zIndex:0 }} />
-
-      {/* Mobile header — only visible on small screens */}
-      <div className="relative z-10 flex items-center justify-center gap-3 px-4 pt-8 pb-2 md:hidden">
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", width:40, height:40, borderRadius:12, background:"linear-gradient(135deg, #38bdf8, #2563eb)", boxShadow:"0 6px 20px rgba(56,189,248,0.35)", flexShrink:0 }}>
-          <HardDrive style={{ width:20, height:20, color:"#fff" }} />
-        </div>
-        <div>
-          <p style={{ fontSize:11, fontWeight:600, letterSpacing:"0.15em", color:"#64748b", textTransform:"uppercase", margin:0 }}>TeleDrive</p>
-          <p style={{ fontSize:15, fontWeight:700, color:"#e2e8f0", margin:0, lineHeight:1.2 }}>Personal Cloud Drive</p>
-        </div>
-      </div>
-
-      {/* Content grid */}
-      <div className="relative z-10 mx-auto grid min-h-screen w-full max-w-6xl items-center gap-10 px-4 py-8 md:grid-cols-[1.1fr_0.9fr] md:gap-12 md:px-8 md:py-12" style={{ boxSizing:"border-box" }}>
-
-        {/* ── Left: Hero — hidden on mobile ── */}
-        <motion.section
-          className="hidden md:block space-y-8"
-          initial={{ opacity:0, y:30 }}
-          animate={{ opacity:1, y:0 }}
-          transition={{ duration:0.6, ease:"easeOut" }}
+    <main className="app-bg grid-overlay relative min-h-[100dvh] w-full overflow-x-hidden">
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-[1240px] flex-col px-5 py-6 sm:px-8 lg:px-10">
+        {/* ── Masthead ── */}
+        <motion.header
+          className="flex items-center justify-between gap-4"
+          {...(reduceMotion ? {} : { initial: { opacity: 0, y: -12 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const } })}
         >
-          <motion.div initial={{ opacity:0, y:10 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.2 }} style={{ display:"inline-flex", alignItems:"center", gap:8, borderRadius:999, border:"1px solid rgba(56,189,248,0.3)", background:"rgba(56,189,248,0.1)", padding:"6px 16px", fontSize:13, color:"#7dd3fc" }}>
-            <ShieldCheck style={{ width:15, height:15 }} />
-            Server-side secrets · Telegram-backed storage
-          </motion.div>
-
-          <motion.div className="flex items-center gap-3" initial={{ opacity:0, x:-16 }} animate={{ opacity:1, x:0 }} transition={{ delay:0.25 }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", width:46, height:46, borderRadius:14, background:"linear-gradient(135deg, #38bdf8, #2563eb)", boxShadow:"0 8px 24px rgba(56,189,248,0.35)" }}>
-              <HardDrive style={{ width:22, height:22, color:"#fff" }} />
-            </div>
-            <span style={{ fontSize:12, fontWeight:600, letterSpacing:"0.15em", color:"#94a3b8", textTransform:"uppercase" }}>TeleDrive Personal</span>
-          </motion.div>
-
-          <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.3 }}>
-            <h1 className="max-w-3xl font-bold tracking-tight" style={{ fontSize:"clamp(2rem, 5vw, 4rem)", lineHeight:1.1, background:"linear-gradient(135deg, #ffffff 0%, #cbd5e1 60%, #64748b 100%)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", backgroundClip:"text" }}>
-              Your Personal Cloud Drive
-            </h1>
-            <p className="mt-4 max-w-xl text-base leading-relaxed" style={{ color:"#94a3b8" }}>
-              A private cloud drive with Telegram login, folder browsing, uploads, previews, and share links.
-            </p>
-          </motion.div>
-
-          <div className="grid max-w-2xl gap-3 sm:grid-cols-3">
-            {features.map(({ icon: Icon, label }, i) => (
-              <motion.div key={label} initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.38 + i * 0.1 }} whileHover={{ y:-4, scale:1.03 }} style={{ borderRadius:14, border:"1px solid rgba(255,255,255,0.1)", background:"rgba(255,255,255,0.04)", padding:16, fontSize:13, color:"#94a3b8", backdropFilter:"blur(12px)" }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"center", width:34, height:34, borderRadius:9, background:"rgba(56,189,248,0.12)", marginBottom:12 }}>
-                  <Icon style={{ width:16, height:16, color:"#38bdf8" }} />
-                </div>
-                {label}
-              </motion.div>
-            ))}
+          <div className="flex items-center gap-2.5">
+            <Logo size={30} />
+            <span className="display text-[17px] tracking-tight">TeleDrive</span>
           </div>
-        </motion.section>
+          {BOT_USERNAME ? (
+            <a href={`https://t.me/${BOT_USERNAME}`} target="_blank" rel="noopener noreferrer" className="link-underline t-sm hidden sm:inline-flex">
+              @{BOT_USERNAME}
+            </a>
+          ) : null}
+        </motion.header>
 
-        {/* ── Right: Login card ── */}
-        <motion.section
-          className="w-full mx-auto"
-          style={{ maxWidth: "min(100%, 440px)" }}
-          initial={{ opacity:0, y:24, scale:0.97 }}
-          animate={{ opacity:1, y:0, scale:1 }}
-          transition={{ duration:0.5, delay:0.15, ease:"easeOut" }}
-        >
-          <div style={{ position:"relative", borderRadius:20, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", backdropFilter:"blur(28px)", WebkitBackdropFilter:"blur(28px)", padding:"clamp(16px,5vw,28px)", boxShadow:"0 32px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08)", boxSizing:"border-box", width:"100%", overflow:"hidden" }}>
-            <div style={{ position:"absolute", inset:-1, borderRadius:21, pointerEvents:"none", background:"linear-gradient(135deg, rgba(56,189,248,0.15) 0%, transparent 50%, rgba(99,102,241,0.1) 100%)" }} />
+        {/* ── Body ── */}
+        <div className="grid flex-1 items-center gap-10 py-8 lg:grid-cols-[1.05fr_minmax(0,410px)] lg:gap-14 lg:py-10">
+          {/* Editorial column */}
+          <section className="min-w-0">
+            <motion.p className="eyebrow" {...fade}>
+              Personal cloud · Telegram-backed
+            </motion.p>
 
-            {/* Traffic lights */}
-            <div className="flex gap-1.5 mb-5">
-              <span style={{ width:11, height:11, borderRadius:"50%", background:"rgba(248,113,113,0.7)", display:"block" }} />
-              <span style={{ width:11, height:11, borderRadius:"50%", background:"rgba(251,191,36,0.7)", display:"block" }} />
-              <span style={{ width:11, height:11, borderRadius:"50%", background:"rgba(52,211,153,0.7)", display:"block" }} />
-            </div>
+            <motion.h1
+              className="display t-hero mt-5 max-w-[15ch] text-balance"
+              {...(reduceMotion ? {} : { initial: { opacity: 0, y: 26 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.7, delay: 0.06, ease: [0.22, 1, 0.36, 1] as const } })}
+            >
+              Your drive,
+              <br />
+              <span className="brand-text">in your own</span>
+              <br />
+              Telegram.
+            </motion.h1>
 
-            {/* Tabs */}
-            <div className="flex gap-2 mb-5" style={{ borderBottom:"1px solid rgba(255,255,255,0.08)", paddingBottom:12 }}>
-              {([["bot","Via Bot Code"],["widget","Telegram Widget"]] as const).map(([id, label]) => (
-                <button
-                  key={id}
-                  onClick={() => { setTab(id); setError(""); }}
-                  style={{ flex:1, padding:"8px 0", borderRadius:9, border:"none", fontSize:13, fontWeight:600, cursor:"pointer", background: tab === id ? "rgba(56,189,248,0.15)" : "transparent", color: tab === id ? "#38bdf8" : "#475569", borderBottom: tab === id ? "2px solid #38bdf8" : "2px solid transparent", transition:"all 0.2s" }}
+            <motion.p
+              className="t-body mt-5 max-w-[46ch] leading-relaxed"
+              style={{ color: "var(--text-2)" }}
+              {...(reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, delay: 0.14, ease: [0.22, 1, 0.36, 1] as const } })}
+            >
+              Upload, browse, preview and share from anywhere. Every file is chunked and stored in your
+              private chat with the bot — so the storage is yours, and so is the account holding it.
+            </motion.p>
+
+            <ul className="mt-8 grid gap-px overflow-hidden rounded-2xl sm:grid-cols-3" style={{ background: "var(--border-dim)" }}>
+              {PILLARS.map(({ icon: Icon, title, body }, i) => (
+                <motion.li
+                  key={title}
+                  className="p-5"
+                  style={{ background: "var(--bg-0)" }}
+                  {...(reduceMotion
+                    ? {}
+                    : {
+                        initial: { opacity: 0, y: 20 },
+                        animate: { opacity: 1, y: 0 },
+                        transition: { duration: 0.55, delay: 0.24 + i * 0.08, ease: [0.22, 1, 0.36, 1] as const }
+                      })}
                 >
-                  {label}
-                </button>
+                  <Icon className="h-4 w-4" style={{ color: "var(--accent)" }} />
+                  <p className="t-sm mt-3 font-semibold" style={{ color: "var(--text-1)" }}>{title}</p>
+                  <p className="t-xs mt-1.5 leading-relaxed" style={{ color: "var(--text-3)" }}>{body}</p>
+                </motion.li>
               ))}
-            </div>
+            </ul>
+          </section>
 
-            <AnimatePresence mode="wait">
-              {tab === "bot" ? (
-                <motion.div key="bot" initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} exit={{ opacity:0, y:-8 }} transition={{ duration:0.18 }}>
-                  <div className="space-y-2.5 mb-5">
-                    {[
-                      ["1", "Open Telegram, message", `@${BOT_USERNAME}`],
-                      ["2", "Send any message (e.g. hi)", ""],
-                      ["3", "Bot replies with a 6-digit code", ""],
-                      ["4", "Paste it below and press Login", ""]
-                    ].map(([n, text, highlight]) => (
-                      <div key={n} className="flex items-start gap-3">
-                        <span style={{ minWidth:20, height:20, borderRadius:"50%", background:"rgba(56,189,248,0.15)", border:"1px solid rgba(56,189,248,0.3)", color:"#38bdf8", fontSize:10, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", marginTop:1, flexShrink:0 }}>{n}</span>
-                        <span style={{ fontSize:13, color:"#94a3b8", lineHeight:1.5, wordBreak:"break-word", overflowWrap:"anywhere", minWidth:0 }}>
-                          {text}{highlight ? <> <span style={{ color:"#38bdf8", fontWeight:600 }}>{highlight}</span></> : null}
-                        </span>
-                      </div>
+          {/* Auth column */}
+          <motion.section
+            className="w-full min-w-0"
+            {...(reduceMotion
+              ? {}
+              : { initial: { opacity: 0, y: 26, scale: 0.985 }, animate: { opacity: 1, y: 0, scale: 1 }, transition: { duration: 0.65, delay: 0.1, ease: [0.22, 1, 0.36, 1] as const } })}
+          >
+            <div className="panel overflow-hidden" style={{ boxShadow: "var(--shadow-lg)" }}>
+              <div className="p-5 sm:p-7">
+                <h2 className="display t-h2">{linking ? "Finish linking" : "Sign in"}</h2>
+                <p className="t-sm mt-1.5" style={{ color: "var(--text-3)" }}>
+                  {linking ? "One last step to connect your storage." : "No password. Your Telegram account is the key."}
+                </p>
+
+                {notice ? (
+                  <p className="t-sm mt-4 rounded-xl px-3.5 py-2.5" style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)", color: "var(--accent)" }}>
+                    {notice}
+                  </p>
+                ) : null}
+
+                {/* Google — a second way in that maps onto a Telegram identity. */}
+                {providers?.google && !linking ? (
+                  <>
+                    <a href="/api/auth/google/start" className="btn btn-ghost mt-5 w-full" style={{ minHeight: 44 }}>
+                      <GoogleMark />
+                      Continue with Google
+                    </a>
+                    <div className="my-5 flex items-center gap-3">
+                      <span className="h-px flex-1" style={{ background: "var(--border-dim)" }} />
+                      <span className="eyebrow">or</span>
+                      <span className="h-px flex-1" style={{ background: "var(--border-dim)" }} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-5" />
+                )}
+
+                {/* Tabs */}
+                {providers?.widget && !linking ? (
+                  <div className="mb-5 flex gap-1 rounded-xl p-1" style={{ background: "var(--surface)" }}>
+                    {([["code", "Bot code"], ["widget", "One tap"]] as [Tab, string][]).map(([id, label]) => (
+                      <button
+                        key={id}
+                        onClick={() => { setTab(id); setError(""); }}
+                        className="t-sm relative flex-1 rounded-lg py-2 font-semibold transition"
+                        style={{ color: tab === id ? "var(--text-1)" : "var(--text-3)" }}
+                      >
+                        {tab === id ? (
+                          <motion.span
+                            layoutId="auth-tab"
+                            className="absolute inset-0 rounded-lg"
+                            style={{ background: "var(--surface-hi)" }}
+                            transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                          />
+                        ) : null}
+                        <span className="relative">{label}</span>
+                      </button>
                     ))}
                   </div>
+                ) : null}
 
-                  <a
-                    href={`https://t.me/${BOT_USERNAME}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, width:"100%", padding:"11px 0", borderRadius:11, background:"linear-gradient(135deg, rgba(56,189,248,0.2), rgba(37,99,235,0.2))", border:"1px solid rgba(56,189,248,0.3)", color:"#7dd3fc", fontSize:14, fontWeight:600, textDecoration:"none", marginBottom:12, boxSizing:"border-box" }}
-                  >
-                    <MessageCircle style={{ width:15, height:15, flexShrink:0 }} />
-                    Open @{BOT_USERNAME}
-                  </a>
-
-                  <form onSubmit={handleBotLogin} style={{ display:"flex", gap:8 }}>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      placeholder="6-digit code"
-                      value={botCode}
-                      onChange={e => setBotCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      required
-                      style={{ flex:1, minWidth:0, borderRadius:10, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.06)", color:"#e2e8f0", padding:"11px 12px", fontSize:18, fontWeight:700, letterSpacing:"0.3em", outline:"none", textAlign:"center" }}
-                    />
-                    <button
-                      type="submit"
-                      disabled={botLoading || botCode.length < 6}
-                      style={{ flexShrink:0, borderRadius:10, border:"none", background: botCode.length === 6 ? "linear-gradient(135deg,#0284c7,#0369a1)" : "rgba(255,255,255,0.07)", color: botCode.length === 6 ? "#fff" : "#475569", padding:"11px 18px", fontSize:14, fontWeight:700, cursor: botCode.length === 6 ? "pointer" : "not-allowed", transition:"all 0.2s", whiteSpace:"nowrap" }}
+                <AnimatePresence mode="wait" initial={false}>
+                  {tab === "code" || linking || !providers?.widget ? (
+                    <motion.div
+                      key="code"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.18 }}
                     >
-                      {botLoading ? "…" : "Login"}
-                    </button>
-                  </form>
-                </motion.div>
-              ) : (
-                <motion.div key="widget" initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }} exit={{ opacity:0, y:-8 }} transition={{ duration:0.18 }}>
-                  <p style={{ fontSize:13, color:"#64748b", marginBottom:16, lineHeight:1.6 }}>
-                    Click the button below → enter your phone number → confirm in your Telegram app.
-                  </p>
-                  <div className="min-h-12" ref={mountRef} />
-                  <Button className="mt-3 w-full" style={{ background:"rgba(255,255,255,0.07)", color:"#94a3b8", border:"1px solid rgba(255,255,255,0.1)" }} onClick={() => window.location.reload()}>
-                    Reload widget
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+                      <ol className="mb-5 space-y-2.5">
+                        {[
+                          BOT_USERNAME ? <>Message <span style={{ color: "var(--accent)" }}>@{BOT_USERNAME}</span> on Telegram</> : "Message the TeleDrive bot on Telegram",
+                          "Send anything — it replies with a 6-digit code",
+                          "Enter the code below"
+                        ].map((step, i) => (
+                          <li key={i} className="flex gap-3">
+                            <span
+                              className="mono grid h-5 w-5 shrink-0 place-items-center rounded-full"
+                              style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)", color: "var(--accent)", fontSize: 10 }}
+                            >
+                              {i + 1}
+                            </span>
+                            <span className="t-sm min-w-0 break-words" style={{ color: "var(--text-2)" }}>{step}</span>
+                          </li>
+                        ))}
+                      </ol>
 
-            {error ? (
-              <motion.p
-                className="mt-4 rounded-xl text-sm px-3 py-2.5"
-                style={{ background:"rgba(239,68,68,0.1)", border:"1px solid rgba(239,68,68,0.25)", color:"#fca5a5" }}
-                initial={{ opacity:0, y:4 }}
-                animate={{ opacity:1, y:0 }}
-              >
-                {error}
-              </motion.p>
-            ) : null}
+                      {BOT_USERNAME ? (
+                        <a href={`https://t.me/${BOT_USERNAME}`} target="_blank" rel="noopener noreferrer" className="btn btn-accent mb-3 w-full" style={{ minHeight: 42 }}>
+                          <MessageCircle className="h-4 w-4" />
+                          Open Telegram
+                        </a>
+                      ) : null}
 
-            {isLocalhost ? (
-              <Button className="mt-4 w-full" style={{ background:"#0284c7", color:"#fff", border:"none" }} onClick={devLogin}>
-                Continue locally
-              </Button>
-            ) : null}
+                      <form onSubmit={submitCode} className="flex gap-2">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          maxLength={6}
+                          placeholder="000000"
+                          aria-label="6-digit login code"
+                          value={code}
+                          onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                          required
+                          className="field mono flex-1 text-center"
+                          style={{ fontSize: 20, letterSpacing: "0.35em", paddingLeft: 0, paddingRight: 0, minHeight: 46 }}
+                        />
+                        <button type="submit" disabled={codeLoading || code.length < 6} className="btn btn-primary shrink-0 px-5" style={{ minHeight: 46 }}>
+                          {codeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                          <span className="hidden sm:inline">{linking ? "Link" : "Enter"}</span>
+                        </button>
+                      </form>
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="widget"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.18 }}
+                    >
+                      <p className="t-sm mb-4 leading-relaxed" style={{ color: "var(--text-2)" }}>
+                        Authorise with the official Telegram button — confirm on your phone and you&apos;re in.
+                      </p>
+                      <div ref={mountWidget} className="flex min-h-[48px] justify-center" />
+                      <p className="t-xs mt-4 leading-relaxed" style={{ color: "var(--text-3)" }}>
+                        Button missing? The site&apos;s domain has to be registered with BotFather via
+                        <span className="mono"> /setdomain</span>.
+                      </p>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
-            <div style={{ marginTop:16, borderTop:"1px solid rgba(255,255,255,0.07)", paddingTop:12 }}>
-              <button
-                type="button"
-                onClick={() => setShowOwner(v => !v)}
-                style={{ background:"none", border:"none", padding:0, cursor:"pointer", fontSize:12, color:"#334155", width:"100%", textAlign:"center" }}
-              >
-                {showOwner ? "▲ hide" : "Use owner key instead →"}
-              </button>
-              {showOwner && (
-                <motion.form
-                  onSubmit={handleOwnerLogin}
-                  style={{ display:"flex", gap:8, marginTop:10 }}
-                  initial={{ opacity:0, y:-6 }}
-                  animate={{ opacity:1, y:0 }}
-                >
-                  <input
-                    type="password"
-                    placeholder="Owner key…"
-                    value={ownerKey}
-                    onChange={e => setOwnerKey(e.target.value)}
-                    required
-                    style={{ flex:1, minWidth:0, borderRadius:10, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.06)", color:"#e2e8f0", padding:"9px 12px", fontSize:14, outline:"none" }}
-                  />
-                  <button
-                    type="submit"
-                    disabled={ownerLoading}
-                    style={{ flexShrink:0, borderRadius:10, border:"none", background:"#0284c7", color:"#fff", padding:"9px 16px", fontSize:14, fontWeight:600, cursor:ownerLoading ? "not-allowed" : "pointer", opacity:ownerLoading ? 0.6 : 1 }}
-                  >
-                    {ownerLoading ? "…" : "Go"}
+                <AnimatePresence>
+                  {error ? (
+                    <motion.p
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="t-sm mt-4 overflow-hidden rounded-xl px-3.5 py-2.5"
+                      style={{ background: "var(--danger-dim)", border: "1px solid var(--danger-border)", color: "var(--danger)" }}
+                    >
+                      {error}
+                    </motion.p>
+                  ) : null}
+                </AnimatePresence>
+
+                {isLocalhost ? (
+                  <button onClick={devLogin} className="btn btn-ghost mt-4 w-full">
+                    <Check className="h-4 w-4" /> Continue as local developer
                   </button>
-                </motion.form>
-              )}
-            </div>
-          </div>
-        </motion.section>
+                ) : null}
+              </div>
 
+              {/* Owner key — deliberately quiet. */}
+              {providers?.ownerKey ? (
+                <div className="px-5 pb-5 sm:px-7 sm:pb-6" style={{ borderTop: "1px solid var(--border-dim)", paddingTop: 14 }}>
+                  <button type="button" onClick={() => setShowOwner(v => !v)} className="link-underline t-xs mx-auto flex items-center gap-1.5">
+                    <KeyRound className="h-3 w-3" />
+                    {showOwner ? "Hide owner key" : "Sign in with owner key"}
+                  </button>
+                  <AnimatePresence>
+                    {showOwner ? (
+                      <motion.form
+                        onSubmit={submitOwner}
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="flex gap-2 overflow-hidden pt-3"
+                      >
+                        <input
+                          type="password"
+                          placeholder="Owner key"
+                          aria-label="Owner key"
+                          value={ownerKey}
+                          onChange={e => setOwnerKey(e.target.value)}
+                          required
+                          className="field flex-1"
+                        />
+                        <button type="submit" disabled={ownerLoading} className="btn btn-ghost shrink-0">
+                          {ownerLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Go"}
+                        </button>
+                      </motion.form>
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+              ) : null}
+            </div>
+
+            <p className="t-xs mt-4 text-center leading-relaxed" style={{ color: "var(--text-3)" }}>
+              TeleDrive never sees your Telegram password. Sessions are HTTP-only cookies.
+            </p>
+          </motion.section>
+        </div>
       </div>
     </main>
   );
 }
 
-async function authRequestWithRetry(input: RequestInfo | URL, init: RequestInit, attempts = 3) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await apiFetch(input, init);
-    } catch (err) {
-      lastError = err;
-      await new Promise(resolve => window.setTimeout(resolve, 350 * 2 ** attempt));
-    }
-  }
-  throw lastError;
+function GoogleMark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59A14.5 14.5 0 0 1 9.77 24c0-1.6.27-3.15.76-4.59l-7.98-6.19A23.94 23.94 0 0 0 0 24c0 3.88.93 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
+  );
 }

@@ -1,0 +1,21 @@
+# Automatic HTTPS via Let's Encrypt. Point APP_DOMAIN's A record at the VM first.
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy app:3000 {
+		# Large uploads and long downloads must not be cut off mid-transfer.
+		flush_interval -1
+	}
+
+	# Uploads arrive as 4 MB chunks; the ceiling is generous but bounded so a
+	# malformed request cannot exhaust memory.
+	request_body {
+		max_size 32MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

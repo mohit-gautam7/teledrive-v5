@@ -36,7 +36,43 @@ export function verifyTelegramAuth(payload: TelegramAuthPayload) {
   const secret = crypto.createHash("sha256").update(String(botToken)).digest();
   const digest = crypto.createHmac("sha256", secret).update(checkString).digest("hex");
   const fresh = Math.floor(Date.now() / 1000) - Number(payload.auth_date) < 86400;
-  return fresh && crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hash));
+  // timingSafeEqual throws on length mismatch, so compare lengths first —
+  // a malformed hash must be rejected, not turned into a 500.
+  const expected = Buffer.from(digest, "utf8");
+  const supplied = Buffer.from(String(hash ?? ""), "utf8");
+  if (expected.length !== supplied.length) return false;
+  return fresh && crypto.timingSafeEqual(expected, supplied);
+}
+
+const LINK_COOKIE = "teledrive_link";
+
+export type PendingLink = { provider: string; providerId: string; email?: string | null };
+
+/** Short-lived cookie carrying a verified third-party identity that still needs
+ *  to be attached to a Telegram account before it can be used to sign in. */
+export function setPendingLinkCookie(response: NextResponse, link: PendingLink) {
+  const token = jwt.sign(link, String(requireEnv("JWT_SECRET")), { expiresIn: "15m" });
+  response.cookies.set(LINK_COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production" && process.env.SECURE_COOKIES !== "false",
+    path: "/",
+    maxAge: 900
+  });
+}
+
+export function readPendingLink(): PendingLink | null {
+  const token = cookies().get(LINK_COOKIE)?.value;
+  if (!token) return null;
+  try {
+    return jwt.verify(token, String(requireEnv("JWT_SECRET"))) as unknown as PendingLink;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingLinkCookie(response: NextResponse) {
+  response.cookies.set(LINK_COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
 }
 
 export function signSession(user: SessionUser) {

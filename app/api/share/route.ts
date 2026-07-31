@@ -16,6 +16,43 @@ const shareSchema = z.union([
   z.object({ folderId: z.string(), fileId: z.undefined().optional(), ...commonFields })
 ]);
 
+/** Every share this user owns, newest first — powers the Shared view. */
+export async function GET() {
+  try {
+    const user = await requireUser();
+    const shares = await prisma.share.findMany({
+      where: {
+        OR: [{ file: { userId: user.id } }, { folder: { userId: user.id } }]
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        file: { select: { id: true, originalName: true, mimeType: true, size: true, isDeleted: true } },
+        folder: { select: { id: true, name: true } }
+      }
+    });
+
+    return NextResponse.json({
+      shares: shares.map(s => ({
+        id: s.id,
+        token: s.shareToken,
+        url: `/share/${s.shareToken}`,
+        kind: s.folderId ? ("folder" as const) : ("file" as const),
+        name: s.folder?.name ?? s.file?.originalName ?? "(deleted)",
+        mimeType: s.file?.mimeType ?? null,
+        size: s.file ? Number(s.file.size) : null,
+        orphaned: Boolean(s.fileId && (!s.file || s.file.isDeleted)),
+        disabled: s.disabled,
+        hasPassword: Boolean(s.passwordHash),
+        expiryDate: s.expiryDate ? s.expiryDate.toISOString() : null,
+        expired: Boolean(s.expiryDate && s.expiryDate < new Date()),
+        createdAt: s.createdAt.toISOString()
+      }))
+    });
+  } catch (error) {
+    return jsonError(error, "Could not load shares.");
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();

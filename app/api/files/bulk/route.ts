@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { deleteMessagesBot } from "@/lib/telegram-bot";
-import { deleteChunkMessages } from "@/lib/telegram";
-import { decryptSecret } from "@/lib/crypto";
+import { purgeTelegramCopies } from "@/lib/file-delete";
 import { jsonError } from "@/lib/api-response";
 
 const schema = z.union([
@@ -27,13 +25,7 @@ export async function POST(request: NextRequest) {
         where: { userId: user.id, isDeleted: true },
         include: { chunks: true, user: { include: { storageConfig: true } } }
       });
-      type ChunkLite = { telegramFileId: string | null; telegramMsgId: number };
-      for (const file of trashed) {
-        const botMsgIds = file.chunks.filter((c: ChunkLite) => c.telegramFileId && c.telegramMsgId > 0).map((c: ChunkLite) => c.telegramMsgId);
-        const legacyMsgIds = file.chunks.filter((c: ChunkLite) => !c.telegramFileId).map((c: ChunkLite) => c.telegramMsgId);
-        if (botMsgIds.length && file.storageChatId) await deleteMessagesBot(file.storageChatId, botMsgIds);
-        if (legacyMsgIds.length) await deleteChunkMessages(legacyMsgIds, decryptSecret(file.user.storageConfig?.telegramSession));
-      }
+      for (const file of trashed) await purgeTelegramCopies(file);
       await prisma.file.deleteMany({ where: { userId: user.id, isDeleted: true } });
       return NextResponse.json({ ok: true, count: trashed.length });
     }
@@ -57,13 +49,7 @@ export async function POST(request: NextRequest) {
         where: scope,
         include: { chunks: true, user: { include: { storageConfig: true } } }
       });
-      type ChunkLite = { telegramFileId: string | null; telegramMsgId: number };
-      for (const file of files) {
-        const botMsgIds = file.chunks.filter((c: ChunkLite) => c.telegramFileId && c.telegramMsgId > 0).map((c: ChunkLite) => c.telegramMsgId);
-        const legacyMsgIds = file.chunks.filter((c: ChunkLite) => !c.telegramFileId).map((c: ChunkLite) => c.telegramMsgId);
-        if (botMsgIds.length && file.storageChatId) await deleteMessagesBot(file.storageChatId, botMsgIds);
-        if (legacyMsgIds.length) await deleteChunkMessages(legacyMsgIds, decryptSecret(file.user.storageConfig?.telegramSession));
-      }
+      for (const file of files) await purgeTelegramCopies(file);
       await prisma.file.deleteMany({ where: scope });
     }
 

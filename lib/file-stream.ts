@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { StorageMode } from "@prisma/client";
 import { fetchBotFile } from "@/lib/telegram-bot";
 import { downloadChunkFromTelegram, legacySessionAvailable } from "@/lib/telegram";
+import { downloadRange } from "@/lib/telegram-user";
 import { decryptSecret } from "@/lib/crypto";
 
 /**
@@ -19,13 +20,20 @@ export type StreamableFile = {
   mimeType: string;
   size: bigint | number;
   storageMode: StorageMode;
+  backend: string;
   isChunked: boolean;
   uploadStatus: string;
   telegramFileId: string | null;
   telegramMessageId: string | null;
   chunks: Array<{ chunkIndex: number; telegramMsgId: number; telegramFileId: string | null; chunkSize: number }>;
-  user?: { storageConfig?: { botToken: string | null; telegramSession: string | null } | null } | null;
+  user?: {
+    storageConfig?: { botToken: string | null; telegramSession: string | null; mtprotoSession: string | null } | null;
+  } | null;
 };
+
+/** How much of an MTProto file we pull per read. Big enough to amortise the
+ *  round trip, small enough that a 2 GB file never sits in function memory. */
+const MTPROTO_WINDOW = 4 * 1024 * 1024;
 
 export function parseRange(rangeHeader: string | null, totalSize: number): { start: number; end: number; partial: boolean } {
   if (!rangeHeader) return { start: 0, end: totalSize - 1, partial: false };
@@ -80,6 +88,31 @@ function buildChunkStream(
   });
 }
 
+/** Pull-based stream over an arbitrary byte range, one window at a time. */
+function buildRangeStream(
+  rangeStart: number,
+  rangeEnd: number,
+  read: (start: number, end: number) => Promise<Buffer>
+): ReadableStream<Uint8Array> {
+  let cursor = rangeStart;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (cursor > rangeEnd) {
+        controller.close();
+        return;
+      }
+      const end = Math.min(cursor + MTPROTO_WINDOW - 1, rangeEnd);
+      try {
+        const buf = await read(cursor, end);
+        cursor = end + 1;
+        controller.enqueue(new Uint8Array(buf));
+      } catch (err) {
+        controller.error(err);
+      }
+    }
+  });
+}
+
 async function fetchBotChunkBuffer(fileId: string, botToken?: string | null): Promise<Buffer> {
   const res = await fetchBotFile(fileId, botToken);
   return Buffer.from(await res.arrayBuffer());
@@ -94,6 +127,12 @@ export async function readEntireFile(file: StreamableFile): Promise<Buffer | nul
   const totalSize = Number(file.size);
   if (totalSize > 25 * 1024 * 1024) return null;
   const userBotToken = file.user?.storageConfig?.botToken || null;
+
+  if (file.backend === "mtproto" && file.telegramMessageId) {
+    const session = decryptSecret(file.user?.storageConfig?.mtprotoSession);
+    if (!session) return null;
+    return downloadRange(session, Number(file.telegramMessageId), 0, totalSize - 1);
+  }
 
   if (file.isChunked) {
     if (file.uploadStatus !== "complete" || !file.chunks.length) return null;
@@ -117,6 +156,7 @@ export function streamFileResponse(
 ): NextResponse {
   const totalSize = Number(file.size);
   const userSession = decryptSecret(file.user?.storageConfig?.telegramSession);
+  const mtprotoSession = decryptSecret(file.user?.storageConfig?.mtprotoSession);
   const userBotToken = file.user?.storageConfig?.botToken || null;
 
   const baseHeaders: Record<string, string> = {
@@ -129,6 +169,21 @@ export function streamFileResponse(
   const { start, end, partial } = parseRange(rangeHeader, totalSize);
   if (start > end || start >= totalSize) {
     return new NextResponse(null, { status: 416, headers: { "Content-Range": `bytes */${totalSize}` } });
+  }
+
+  // ── Stored in the user's own Telegram account (one message, up to 2/4 GB) ──
+  if (file.backend === "mtproto" && file.telegramMessageId) {
+    if (!mtprotoSession) {
+      return NextResponse.json(
+        { error: "This file lives in your own Telegram account. Re-link it in Settings to download." },
+        { status: 409 }
+      );
+    }
+    const msgId = Number(file.telegramMessageId);
+    const stream = buildRangeStream(start, end, (from, to) => downloadRange(mtprotoSession, msgId, from, to));
+    const headers: Record<string, string> = { ...baseHeaders, "Content-Length": String(end - start + 1) };
+    if (partial) headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
+    return new NextResponse(stream, { status: partial ? 206 : 200, headers });
   }
 
   // ── Chunked files (all new uploads + legacy MTProto chunked) ───────────────

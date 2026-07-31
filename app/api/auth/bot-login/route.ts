@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { assertSameOrigin, setSessionCookie, signSession } from "@/lib/auth";
+import {
+  assertSameOrigin,
+  setSessionCookie,
+  signSession,
+  readPendingLink,
+  clearPendingLinkCookie
+} from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { jsonError } from "@/lib/api-response";
 
@@ -32,8 +38,26 @@ export async function POST(request: NextRequest) {
       create: { telegramId: record.telegramId, name: record.name, username: record.username }
     });
 
-    const response = NextResponse.json({ user });
+    // If a third-party sign-in is waiting to be attached, this code proves the
+    // Telegram account belongs to the same person — link them permanently so
+    // next time that provider signs in on its own.
+    const pending = readPendingLink();
+    if (pending) {
+      await prisma.oAuthAccount.upsert({
+        where: { provider_providerId: { provider: pending.provider, providerId: pending.providerId } },
+        update: { userId: user.id, email: pending.email ?? null },
+        create: {
+          userId: user.id,
+          provider: pending.provider,
+          providerId: pending.providerId,
+          email: pending.email ?? null
+        }
+      });
+    }
+
+    const response = NextResponse.json({ user, linked: pending?.provider ?? null });
     setSessionCookie(response, signSession(user));
+    if (pending) clearPendingLinkCookie(response);
     return response;
   } catch (error) {
     return jsonError(error, "Bot login failed.");

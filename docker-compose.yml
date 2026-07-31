@@ -1,0 +1,43 @@
+# Always-on deployment (Oracle Cloud Always Free ARM, or any small VM).
+# Caddy terminates TLS and proxies to the app; both restart on reboot.
+#
+#   cp .env.example .env    # fill it in
+#   docker compose up -d --build
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: ${NEXT_PUBLIC_TELEGRAM_BOT_USERNAME}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # A long-lived process holds its own pool, so it does not need the
+      # one-connection-per-request setting the serverless deployment required.
+      NODE_ENV: production
+    expose:
+      - "3000"
+    # Streaming a 2 GB file never buffers the whole thing, but Node still needs
+    # headroom for concurrent chunk buffers.
+    mem_limit: 2g
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

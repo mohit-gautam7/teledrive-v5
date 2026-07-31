@@ -17,6 +17,22 @@ model User {
   storageConfig  StorageConfig?
   files          File[]
   folders        Folder[]
+  oauthAccounts  OAuthAccount[]
+}
+
+/// A third-party sign-in (Google, …) linked to a TeleDrive user. Storage always
+/// resolves through the linked Telegram identity — this only carries the login.
+model OAuthAccount {
+  id         String   @id @default(cuid())
+  userId     String
+  provider   String
+  providerId String
+  email      String?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerId])
+  @@index([userId])
 }
 
 model StorageConfig {
@@ -25,6 +41,16 @@ model StorageConfig {
   botToken        String?
   botChannelId    String?
   telegramSession String?
+  /// Per-user MTProto session (encrypted) authorised via QR / phone code.
+  /// Unlocks single files up to 2 GB (4 GB with Telegram Premium).
+  mtprotoSession  String?
+  mtprotoUserId   String?
+  mtprotoPremium  Boolean  @default(false)
+  /// Half-finished MTProto login: the connected session + phone_code_hash that
+  /// step 2 (sign-in) needs. Cleared once authorisation completes.
+  pendingSession  String?
+  pendingHash     String?
+  pendingPhone    String?
   createdAt       DateTime @default(now())
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -48,6 +74,12 @@ model File {
   isChunked         Boolean     @default(false)
   totalChunks       Int         @default(0)
   uploadStatus      String      @default("complete")
+  /// Which Telegram transport holds the bytes: "bot" (chunked, zero setup) or
+  /// "mtproto" (the user's own session — one message, up to 2 GB / 4 GB Premium).
+  backend           String      @default("bot")
+  /// Stable client-supplied fingerprint (name+size+folder) so an interrupted
+  /// upload can be found and resumed instead of restarted.
+  resumeKey         String?
   createdAt         DateTime    @default(now())
   user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   folder            Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -56,6 +88,7 @@ model File {
 
   @@index([userId, folderId])
   @@index([userId, createdAt])
+  @@index([userId, resumeKey])
 }
 
 model Chunk {

@@ -28,11 +28,16 @@ export async function GET(request: NextRequest) {
           ? { size: dir as "asc" | "desc" }
           : { createdAt: dir as "asc" | "desc" };
 
+    // Trash, Favourites and Recent are cross-folder collections; only the
+    // regular file browser is scoped to one folder. Without this, anything
+    // trashed or starred while inside a folder is invisible in those views.
+    const spansFolders = view === "trash" || view === "favorites" || view === "recent";
+
     const where = {
       userId: user.id,
       isDeleted: view === "trash" ? true : false,
       ...(view === "favorites" ? { isFavorite: true } : {}),
-      ...(folderId && view !== "recent" ? { folderId } : view === "recent" ? {} : { folderId: null }),
+      ...(spansFolders ? {} : { folderId: folderId || null }),
       ...(type === "image"
         ? { mimeType: { startsWith: "image/" } }
         : type === "video"

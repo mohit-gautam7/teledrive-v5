@@ -31,32 +31,90 @@ function token(botToken?: string | null) {
   return botToken || String(requireEnv("BOT_TOKEN"));
 }
 
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * A Telegram bot is allowed ~30 messages/second overall. Serverless gives us no
+ * cross-instance coordination, but a single instance handling a burst of chunk
+ * uploads is the common case, so we cap in-flight document sends per instance.
+ * Anything beyond the cap waits its turn instead of piling into a 429 storm.
+ */
+const MAX_INFLIGHT_SENDS = 4;
+let inflight = 0;
+const waiters: Array<() => void> = [];
+
+async function acquireSendSlot() {
+  if (inflight < MAX_INFLIGHT_SENDS) {
+    inflight++;
+    return;
+  }
+  await new Promise<void>(resolve => waiters.push(resolve));
+  inflight++;
+}
+
+function releaseSendSlot() {
+  inflight--;
+  waiters.shift()?.();
+}
+
+/** Full jitter exponential backoff — spreads retries so concurrent uploaders
+ *  don't all come back at the same instant and re-trigger the same 429. */
+function backoffDelay(attempt: number) {
+  return Math.random() * Math.min(1000 * 2 ** attempt, 20_000);
+}
+
+const MAX_ATTEMPTS = 6;
+
+/** JSON body, or a factory producing a fresh FormData per attempt — a FormData
+ *  that has already been sent cannot be replayed, so retries must rebuild it. */
+type BotPayload = Record<string, unknown> | (() => FormData);
+
 async function callBotApi<T>(
   method: string,
-  payload: Record<string, unknown> | FormData,
+  payload: BotPayload,
   botToken?: string | null,
-  retries = 2
+  attempts = MAX_ATTEMPTS
 ): Promise<T> {
   const url = `${API_BASE}/bot${token(botToken)}/${method}`;
-  const isForm = payload instanceof FormData;
+  const isForm = typeof payload === "function";
 
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: isForm ? undefined : { "content-type": "application/json" },
-      body: isForm ? payload : JSON.stringify(payload)
-    });
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: isForm ? undefined : { "content-type": "application/json" },
+        body: isForm ? payload() : JSON.stringify(payload)
+      });
+    } catch (err) {
+      // Transport-level failure (DNS, reset, timeout) — worth retrying.
+      lastError = new BotApiError(`Telegram request failed: ${(err as Error).message}`, 0);
+      if (attempt < attempts - 1) {
+        await sleep(backoffDelay(attempt));
+        continue;
+      }
+      throw lastError;
+    }
+
     const body = (await res.json().catch(() => ({ ok: false, description: `HTTP ${res.status}` }))) as BotApiEnvelope<T>;
-
     if (body.ok && body.result !== undefined) return body.result;
 
+    const code = body.error_code || res.status;
     const retryAfter = body.parameters?.retry_after;
-    if (body.error_code === 429 && attempt < retries) {
-      await new Promise(r => setTimeout(r, Math.min((retryAfter ?? 2) * 1000, 25_000)));
+    const retryable = code === 429 || code >= 500;
+
+    if (retryable && attempt < attempts - 1) {
+      // Honour Telegram's retry_after exactly, plus jitter to de-sync callers.
+      const wait = retryAfter ? retryAfter * 1000 + Math.random() * 500 : backoffDelay(attempt);
+      await sleep(Math.min(wait, 30_000));
       continue;
     }
-    throw new BotApiError(body.description || "Telegram Bot API error", body.error_code || res.status, retryAfter);
+    throw new BotApiError(body.description || "Telegram Bot API error", code, retryAfter);
   }
+
+  throw lastError ?? new BotApiError("Telegram Bot API error", 500);
 }
 
 // ── Messaging ────────────────────────────────────────────────────────────────
@@ -102,18 +160,27 @@ export async function sendDocumentToChat(params: {
   caption?: string;
   botToken?: string | null;
 }): Promise<SentDocument> {
-  const form = new FormData();
-  form.append("chat_id", String(params.chatId));
-  form.append("disable_notification", "true");
-  form.append("disable_content_type_detection", "true");
-  if (params.caption) form.append("caption", params.caption.slice(0, 1000));
   const bytes = params.data instanceof Uint8Array ? params.data : new Uint8Array(params.data);
-  form.append("document", new Blob([bytes as unknown as BlobPart], { type: params.mimeType || "application/octet-stream" }), params.filename);
 
-  const msg = await callBotApi<TgMessage>("sendDocument", form, params.botToken);
-  const media = msg.document || msg.audio || msg.video;
-  if (!media?.file_id) throw new BotApiError("Telegram did not return a file id.", 500);
-  return { messageId: msg.message_id, fileId: media.file_id, fileUniqueId: media.file_unique_id };
+  const buildForm = () => {
+    const form = new FormData();
+    form.append("chat_id", String(params.chatId));
+    form.append("disable_notification", "true");
+    form.append("disable_content_type_detection", "true");
+    if (params.caption) form.append("caption", params.caption.slice(0, 1000));
+    form.append("document", new Blob([bytes as unknown as BlobPart], { type: params.mimeType || "application/octet-stream" }), params.filename);
+    return form;
+  };
+
+  await acquireSendSlot();
+  try {
+    const msg = await callBotApi<TgMessage>("sendDocument", buildForm, params.botToken);
+    const media = msg.document || msg.audio || msg.video;
+    if (!media?.file_id) throw new BotApiError("Telegram did not return a file id.", 500);
+    return { messageId: msg.message_id, fileId: media.file_id, fileUniqueId: media.file_unique_id };
+  } finally {
+    releaseSendSlot();
+  }
 }
 
 /** Resolve a Bot API file_id to a short-lived download URL (valid ≥1 hour). */
@@ -123,14 +190,28 @@ export async function getBotFileDownloadUrl(fileId: string, botToken?: string | 
   return `${API_BASE}/file/bot${token(botToken)}/${info.file_path}`;
 }
 
-/** Fetch the raw bytes of a stored file/chunk. Never expose the URL — it embeds the bot token. */
+/** Fetch the raw bytes of a stored file/chunk. Never expose the URL — it embeds the bot token.
+ *  Retries transient CDN failures; a download that gives up mid-file would abort the
+ *  whole stream for the user. */
 export async function fetchBotFile(fileId: string, botToken?: string | null): Promise<Response> {
-  const url = await getBotFileDownloadUrl(fileId, botToken);
-  const res = await fetch(url);
-  if (!res.ok || !res.body) {
-    throw new BotApiError(`Telegram file fetch failed (HTTP ${res.status}).`, res.status);
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const url = await getBotFileDownloadUrl(fileId, botToken);
+      const res = await fetch(url);
+      if (res.ok && res.body) return res;
+      // 5xx / 429 from the file CDN: back off and re-resolve (file_path expires).
+      if (res.status < 500 && res.status !== 429) {
+        throw new BotApiError(`Telegram file fetch failed (HTTP ${res.status}).`, res.status);
+      }
+      lastError = new BotApiError(`Telegram file fetch failed (HTTP ${res.status}).`, res.status);
+    } catch (err) {
+      if (err instanceof BotApiError && err.code >= 400 && err.code < 500 && err.code !== 429) throw err;
+      lastError = err as Error;
+    }
+    await sleep(backoffDelay(attempt));
   }
-  return res;
+  throw lastError ?? new BotApiError("Telegram file fetch failed.", 502);
 }
 
 // ── Setup helpers ────────────────────────────────────────────────────────────

@@ -1,32 +1,75 @@
+import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { StorageMode } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
-import { CHUNK_SIZE, MAX_FILE_SIZE } from "@/lib/upload-config";
+import { CHUNK_SIZE, MTPROTO_PREFERRED_ABOVE } from "@/lib/upload-config";
+import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
+
+/** MTProto identifies an in-progress big-file upload by a client-chosen 64-bit id. */
+function newMtprotoFileId() {
+  return crypto.randomBytes(8).readBigInt64LE(0).toString();
+}
 
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
 
-    const { fileName, mimeType, fileSize, folderId } = (await request.json()) as {
+    const { fileName, mimeType, fileSize, folderId, resumeKey } = (await request.json()) as {
       fileName: string;
       mimeType: string;
       fileSize: number;
       folderId?: string;
+      resumeKey?: string;
     };
 
     if (!fileName || !fileSize || fileSize <= 0) {
       return NextResponse.json({ error: "fileName and fileSize are required." }, { status: 400 });
     }
-    if (fileSize > MAX_FILE_SIZE) {
-      return NextResponse.json({ error: "Maximum file size is 2 GB (Telegram's limit)." }, { status: 413 });
+
+    const config = await prisma.storageConfig.findUnique({ where: { userId: user.id } });
+    const limit = maxUploadBytesFor(config);
+    if (fileSize > limit) {
+      return NextResponse.json({ error: `Maximum file size is ${describeLimit(limit)}.` }, { status: 413 });
     }
 
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
+    const targetFolder = typeof folderId === "string" && folderId ? folderId : null;
+
+    // Big files go through the user's own Telegram session when they've linked
+    // one: a single message instead of hundreds of 4 MB bot chunks, and the only
+    // way past the Bot API's 20 MB download ceiling.
+    const useMtproto = Boolean(config?.mtprotoSession) && fileSize >= MTPROTO_PREFERRED_ABOVE;
+
+    // Resume: an unfinished session for the same file+destination is reused, so
+    // a dropped connection costs only the chunks that were still in flight.
+    if (resumeKey) {
+      const existing = await prisma.file.findFirst({
+        where: {
+          userId: user.id,
+          resumeKey,
+          uploadStatus: "uploading",
+          isChunked: true,
+          size: BigInt(fileSize),
+          folderId: targetFolder
+        },
+        include: { chunks: { select: { chunkIndex: true } } }
+      });
+      if (existing) {
+        return NextResponse.json({
+          fileId: existing.id,
+          totalChunks: existing.totalChunks,
+          chunkSizeBytes: CHUNK_SIZE,
+          backend: existing.backend,
+          received: existing.chunks.map(c => c.chunkIndex),
+          resumed: true
+        });
+      }
+    }
 
     const file = await prisma.file.create({
       data: {
@@ -35,16 +78,27 @@ export async function POST(request: NextRequest) {
         originalName: fileName,
         mimeType: mimeType || "application/octet-stream",
         size: BigInt(fileSize),
-        storageMode: StorageMode.BOT,
-        storageChatId: user.telegramId,
+        storageMode: useMtproto ? StorageMode.PERSONAL : StorageMode.BOT,
+        backend: useMtproto ? "mtproto" : "bot",
+        // For MTProto this holds the in-progress upload id, not a Bot API file_id.
+        telegramFileId: useMtproto ? newMtprotoFileId() : null,
+        storageChatId: useMtproto ? null : user.telegramId,
         isChunked: true,
         totalChunks,
         uploadStatus: "uploading",
-        folderId: typeof folderId === "string" && folderId ? folderId : null
+        resumeKey: resumeKey || null,
+        folderId: targetFolder
       }
     });
 
-    return NextResponse.json({ fileId: file.id, totalChunks, chunkSizeBytes: CHUNK_SIZE });
+    return NextResponse.json({
+      fileId: file.id,
+      totalChunks,
+      chunkSizeBytes: CHUNK_SIZE,
+      backend: file.backend,
+      received: [],
+      resumed: false
+    });
   } catch (error) {
     return jsonError(error, "Could not initialise upload.");
   }
