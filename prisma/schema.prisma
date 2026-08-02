@@ -1,5 +1,11 @@
 generator client {
   provider = "prisma-client-js"
+  // node:20-slim is Debian bookworm, which ships OpenSSL 3. Naming the target
+  // explicitly stops Prisma probing for libssl at startup and defaulting to the
+  // 1.1.x engine when it cannot find it — the "Prisma failed to detect
+  // libssl/openssl" warning in the Render logs. "native" keeps local builds
+  // (Windows/macOS) working alongside it.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {

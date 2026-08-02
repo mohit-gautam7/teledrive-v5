@@ -40,6 +40,14 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# Prisma's query engine dynamically links libssl. node:20-slim omits it, so the
+# engine cannot detect a version, warns on every boot, and falls back to a
+# guessed openssl-1.1.x build. ca-certificates comes along for outbound TLS to
+# Supabase and Telegram.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 1001 nodejs \
  && useradd --system --uid 1001 --gid nodejs nextjs
 

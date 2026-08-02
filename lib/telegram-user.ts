@@ -223,6 +223,38 @@ const REDEEM_TIMEOUT_MS = 25_000;
 const REDEEM_ATTEMPTS = 3;
 
 /**
+ * Telegram's production data centres, as a last resort.
+ *
+ * The addresses are asked for at run time via help.getConfig, which is
+ * authoritative and survives Telegram moving a DC. This table only exists so a
+ * failed config lookup does not strand a login that has *already been scanned* —
+ * these five addresses are public and long-stable, and a wrong guess simply
+ * fails the connect, which the retry loop already handles.
+ */
+const FALLBACK_DC: Record<number, { ipAddress: string; port: number }> = {
+  1: { ipAddress: "149.154.175.53", port: 443 },
+  2: { ipAddress: "149.154.167.51", port: 443 },
+  3: { ipAddress: "149.154.175.100", port: 443 },
+  4: { ipAddress: "149.154.167.91", port: 443 },
+  5: { ipAddress: "91.108.56.130", port: 443 }
+};
+
+/** Ask the connected client where a data centre lives, falling back to the table. */
+async function resolveDcAddress(source: TelegramClient, dcId: number) {
+  try {
+    if (!source.connected) throw new Error("source client is not connected");
+    const dc = await withTimeout(source.getDC(dcId, false), 15_000, `getDC(${dcId})`);
+    if (dc?.ipAddress) return { ipAddress: dc.ipAddress, port: dc.port || 443 };
+    throw new Error("getDC returned no address");
+  } catch (err) {
+    const fallback = FALLBACK_DC[dcId];
+    tgLog("getDC failed:", (err as Error)?.message, "— falling back to table:", Boolean(fallback));
+    if (!fallback) throw err;
+    return fallback;
+  }
+}
+
+/**
  * Redeem an accepted QR token on the data centre Telegram migrated it to.
  *
  * A brand-new client is built and pointed at the target DC before connecting, so
@@ -236,19 +268,32 @@ const REDEEM_ATTEMPTS = 3;
  * it: the next poll then starts on the correct DC instead of replaying the
  * whole migration, which is what made the old code loop forever.
  */
-async function redeemMigratedToken(dcId: number, token: Buffer, previous: string): Promise<QrPoll> {
+async function redeemMigratedToken(
+  source: TelegramClient,
+  dcId: number,
+  token: Buffer,
+  previous: string
+): Promise<QrPoll> {
   const { apiId, apiHash } = apiCredentials();
+
+  // Resolve the target address on the *connected* source client. getDC issues
+  // help.getConfig under the hood, so asking a freshly-built client throws
+  // "Cannot send requests while disconnected" before the redeem even starts —
+  // which is exactly how this failed in production.
+  const address = await resolveDcAddress(source, dcId);
+  tgLog("resolved dc=", dcId, "->", address.ipAddress + ":" + address.port);
+
   const session = new StringSession("");
+  // Point the session at the target DC *before* the client is constructed, so
+  // connect() performs the whole handshake there and no request is ever issued
+  // on an unconnected client.
+  session.setDC(dcId, address.ipAddress, address.port);
+
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 3,
     useWSS: false,
     requestRetries: 3
   });
-
-  // Point the session at the target DC before connecting, so the handshake
-  // happens there and no reconnect-in-place is needed.
-  const dc = await client.getDC(dcId, false);
-  session.setDC(dcId, dc.ipAddress, dc.port);
 
   silenceBackgroundErrors(client);
   await client.connect();
@@ -352,7 +397,7 @@ export async function pollQrLogin(pendingSession: string): Promise<QrPoll> {
       // handshake — auth key, initConnection, invokeWithLayer — from connect(),
       // which is what the redeem needs.
       tgLog("LOGIN_TOKEN_MIGRATE_TO dc=", result.dcId, "(from dc=", currentDc(client), ") — redeeming on target DC");
-      return redeemMigratedToken(result.dcId, result.token, pendingSession);
+      return redeemMigratedToken(client, result.dcId, result.token, pendingSession);
     }
     // Not scanned yet — and `result` is a *brand new* token, because
     // auth.exportLoginToken issues one on every call and invalidates the last.
