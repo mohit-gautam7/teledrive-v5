@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { mapMtprotoError } from "@/lib/mtproto-errors";
 
 export function jsonError(error: unknown, fallback = "Something went wrong.") {
   if (error instanceof Response) return error;
@@ -12,6 +13,11 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
   if (error instanceof ZodError) {
     return NextResponse.json({ error: error.issues[0]?.message || "Invalid request." }, { status: 400 });
   }
+  // Telegram RPC failures carry an actionable meaning; map them before the
+  // generic handling turns them into a bare 500.
+  const mtproto = mapMtprotoError(error);
+  if (mtproto) return NextResponse.json({ error: mtproto.message }, { status: mtproto.status });
+
   if (error instanceof Error) {
     const message = error.message;
     // Signing in via the widget or Google doesn't open a chat with the bot, and
@@ -34,7 +40,10 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
     if (message.includes("entity too large") || message.includes("Request Entity Too Large")) {
       return NextResponse.json({ error: "This upload is too large for the current server limit." }, { status: 413 });
     }
-    return NextResponse.json({ error: message || fallback }, { status: 500 });
+    // An unhandled exception's message is for the logs, not the user — it can
+    // carry table names, paths or connection details. The caller's fallback is
+    // written for humans; the real message was logged above.
+    return NextResponse.json({ error: fallback }, { status: 500 });
   }
   return NextResponse.json({ error: fallback }, { status: 500 });
 }

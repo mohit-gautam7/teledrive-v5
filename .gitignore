@@ -123,3 +123,7 @@ desktop.ini
 .claude/
 vercel-env.txt
 *.log
+
+# Local-only helper scripts (test harnesses, dev server wrapper)
+*.local.mjs
+*.local.sh

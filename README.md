@@ -58,6 +58,29 @@ Next.js 14 (App Router) · TypeScript · Prisma + PostgreSQL · Telegram Bot API
 > bot token, run the dev server with `ENABLE_BOT_POLLING=0` or it will take
 > updates away from production.
 
+### Enabling the one-tap Telegram Login Widget
+
+The widget only renders on a domain the bot owns. Without this step Telegram
+silently refuses to draw the button (the "bot domain invalid" case), so it is
+required, not optional:
+
+1. Message [@BotFather](https://t.me/BotFather) and send `/setdomain`.
+2. Choose your bot.
+3. Send the deployment's origin — scheme and host only, no path, e.g.
+   `https://teledrive-codex.vercel.app`.
+
+Register every origin you use (production and any preview domain). The login
+page detects a missing domain and tells the user how to fix it, falling back to
+the bot-code flow in the meantime. `localhost` cannot be registered — use the
+bot code or the owner key in development.
+
+### Linking a Telegram account for large files
+
+Settings → *Your Telegram account* authorises your own account over MTProto
+(QR code or phone number). Telegram rate-limits sign-in attempts aggressively:
+repeated tries earn a flood wait measured in hours, and the UI now reports
+exactly how long it is. `API_ID` / `API_HASH` must be set for this to appear.
+
 ## Environment variables
 
 | Variable | Required | Notes |

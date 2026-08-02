@@ -40,9 +40,12 @@ export default function Login() {
   const [ownerLoading, setOwnerLoading] = useState(false);
 
   const [isLocalhost, setIsLocalhost] = useState(false);
+  const [widgetState, setWidgetState] = useState<"idle" | "loading" | "ready" | "blocked">("idle");
+  const [origin, setOrigin] = useState("");
 
   useEffect(() => {
     setIsLocalhost(["localhost", "127.0.0.1"].includes(window.location.hostname));
+    setOrigin(window.location.origin);
 
     const params = new URLSearchParams(window.location.search);
     const urlError = params.get("error");
@@ -82,9 +85,15 @@ export default function Login() {
 
   // Telegram's widget is a <script> that replaces itself with an iframe, so it
   // has to be injected into a live node each time the tab becomes visible.
+  //
+  // When the bot has no domain registered via BotFather's /setdomain, Telegram
+  // refuses to render anything — the iframe simply never appears, and the page
+  // used to sit there looking broken. We watch for that and say what to do.
   const mountWidget = useCallback((node: HTMLDivElement | null) => {
     if (!node || node.dataset.loaded === "true" || !BOT_USERNAME) return;
     node.dataset.loaded = "true";
+    setWidgetState("loading");
+
     const script = document.createElement("script");
     script.src = "https://telegram.org/js/telegram-widget.js?22";
     script.async = true;
@@ -94,7 +103,25 @@ export default function Login() {
     script.setAttribute("data-userpic", "true");
     script.setAttribute("data-request-access", "write");
     script.setAttribute("data-onauth", "onTelegramAuth(user)");
+    script.onerror = () => setWidgetState("blocked");
     node.appendChild(script);
+
+    // The iframe appears a beat after the script runs; if it never does, the
+    // domain almost certainly isn't registered for this bot.
+    let settled = false;
+    const observer = new MutationObserver(() => {
+      if (node.querySelector("iframe")) {
+        settled = true;
+        observer.disconnect();
+        setWidgetState("ready");
+      }
+    });
+    observer.observe(node, { childList: true, subtree: true });
+    window.setTimeout(() => {
+      if (settled) return;
+      observer.disconnect();
+      setWidgetState(node.querySelector("iframe") ? "ready" : "blocked");
+    }, 4000);
   }, []);
 
   async function submitCode(event: React.FormEvent) {
@@ -341,10 +368,30 @@ export default function Login() {
                         Authorise with the official Telegram button — confirm on your phone and you&apos;re in.
                       </p>
                       <div ref={mountWidget} className="flex min-h-[48px] justify-center" />
-                      <p className="t-xs mt-4 leading-relaxed" style={{ color: "var(--text-3)" }}>
-                        Button missing? The site&apos;s domain has to be registered with BotFather via
-                        <span className="mono"> /setdomain</span>.
-                      </p>
+
+                      {widgetState === "loading" ? (
+                        <p className="t-xs mt-4 flex items-center justify-center gap-2" style={{ color: "var(--text-3)" }}>
+                          <Loader2 className="h-3 w-3 animate-spin" /> Loading Telegram…
+                        </p>
+                      ) : null}
+
+                      {widgetState === "blocked" ? (
+                        <div
+                          className="t-sm mt-4 rounded-xl px-3.5 py-3 leading-relaxed"
+                          style={{ background: "var(--danger-dim)", border: "1px solid var(--danger-border)", color: "var(--danger)" }}
+                        >
+                          <p className="font-semibold">Telegram wouldn&apos;t show the button.</p>
+                          <p className="mt-1" style={{ color: "var(--text-2)" }}>
+                            This bot has no login domain registered. In Telegram, message{" "}
+                            <span className="mono">@BotFather</span> → <span className="mono">/setdomain</span> → pick{" "}
+                            <span className="mono">@{BOT_USERNAME}</span> → send{" "}
+                            <span className="mono break-all">{origin || "this site's URL"}</span>.
+                          </p>
+                          <button onClick={() => setTab("code")} className="btn btn-ghost mt-3 w-full">
+                            Use a bot code instead
+                          </button>
+                        </div>
+                      ) : null}
                     </motion.div>
                   )}
                 </AnimatePresence>

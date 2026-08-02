@@ -69,7 +69,8 @@ export async function uploadFileInChunks({
 }: {
   file: File;
   folderId?: string | null;
-  onProgress: (pct: number) => void;
+  /** Bytes of this file confirmed stored so far — the caller derives %, speed and ETA. */
+  onProgress: (loadedBytes: number) => void;
   signal?: AbortSignal;
 }): Promise<{ fileId: string; file: UploadedFileMeta | null }> {
   if (signal?.aborted) throw new UploadAbortedError();
@@ -102,7 +103,12 @@ export async function uploadFileInChunks({
   const pending = Array.from({ length: totalChunks }, (_, i) => i).filter(i => !done.has(i));
 
   let completed = done.size;
-  const report = () => onProgress(Math.round((completed / totalChunks) * 95));
+  // Bytes, not a percentage: the last chunk is usually short, so multiplying the
+  // chunk count would overstate progress at the end of every file. Held just
+  // below the total until /complete returns, so the UI never sits at a finished
+  // 100% while the file is still being finalised.
+  const report = () =>
+    onProgress(Math.min(completed * CHUNK_SIZE, Math.max(0, file.size - 1)));
   report();
 
   let cursor = 0;
@@ -136,6 +142,6 @@ export async function uploadFileInChunks({
   }
   const completeBody = (await completeRes.json().catch(() => ({}))) as { file?: UploadedFileMeta };
 
-  onProgress(100);
+  onProgress(file.size);
   return { fileId, file: completeBody.file ?? null };
 }

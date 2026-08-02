@@ -12,7 +12,14 @@ import {
   signInWithCode,
   signInWithPassword
 } from "@/lib/telegram-user";
-import { saveMtprotoSession, savePendingLogin, readPendingLogin, clearMtproto } from "@/lib/mtproto-session";
+import {
+  saveMtprotoSession,
+  savePendingLogin,
+  readPendingLogin,
+  clearMtproto,
+  clearPendingLogin
+} from "@/lib/mtproto-session";
+import { mapMtprotoError, isDeadSession } from "@/lib/mtproto-errors";
 import { MAX_FILE_SIZE, MAX_FILE_SIZE_PREMIUM } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
@@ -122,6 +129,21 @@ export async function POST(request: NextRequest) {
     await saveMtprotoSession(user.id, result.session, result.userId, result.premium);
     return NextResponse.json({ status: "linked", premium: result.premium, name: result.name });
   } catch (error) {
+    // Telegram's own failures are expected here (rate limits, wrong codes, 2FA)
+    // and each has an answer the user can act on — surface it rather than a 500.
+    const mapped = mapMtprotoError(error);
+    if (mapped) {
+      if (isDeadSession(error)) {
+        // Only the half-finished login is discarded. Every error here comes from
+        // a *pending* auth attempt, so clearing the stored link as well would
+        // destroy a working connection — and make already-stored MTProto files
+        // undownloadable — just because a re-link attempt went stale.
+        await requireUser()
+          .then(u => clearPendingLogin(u.id))
+          .catch(() => {});
+      }
+      return NextResponse.json({ error: mapped.message }, { status: mapped.status });
+    }
     return jsonError(error, "Telegram account linking failed.");
   }
 }

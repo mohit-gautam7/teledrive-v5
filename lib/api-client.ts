@@ -8,13 +8,28 @@ export class ApiError extends Error {
   }
 }
 
-function friendlyStatus(status: number, fallback: string) {
+/**
+ * Deliberate messages from the server win; generic text covers the rest.
+ *
+ * This used to return the generic text unconditionally, which discarded
+ * everything useful — a Telegram rate limit saying "try again in 7h 18m" and a
+ * genuine crash both reached the user as "The server had a problem."
+ *
+ * 401 and 5xx stay generic on purpose. A 5xx body is an unhandled exception's
+ * message, which can carry table names, file paths or connection strings, and
+ * none of it helps the person reading the toast.
+ */
+function friendlyStatus(status: number, serverMessage: string) {
   if (status === 401) return "Your session expired. Please sign in again.";
+  if (status >= 500) return "The server had a problem. Please try again.";
+
+  const message = serverMessage.trim();
+  if (message && message.toLowerCase() !== "internal server error") return message;
+
   if (status === 403) return "You do not have permission to do that.";
   if (status === 413) return "File too large — exceeds the server's maximum upload size.";
   if (status === 429) return "Too many requests. Please wait a moment and try again.";
-  if (status >= 500) return "The server had a problem. Please try again.";
-  return fallback;
+  return `Request failed (HTTP ${status}).`;
 }
 
 export async function parseResponse<T>(response: Response): Promise<T> {

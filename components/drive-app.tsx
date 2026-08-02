@@ -10,6 +10,7 @@ import {
   Check,
   ChevronRight,
   Cloud,
+  Copy,
   Download,
   Filter,
   Folder as FolderIcon,
@@ -36,24 +37,28 @@ import {
 import { apiFetch, uploadFile, UploadAbortedError } from "@/lib/api-client";
 import { uploadFileInChunks } from "@/lib/chunked-upload";
 import { CHUNK_SIZE, MAX_FILE_SIZE } from "@/lib/upload-config";
+import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import { cn, formatBytes } from "@/lib/utils";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
+import { filesFromDataTransfer, filesFromInput, type PickedFile } from "@/components/drive/dnd";
 import { Lightbox } from "@/components/drive/lightbox";
 import { ConfirmModal, MoveModal, NameModal, PropertiesModal, ShareModal } from "@/components/drive/modals";
 import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
-import type {
-  AppView,
-  DriveFile,
-  DriveFolder,
-  Insights,
-  PropsTarget,
-  SortDir,
-  SortField,
-  TelegramLink,
-  ThemeMode,
-  TypeFilter,
-  UploadItem
+import {
+  formatEta,
+  formatSpeed,
+  type AppView,
+  type DriveFile,
+  type DriveFolder,
+  type Insights,
+  type PropsTarget,
+  type SortDir,
+  type SortField,
+  type TelegramLink,
+  type ThemeMode,
+  type TypeFilter,
+  type UploadItem
 } from "@/components/drive/types";
 
 const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
@@ -73,7 +78,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const reduceMotion = useReducedMotion();
 
   const [files, setFiles] = useState<DriveFile[]>([]);
-  const [folders, setFolders] = useState<DriveFolder[]>([]);
+  // The whole folder tree is held once and navigation derives from it locally,
+  // so opening a folder issues no folder request at all.
+  const [folderTree, setFolderTree] = useState<DriveFolder[]>([]);
   const [folderId, setFolderId] = useState<string | null>(() =>
     typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("folder") : null
   );
@@ -89,6 +96,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const [loading, setLoading] = useState(true);
+  // Distinct from `loading`: content is on screen and being refreshed behind it,
+  // so we show a hairline bar instead of blanking to skeletons.
+  const [revalidating, setRevalidating] = useState(false);
+  const prefetched = useRef<Set<string>>(new Set());
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -97,9 +108,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
   const [trayOpen, setTrayOpen] = useState(true);
   const abortControllers = useRef<Map<string, AbortController>>(new Map());
+  const progressSamples = useRef<Map<string, Array<{ t: number; loaded: number }>>>(new Map());
   const batchController = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dirInputRef = useRef<HTMLInputElement>(null);
+  const dirInputRef = useRef<HTMLInputElement | null>(null);
 
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
   const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
@@ -120,7 +132,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const maxBytes = link?.maxBytes ?? MAX_FILE_SIZE;
   const cacheUser = user.username || user.name;
-  const cacheKey = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
+  const cacheKey = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}:${sortField}:${sortDir}:${typeFilter}`;
   const loadedKeyRef = useRef<string | null>(null);
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -140,18 +152,54 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     [folderId, debouncedQuery, appView, sortField, sortDir, typeFilter]
   );
 
+  /**
+   * Cache key for one listing. Sort and type filter are part of it because the
+   * response genuinely differs: without them, prefetching a folder while a
+   * filter was active would poison the unfiltered view with a filtered list and
+   * files would appear to have vanished.
+   */
+  const filesCacheKey = useCallback(
+    (targetFolderId: string | null, view: AppView = appView, query = debouncedQuery) =>
+      `td:${cacheUser}:${view}:${targetFolderId ?? "root"}:${query}:${sortField}:${sortDir}:${typeFilter}`,
+    [cacheUser, appView, debouncedQuery, sortField, sortDir, typeFilter]
+  );
+
+  /** Load the folder tree once. Navigation then costs nothing. */
+  const refreshFolders = useCallback(async () => {
+    const key = `td:${cacheUser}:tree`;
+    try {
+      const cached = window.localStorage.getItem(key);
+      if (cached) setFolderTree(JSON.parse(cached) as DriveFolder[]);
+    } catch {
+      /* corrupt cache — the network call below repairs it */
+    }
+    try {
+      const { folders } = await apiFetch<{ folders: DriveFolder[] }>("/api/folders?flat=1", { cache: "no-store" });
+      setFolderTree(folders);
+      try {
+        window.localStorage.setItem(key, JSON.stringify(folders));
+      } catch {
+        /* best-effort */
+      }
+    } catch {
+      /* keep whatever the cache gave us */
+    }
+  }, [cacheUser]);
+
   const refresh = useCallback(async () => {
     if (!BROWSE_VIEWS.includes(appView)) return;
-    const key = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}`;
+    const key = filesCacheKey(folderId);
 
     // Paint from cache immediately, then revalidate silently.
     let hasCache = false;
     try {
       const cached = window.localStorage.getItem(key);
       if (cached) {
-        const parsed = JSON.parse(cached) as { files: DriveFile[]; folders: DriveFolder[] };
-        setFiles(parsed.files);
-        setFolders(parsed.folders);
+        setFiles(JSON.parse(cached) as DriveFile[]);
+        // The cache holds only the first page, and the real value arrives with
+        // the refetch below. Leaving the previous folder's `true` here would let
+        // the scroll sentinel fire loadMore() against the new folder mid-flight.
+        setHasMore(false);
         loadedKeyRef.current = key;
         hasCache = true;
         setLoading(false);
@@ -160,21 +208,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       /* corrupt cache — fall through to the network */
     }
     if (!hasCache) setLoading(true);
+    setRevalidating(true);
 
-    const foldersOff = appView !== "files";
     try {
-      const [fileData, folderData] = await Promise.all([
-        apiFetch<{ files: DriveFile[]; hasMore: boolean }>(`/api/files?${listParams({ skip: "0" })}`, { cache: "no-store" }),
-        foldersOff
-          ? Promise.resolve({ folders: [] as DriveFolder[] })
-          : apiFetch<{ folders: DriveFolder[] }>(`/api/folders?${folderId ? `parentId=${folderId}` : ""}`, { cache: "no-store" })
-      ]);
+      const fileData = await apiFetch<{ files: DriveFile[]; hasMore: boolean }>(
+        `/api/files?${listParams({ skip: "0" })}`,
+        { cache: "no-store" }
+      );
       setFiles(fileData.files);
-      setFolders(folderData.folders);
       setHasMore(Boolean(fileData.hasMore));
       loadedKeyRef.current = key;
       try {
-        window.localStorage.setItem(key, JSON.stringify({ files: fileData.files.slice(0, 48), folders: folderData.folders }));
+        window.localStorage.setItem(key, JSON.stringify(fileData.files.slice(0, 48)));
       } catch {
         /* storage full — the cache is best-effort */
       }
@@ -182,8 +227,27 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       if (!hasCache) toast.error(error instanceof Error ? error.message : "Could not load files.");
     } finally {
       setLoading(false);
+      setRevalidating(false);
     }
-  }, [folderId, debouncedQuery, appView, cacheUser, listParams]);
+  }, [folderId, appView, listParams, filesCacheKey]);
+
+  /** Warm a folder's listing so clicking it paints instantly. */
+  const prefetchFolder = useCallback(
+    async (targetFolderId: string) => {
+      const key = filesCacheKey(targetFolderId, "files", "");
+      if (window.localStorage.getItem(key) || prefetched.current.has(key)) return;
+      prefetched.current.add(key);
+      try {
+        const params = new URLSearchParams({ folderId: targetFolderId, sort: sortField, dir: sortDir, skip: "0" });
+        if (typeFilter !== "all") params.set("type", typeFilter);
+        const data = await apiFetch<{ files: DriveFile[] }>(`/api/files?${params}`, { cache: "no-store" });
+        window.localStorage.setItem(key, JSON.stringify(data.files.slice(0, 48)));
+      } catch {
+        prefetched.current.delete(key);
+      }
+    },
+    [filesCacheKey, sortField, sortDir, typeFilter]
+  );
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
@@ -205,13 +269,25 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }, [loadingMore, hasMore, files.length, listParams]);
 
-  // `full` pulls the breakdown the Insights panel needs; the sidebar only wants
-  // the total, and that is the cheap single-query path.
-  const refreshStats = useCallback((full = false) => {
-    apiFetch<Insights>(`/api/files/stats${full ? "?full=1" : ""}`)
-      .then(data => setInsights(prev => ({ ...(prev ?? ({} as Insights)), ...data })))
-      .catch(() => {});
-  }, []);
+  /**
+   * `full` pulls the breakdown the Insights panel needs; the sidebar only wants
+   * the total, and that is the cheap single-query path.
+   *
+   * Also re-reads the folder tree. Folder rollups (size, item count) only change
+   * when files do, so tying them together means every mutation site that already
+   * refreshed totals keeps the folder tiles accurate — otherwise they'd show
+   * "0 items · 0 B" until a full reload, since the tree is no longer refetched
+   * on navigation.
+   */
+  const refreshStats = useCallback(
+    (full = false) => {
+      apiFetch<Insights>(`/api/files/stats${full ? "?full=1" : ""}`)
+        .then(data => setInsights(prev => ({ ...(prev ?? ({} as Insights)), ...data })))
+        .catch(() => {});
+      void refreshFolders();
+    },
+    [refreshFolders]
+  );
 
   const refreshLink = useCallback(() => {
     apiFetch<TelegramLink>("/api/telegram/link").then(setLink).catch(() => {});
@@ -221,6 +297,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     refresh();
   }, [refresh]);
   useEffect(() => {
+    // refreshStats also pulls the folder tree.
     refreshStats();
     refreshLink();
   }, [refreshStats, refreshLink]);
@@ -236,11 +313,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   useEffect(() => {
     if (loadedKeyRef.current !== cacheKey) return;
     try {
-      window.localStorage.setItem(cacheKey, JSON.stringify({ files: files.slice(0, 48), folders }));
+      window.localStorage.setItem(cacheKey, JSON.stringify(files.slice(0, 48)));
     } catch {
       /* best-effort */
     }
-  }, [files, folders, cacheKey]);
+  }, [files, cacheKey]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 220);
@@ -288,38 +365,108 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     [folderId, appView, debouncedQuery]
   );
 
-  /** Create (or reuse) the folder chain a dropped directory implies. */
+  /**
+   * Resolve the folder chain a dropped directory implies, reusing folders that
+   * already exist.
+   *
+   * Matching on the existing tree matters for more than tidiness: the resume key
+   * includes the destination folder id, so minting a fresh folder on every drop
+   * would give re-dropped files a new key and restart them from zero — exactly
+   * the case resumable uploads exist for.
+   */
   const folderCache = useRef<Map<string, string>>(new Map());
-  const ensureFolderPath = useCallback(
-    async (segments: string[], rootId: string | null): Promise<string | null> => {
-      let parentId = rootId;
-      let key = rootId ?? "root";
-      for (const segment of segments) {
-        key = `${key}/${segment}`;
-        const cached = folderCache.current.get(key);
-        if (cached) {
-          parentId = cached;
-          continue;
-        }
-        const { folder } = await apiFetch<{ folder: DriveFolder }>("/api/folders", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: segment, parentId })
-        });
-        folderCache.current.set(key, folder.id);
-        if ((folder.parentId ?? null) === (folderId ?? null)) {
-          setFolders(fs => (fs.some(f => f.id === folder.id) ? fs : [...fs, folder].sort((a, b) => a.name.localeCompare(b.name))));
-        }
-        parentId = folder.id;
+  const treeRef = useRef<DriveFolder[]>([]);
+  useEffect(() => {
+    treeRef.current = folderTree;
+  }, [folderTree]);
+
+  const ensureFolderPath = useCallback(async (segments: string[], rootId: string | null): Promise<string | null> => {
+    let parentId = rootId;
+    let key = rootId ?? "root";
+    for (const segment of segments) {
+      key = `${key}/${segment}`;
+
+      const cached = folderCache.current.get(key);
+      if (cached) {
+        parentId = cached;
+        continue;
       }
-      return parentId;
-    },
-    [folderId]
-  );
+
+      const scope = parentId;
+      const existing = treeRef.current.find(f => f.name === segment && (f.parentId ?? null) === (scope ?? null));
+      if (existing) {
+        folderCache.current.set(key, existing.id);
+        parentId = existing.id;
+        continue;
+      }
+
+      const { folder } = await apiFetch<{ folder: DriveFolder }>("/api/folders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: segment, parentId })
+      });
+      folderCache.current.set(key, folder.id);
+      treeRef.current = [...treeRef.current, folder];
+      setFolderTree(fs => (fs.some(f => f.id === folder.id) ? fs : [...fs, folder]));
+      parentId = folder.id;
+    }
+    return parentId;
+  }, []);
+
+  const uploadThumbnail = useCallback(async (fileId: string, source: File) => {
+    try {
+      const thumb = await makeThumbnail(source);
+      if (!thumb) return;
+      const form = new FormData();
+      form.append("thumb", thumb);
+      // Bounded: a slow thumbnail must never hold up the upload queue. If it
+      // times out the server falls back to generating one on first view.
+      const abort = new AbortController();
+      const timer = window.setTimeout(() => abort.abort(), 15_000);
+      try {
+        await fetch(`/api/upload/thumb/${fileId}`, { method: "POST", body: form, signal: abort.signal });
+      } finally {
+        window.clearTimeout(timer);
+      }
+    } catch {
+      /* the server still generates one on first view */
+    }
+  }, []);
+
+  /**
+   * Record bytes stored and derive percent, speed and ETA.
+   *
+   * Speed comes from a rolling ~6 s window rather than the whole-upload average,
+   * so the number reacts to the connection instead of slowly converging.
+   */
+  const reportProgress = useCallback((itemId: string, loaded: number, size: number) => {
+    const now = Date.now();
+    const history = progressSamples.current.get(itemId) ?? [];
+    history.push({ t: now, loaded });
+    while (history.length > 2 && now - history[0].t > 6000) history.shift();
+    progressSamples.current.set(itemId, history);
+
+    const first = history[0];
+    const elapsed = (now - first.t) / 1000;
+    const moved = loaded - first.loaded;
+    const speed = elapsed >= 0.75 && moved > 0 ? moved / elapsed : null;
+    const eta = speed && speed > 0 ? Math.max(0, (size - loaded) / speed) : null;
+
+    setUploadQueue(q =>
+      q.map(it =>
+        it.id === itemId
+          ? { ...it, loaded, percent: size ? Math.min(100, Math.round((loaded / size) * 100)) : 0, speed, eta }
+          : it
+      )
+    );
+  }, []);
 
   const uploadOne = useCallback(
     async (item: UploadItem, targetFolderId: string | null) => {
-      setUploadQueue(q => q.map(it => (it.id === item.id ? { ...it, status: "uploading", percent: 0, error: undefined } : it)));
+      progressSamples.current.delete(item.id);
+      setUploadQueue(q =>
+        q.map(it => (it.id === item.id ? { ...it, status: "uploading", loaded: 0, percent: 0, error: undefined } : it))
+      );
       const controller = new AbortController();
       abortControllers.current.set(item.id, controller);
       try {
@@ -328,7 +475,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           const result = await uploadFileInChunks({
             file: item.file,
             folderId: targetFolderId,
-            onProgress: pct => setUploadQueue(q => q.map(it => (it.id === item.id ? { ...it, percent: pct } : it))),
+            onProgress: loaded => reportProgress(item.id, loaded, item.size),
             signal: controller.signal
           });
           created = (result.file as DriveFile) ?? null;
@@ -339,38 +486,53 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           const result = await uploadFile<{ file: DriveFile }>(
             "/api/upload",
             form,
-            percent => setUploadQueue(q => q.map(it => (it.id === item.id ? { ...it, percent } : it))),
+            percent => reportProgress(item.id, Math.round((percent / 100) * item.size), item.size),
             controller.signal
           );
           created = result.data.file ?? null;
         }
+        // Store the thumbnail *before* the tile mounts. The tile immediately
+        // requests /api/preview?thumb=1, and if no thumbnail exists yet the
+        // server takes the slow path — re-downloading the original from
+        // Telegram and resizing it — which is precisely what generating one at
+        // upload time is meant to avoid.
+        if (created && canThumbnail(item.file)) await uploadThumbnail(created.id, item.file);
         addFileToState(created);
-        setUploadQueue(q => q.map(it => (it.id === item.id ? { ...it, percent: 100, status: "done" } : it)));
+        progressSamples.current.delete(item.id);
+        setUploadQueue(q =>
+          q.map(it => (it.id === item.id ? { ...it, loaded: it.size, percent: 100, speed: null, eta: null, status: "done" } : it))
+        );
       } finally {
         abortControllers.current.delete(item.id);
       }
     },
-    [addFileToState]
+    [addFileToState, reportProgress]
   );
 
   const startUploads = useCallback(
-    async (incoming: File[], destination: string | null = folderId) => {
-      const usable = incoming.filter(f => f.size > 0);
-      const tooLarge = usable.find(f => f.size > maxBytes);
+    async (incoming: PickedFile[], destination: string | null = folderId) => {
+      const usable = incoming.filter(p => p.file.size > 0);
+      const tooLarge = usable.find(p => p.file.size > maxBytes);
       if (tooLarge) {
-        toast.error(`"${tooLarge.name}" is larger than the ${formatBytes(maxBytes)} limit Telegram allows.`);
+        toast.error(`"${tooLarge.file.name}" is larger than the ${formatBytes(maxBytes)} limit Telegram allows.`);
         return;
       }
-      if (!usable.length) return;
+      if (!usable.length) {
+        if (incoming.length) toast.error("Those files are empty, so there was nothing to upload.");
+        return;
+      }
 
-      const items: UploadItem[] = usable.map(file => ({
+      const items: UploadItem[] = usable.map(({ file, path }) => ({
         id: Math.random().toString(36).slice(2),
         name: file.name,
         size: file.size,
+        loaded: 0,
         percent: 0,
+        speed: null,
+        eta: null,
         status: "pending",
         file,
-        path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || undefined
+        path
       }));
 
       setUploadQueue(items);
@@ -452,11 +614,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       if (hasFiles(e)) e.preventDefault();
     };
     const onDrop = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
+      if (!hasFiles(e) || !e.dataTransfer) return;
       e.preventDefault();
       setDragDepth(0);
-      const dropped = Array.from(e.dataTransfer?.files ?? []);
-      if (dropped.length) startUploads(dropped);
+      // Entries must be read before awaiting — the DataTransfer is neutered
+      // once the event handler returns.
+      filesFromDataTransfer(e.dataTransfer).then(picked => {
+        if (picked.length) startUploads(picked);
+      });
     };
     window.addEventListener("dragenter", onEnter);
     window.addEventListener("dragleave", onLeave);
@@ -603,7 +768,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ name, parentId: folderId })
         });
-        setFolders(fs => [...fs, folder].sort((a, b) => a.name.localeCompare(b.name)));
+        setFolderTree(fs => [...fs, folder]);
         toast.success("Folder created");
       } else {
         await apiFetch(`/api/folders/${folderModal.id}`, {
@@ -611,12 +776,31 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ name })
         });
-        setFolders(fs => fs.map(f => (f.id === folderModal.id ? { ...f, name } : f)));
+        setFolderTree(fs => fs.map(f => (f.id === folderModal.id ? { ...f, name } : f)));
         toast.success("Folder renamed");
       }
       setFolderModal(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save folder.");
+    }
+  }
+
+  async function copyFolder(folder: DriveFolder) {
+    const toastId = toast.loading(`Copying "${folder.name}"…`);
+    try {
+      const result = await apiFetch<{ folderCount: number; fileCount: number }>(`/api/folders/${folder.id}/copy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      });
+      refresh();
+      refreshStats();
+      toast.success(
+        `Copied ${result.fileCount} file${result.fileCount === 1 ? "" : "s"} into "${folder.name} copy"`,
+        { id: toastId }
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not copy the folder.", { id: toastId });
     }
   }
 
@@ -628,7 +812,21 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       onConfirm: async () => {
         try {
           await apiFetch(`/api/folders/${id}`, { method: "DELETE" });
-          setFolders(fs => fs.filter(f => f.id !== id));
+          // Drop the folder and everything nested beneath it.
+          setFolderTree(fs => {
+            const doomed = new Set([id]);
+            let grew = true;
+            while (grew) {
+              grew = false;
+              for (const f of fs) {
+                if (f.parentId && doomed.has(f.parentId) && !doomed.has(f.id)) {
+                  doomed.add(f.id);
+                  grew = true;
+                }
+              }
+            }
+            return fs.filter(f => !doomed.has(f.id));
+          });
           toast.success("Folder moved to trash");
           refreshStats();
         } catch (error) {
@@ -763,9 +961,19 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
+  // Children of the current folder, straight from the in-memory tree.
+  const folders = useMemo(
+    () => folderTree.filter(f => (f.parentId ?? null) === (folderId ?? null)).sort((a, b) => a.name.localeCompare(b.name)),
+    [folderTree, folderId]
+  );
+
+  // Weighted by bytes, not a mean of per-file percentages — otherwise one tiny
+  // finished file next to a 4 GB one would read 50%.
   const overallPercent = useMemo(() => {
-    if (!uploadQueue.length) return 0;
-    return Math.round(uploadQueue.reduce((sum, item) => sum + item.percent, 0) / uploadQueue.length);
+    const total = uploadQueue.reduce((sum, item) => sum + item.size, 0);
+    if (!total) return 0;
+    const loaded = uploadQueue.reduce((sum, item) => sum + (item.status === "done" ? item.size : item.loaded), 0);
+    return Math.round((loaded / total) * 100);
   }, [uploadQueue]);
 
   const heading =
@@ -780,15 +988,34 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   return (
     <div className="app-bg relative min-h-[100dvh]">
       {/* Hidden pickers */}
-      <input ref={fileInputRef} type="file" multiple hidden onChange={e => { startUploads(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
       <input
-        ref={dirInputRef}
+        ref={fileInputRef}
         type="file"
+        multiple
         hidden
-        // @ts-expect-error — non-standard but supported by every major browser
-        webkitdirectory=""
-        directory=""
-        onChange={e => { startUploads(Array.from(e.target.files ?? [])); e.target.value = ""; }}
+        onChange={e => {
+          startUploads(filesFromInput(e.target.files));
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={node => {
+          // Set as attributes on the live node: React drops unknown camelCase
+          // props, and the spelling differs between engines.
+          if (node) {
+            node.setAttribute("webkitdirectory", "");
+            node.setAttribute("directory", "");
+            node.setAttribute("mozdirectory", "");
+          }
+          dirInputRef.current = node;
+        }}
+        type="file"
+        multiple
+        hidden
+        onChange={e => {
+          startUploads(filesFromInput(e.target.files));
+          e.target.value = "";
+        }}
       />
 
       {/* Sidebar scrim */}
@@ -923,7 +1150,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             </button>
           </div>
 
-          {uploading ? <div className="progress-bar h-[2px] w-full" /> : null}
+          {uploading || revalidating ? <div className="progress-bar h-[2px] w-full" /> : null}
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 sm:py-7">
@@ -1082,15 +1309,25 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                               if (ids.length) moveFilesTo(ids, folder.id);
                               return;
                             }
-                            if (e.dataTransfer.files?.length) {
+                            if (e.dataTransfer.files?.length || e.dataTransfer.items?.length) {
                               e.preventDefault();
                               e.stopPropagation();
                               setDragDepth(0);
-                              startUploads(Array.from(e.dataTransfer.files), folder.id);
+                              filesFromDataTransfer(e.dataTransfer).then(picked => {
+                                if (picked.length) startUploads(picked, folder.id);
+                              });
                             }
                           }}
                         >
-                          <button className="flex min-w-0 flex-1 items-center gap-2.5 text-left" onClick={() => enterFolder(folder)}>
+                          <button
+                            className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                            onClick={() => enterFolder(folder)}
+                            // Warm the listing before the click lands, so the
+                            // folder opens against a populated cache.
+                            onMouseEnter={() => prefetchFolder(folder.id)}
+                            onFocus={() => prefetchFolder(folder.id)}
+                            onTouchStart={() => prefetchFolder(folder.id)}
+                          >
                             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg" style={{ background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.24)" }}>
                               <FolderIcon className="h-4 w-4" style={{ color: "var(--accent-2)" }} />
                             </span>
@@ -1114,6 +1351,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => setFolderModal({ mode: "rename", id: folder.id, value: folder.name })} className="menu-item">
                                   <Pencil className="h-4 w-4" style={{ color: "var(--accent)" }} /> Rename
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Item onSelect={() => copyFolder(folder)} className="menu-item">
+                                  <Copy className="h-4 w-4" style={{ color: "var(--accent)" }} /> Make a copy
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => setShareTarget({ folderId: folder.id, name: folder.name })} className="menu-item">
                                   <Link2 className="h-4 w-4" style={{ color: "var(--accent)" }} /> Share folder
@@ -1366,6 +1606,13 @@ function UploadTray({
   const done = items.filter(i => i.status === "done").length;
   const failed = items.filter(i => i.status === "error").length;
 
+  // Queue totals: bytes moved across every file, and a combined rate/ETA taken
+  // from whatever is actually in flight.
+  const totalBytes = items.reduce((sum, i) => sum + i.size, 0);
+  const loadedBytes = items.reduce((sum, i) => sum + (i.status === "done" ? i.size : i.loaded), 0);
+  const activeSpeed = items.reduce((sum, i) => sum + (i.status === "uploading" ? (i.speed ?? 0) : 0), 0);
+  const queueEta = activeSpeed > 0 ? (totalBytes - loadedBytes) / activeSpeed : null;
+
   return (
     <motion.div
       initial={{ opacity: 0, height: 0 }}
@@ -1374,18 +1621,24 @@ function UploadTray({
       className="mt-3 overflow-hidden rounded-xl"
       style={{ border: "1px solid var(--border-dim)", background: "var(--surface)" }}
     >
-      <div className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderBottom: open ? "1px solid var(--border-dim)" : "none" }}>
-        <button onClick={onToggle} className="t-xs flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-2)" }}>
-          <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
-          <span className="truncate">
-            {done}/{items.length} done{failed ? ` · ${failed} failed` : ""}
-          </span>
-        </button>
-        {uploading ? (
-          <button onClick={onCancelAll} className="t-xs shrink-0 font-semibold" style={{ color: "var(--danger)" }}>
-            Cancel all
+      <div className="px-3 py-2" style={{ borderBottom: open ? "1px solid var(--border-dim)" : "none" }}>
+        <div className="flex items-center justify-between gap-2">
+          <button onClick={onToggle} className="t-xs flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-2)" }}>
+            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
+            <span className="truncate">
+              {done}/{items.length} done{failed ? ` · ${failed} failed` : ""}
+            </span>
           </button>
-        ) : null}
+          {uploading ? (
+            <button onClick={onCancelAll} className="t-xs shrink-0 font-semibold" style={{ color: "var(--danger)" }}>
+              Cancel all
+            </button>
+          ) : null}
+        </div>
+        <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>
+          {formatBytes(loadedBytes)} / {formatBytes(totalBytes)}
+          {uploading ? ` · ${formatSpeed(activeSpeed || null)} · ${formatEta(queueEta)} left` : ""}
+        </p>
       </div>
 
       {open ? (
@@ -1393,7 +1646,9 @@ function UploadTray({
           {items.map(item => (
             <div key={item.id} className="rounded-lg p-2" style={{ background: "var(--bg-1)" }}>
               <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="t-xs truncate font-medium" style={{ color: "var(--text-1)" }}>{item.name}</span>
+                <span className="t-xs truncate font-medium" style={{ color: "var(--text-1)" }} title={item.path || item.name}>
+                  {item.name}
+                </span>
                 <span className="flex shrink-0 items-center gap-1.5">
                   {item.status === "pending" ? <span className="mono" style={{ color: "var(--text-3)" }}>wait</span> : null}
                   {item.status === "uploading" ? <span className="mono" style={{ color: "var(--accent)" }}>{item.percent}%</span> : null}
@@ -1423,7 +1678,12 @@ function UploadTray({
               </div>
               {item.status === "error" ? (
                 <p className="t-xs mt-1 truncate" style={{ color: "var(--danger)" }} title={item.error}>{item.error}</p>
-              ) : null}
+              ) : (
+                <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>
+                  {formatBytes(item.status === "done" ? item.size : item.loaded)} / {formatBytes(item.size)}
+                  {item.status === "uploading" && item.speed ? ` · ${formatSpeed(item.speed)} · ${formatEta(item.eta)}` : ""}
+                </p>
+              )}
             </div>
           ))}
         </div>

@@ -23,14 +23,35 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
 export async function DELETE(_request: NextRequest, { params }: { params: { id: string } }) {
   try {
     const user = await requireUser();
-    // Soft-delete all files inside the folder (move to trash)
+
+    // Subfolders cascade away with the parent, but File.folder is SetNull — so
+    // trashing only this folder's own files left everything nested inside it
+    // loose at the root instead of in the trash. Collect the whole subtree.
+    const all = await prisma.folder.findMany({
+      where: { userId: user.id },
+      select: { id: true, parentId: true }
+    });
+
+    const doomed = new Set([params.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const folder of all) {
+        if (folder.parentId && doomed.has(folder.parentId) && !doomed.has(folder.id)) {
+          doomed.add(folder.id);
+          grew = true;
+        }
+      }
+    }
+
     await prisma.file.updateMany({
-      where: { folderId: params.id, userId: user.id },
+      where: { userId: user.id, folderId: { in: [...doomed] } },
       data: { isDeleted: true }
     });
-    // Delete the folder itself
+    // Deleting the root cascades the descendants via the FolderTree relation.
     await prisma.folder.delete({ where: { id: params.id, userId: user.id } });
-    return NextResponse.json({ ok: true });
+
+    return NextResponse.json({ ok: true, foldersRemoved: doomed.size });
   } catch (error) {
     return jsonError(error, "Could not delete folder.");
   }

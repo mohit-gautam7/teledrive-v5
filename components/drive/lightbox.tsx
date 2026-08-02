@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   ChevronLeft,
   ChevronRight,
@@ -11,6 +11,7 @@ import {
   Loader2,
   Maximize,
   Minimize,
+  Music,
   Video as VideoIcon,
   X
 } from "lucide-react";
@@ -20,6 +21,36 @@ import type { DriveFile } from "./types";
 const isImage = (f: DriveFile) =>
   f.mimeType.startsWith("image/") && !f.mimeType.includes("heic") && !f.mimeType.includes("heif");
 const isVideo = (f: DriveFile) => f.mimeType.startsWith("video/");
+const isAudio = (f: DriveFile) => f.mimeType.startsWith("audio/");
+
+/** Shown when a file can't be rendered inline — always offers the download. */
+function Unsupported({
+  icon,
+  title,
+  body,
+  fileId
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  fileId: string;
+}) {
+  return (
+    <div className="px-6 text-center">
+      <span
+        className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-2xl"
+        style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }}
+      >
+        {icon}
+      </span>
+      <p className="t-body font-semibold" style={{ color: "var(--text-2)" }}>{title}</p>
+      <p className="t-sm mx-auto mt-1 max-w-[40ch]" style={{ color: "var(--text-3)" }}>{body}</p>
+      <a href={`/api/download/${fileId}`} className="btn btn-accent mt-5">
+        <Download className="h-4 w-4" /> Download
+      </a>
+    </div>
+  );
+}
 
 /**
  * Full-bleed media viewer. Images and video stream through the app's proxy, so
@@ -40,9 +71,10 @@ export function Lightbox({
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [zoomed, setZoomed] = useState(false);
 
-  const viewable = useMemo(() => allFiles.filter(f => isImage(f) || isVideo(f)), [allFiles]);
+  const viewable = useMemo(() => allFiles.filter(f => isImage(f) || isVideo(f) || isAudio(f)), [allFiles]);
   const index = viewable.findIndex(f => f.id === file.id);
   const hasPrev = index > 0;
   const hasNext = index >= 0 && index < viewable.length - 1;
@@ -52,6 +84,7 @@ export function Lightbox({
       const next = viewable[index + delta];
       if (next) {
         setLoaded(false);
+        setFailed(false);
         setZoomed(false);
         onNavigate(next);
       }
@@ -92,8 +125,11 @@ export function Lightbox({
 
   const image = isImage(file);
   const video = isVideo(file);
-  const src = image ? `/api/preview/${file.id}` : video ? `/api/stream/${file.id}` : "";
-  const Icon = image ? ImageIcon : video ? VideoIcon : FileIcon;
+  const audio = isAudio(file);
+  // Images come from /api/preview (cacheable); anything time-based streams from
+  // /api/stream, which serves HTTP ranges so the player can seek.
+  const src = image ? `/api/preview/${file.id}` : video || audio ? `/api/stream/${file.id}` : "";
+  const Icon = image ? ImageIcon : video ? VideoIcon : audio ? Music : FileIcon;
 
   return (
     <motion.div
@@ -152,62 +188,82 @@ export function Lightbox({
           if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) go(dx < 0 ? 1 : -1);
         }}
       >
-        {image && !loaded ? <Loader2 className="absolute h-7 w-7 animate-spin" style={{ color: "var(--accent)" }} /> : null}
+        {(image || video || audio) && !loaded && !failed ? (
+          <Loader2 className="absolute h-7 w-7 animate-spin" style={{ color: "var(--accent)" }} />
+        ) : null}
 
-        <AnimatePresence mode="wait">
-          {image ? (
-            <motion.img
-              key={file.id}
-              src={src}
-              alt={file.originalName}
-              initial={{ opacity: 0, scale: 0.97 }}
-              // Opacity is never gated on load state: an image that finishes
-              // before React attaches onLoad would otherwise stay invisible
-              // forever. The browser paints nothing until bytes arrive anyway,
-              // and the spinner underneath covers the gap.
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.97 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              onLoad={() => setLoaded(true)}
-              onError={() => setLoaded(true)}
-              onClick={() => setZoomed(z => !z)}
-              className="rounded-xl"
-              style={{
-                maxWidth: zoomed ? "none" : "100%",
-                maxHeight: zoomed ? "none" : "100%",
-                width: zoomed ? "auto" : undefined,
-                objectFit: "contain",
-                cursor: zoomed ? "zoom-out" : "zoom-in",
-                position: "relative"
-              }}
-            />
-          ) : video ? (
-            <motion.video
+        {failed ? (
+          <Unsupported
+            icon={<Icon className="h-9 w-9" style={{ color: "var(--danger)" }} />}
+            title="Couldn't load this file"
+            body="The transfer failed or the format isn't playable in a browser. Downloading it will still work."
+            fileId={file.id}
+          />
+        ) : image ? (
+          <img
+            key={file.id}
+            src={src}
+            alt={file.originalName}
+            onLoad={() => setLoaded(true)}
+            onError={() => setFailed(true)}
+            onClick={() => setZoomed(z => !z)}
+            className="rounded-xl"
+            // Sized against the stage's own box rather than a percentage of a
+            // scroll container, which is what produced the odd fitting before.
+            style={
+              zoomed
+                ? { maxWidth: "none", maxHeight: "none", cursor: "zoom-out" }
+                : {
+                    maxWidth: "100%",
+                    maxHeight: "100%",
+                    width: "auto",
+                    height: "auto",
+                    objectFit: "contain",
+                    cursor: "zoom-in"
+                  }
+            }
+          />
+        ) : video ? (
+          <video
+            key={file.id}
+            src={src}
+            controls
+            playsInline
+            // Metadata up front so duration and the scrub bar work immediately;
+            // seeking then issues Range requests against /api/stream.
+            preload="metadata"
+            onLoadedMetadata={() => setLoaded(true)}
+            onError={() => setFailed(true)}
+            className="rounded-xl"
+            style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", background: "#000" }}
+          />
+        ) : audio ? (
+          <div className="w-full max-w-lg text-center">
+            <span className="mx-auto mb-5 grid h-20 w-20 place-items-center rounded-2xl" style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }}>
+              <Music className="h-9 w-9" style={{ color: "var(--accent)" }} />
+            </span>
+            <audio
               key={file.id}
               src={src}
               controls
-              autoPlay
-              playsInline
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="rounded-xl"
-              style={{ maxWidth: "100%", maxHeight: "100%" }}
+              preload="metadata"
+              onLoadedMetadata={() => setLoaded(true)}
+              onError={() => setFailed(true)}
+              className="w-full"
             />
-          ) : (
-            <motion.div key={file.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="text-center">
-              <span className="mx-auto mb-4 grid h-20 w-20 place-items-center rounded-2xl" style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }}>
-                <Icon className="h-9 w-9" style={{ color: "var(--accent)" }} />
-              </span>
-              <p className="t-body font-semibold" style={{ color: "var(--text-2)" }}>No inline preview</p>
-              <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>
-                {file.mimeType.includes("heic") || file.mimeType.includes("heif")
-                  ? "Browsers can't display HEIC/HEIF. Download to view."
-                  : "Download the file to open it."}
-              </p>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          </div>
+        ) : (
+          <Unsupported
+            icon={<Icon className="h-9 w-9" style={{ color: "var(--accent)" }} />}
+            title="No inline preview"
+            body={
+              file.mimeType.includes("heic") || file.mimeType.includes("heif")
+                ? "Browsers can't display HEIC/HEIF. Download it to view."
+                : "This file type can't be shown in the browser."
+            }
+            fileId={file.id}
+          />
+        )}
 
         {hasPrev ? (
           <button onClick={() => go(-1)} className="icon-btn absolute left-2 top-1/2 -translate-y-1/2" style={{ background: "var(--bg-1)", height: 44, width: 44 }} aria-label="Previous">

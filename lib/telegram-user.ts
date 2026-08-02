@@ -28,19 +28,48 @@ export function mtprotoConfigured() {
   return Boolean(process.env.API_ID && process.env.API_HASH);
 }
 
-async function connect(sessionString: string): Promise<TelegramClient> {
-  const cached = clients.get(sessionString);
-  if (cached?.connected) return cached;
-
+function build(sessionString: string) {
   const { apiId, apiHash } = apiCredentials();
-  const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+  return new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
     connectionRetries: 3,
     useWSS: false,
     requestRetries: 3
   });
+}
+
+/**
+ * Connect a client for an *existing* session, reusing the socket within this
+ * process.
+ *
+ * Only non-empty sessions are ever cached. A client built from "" mutates its
+ * own session in place as it authorises (and again when Telegram migrates it to
+ * another data centre), so caching it under the key "" would hand the next
+ * person who started a login a client already half-authorised as someone else.
+ */
+async function connect(sessionString: string): Promise<TelegramClient> {
+  if (!sessionString) return connectFresh();
+
+  const cached = clients.get(sessionString);
+  if (cached?.connected) return cached;
+
+  const client = build(sessionString);
   await client.connect();
   clients.set(sessionString, client);
   return client;
+}
+
+/** A brand-new, never-cached client for starting an authorisation flow. */
+async function connectFresh(): Promise<TelegramClient> {
+  const client = build("");
+  await client.connect();
+  return client;
+}
+
+/** Drop a session's cached socket — used when Telegram tells us it is dead. */
+export function forgetSession(sessionString: string) {
+  const cached = clients.get(sessionString);
+  clients.delete(sessionString);
+  void cached?.disconnect().catch(() => {});
 }
 
 /** Run `fn` against a client built from `sessionString` (empty string = fresh). */
@@ -57,20 +86,23 @@ export type QrStart = { pendingSession: string; qrUrl: string; expiresAt: number
  *  The half-built session must be persisted — step 2 needs the same auth key. */
 export async function startQrLogin(): Promise<QrStart> {
   const { apiId, apiHash } = apiCredentials();
-  const client = await connect("");
-  const result = await client.invoke(
-    new Api.auth.ExportLoginToken({ apiId, apiHash, exceptIds: [] })
-  );
-  if (!(result instanceof Api.auth.LoginToken)) {
-    throw new Error("Telegram did not return a QR login token.");
+  const client = await connectFresh();
+  try {
+    const result = await client.invoke(new Api.auth.ExportLoginToken({ apiId, apiHash, exceptIds: [] }));
+    if (!(result instanceof Api.auth.LoginToken)) {
+      throw new Error("Telegram did not return a QR login token.");
+    }
+    const token = Buffer.from(result.token).toString("base64url");
+    return {
+      pendingSession: (client.session as StringSession).save(),
+      qrUrl: `tg://login?token=${token}`,
+      expiresAt: result.expires * 1000
+    };
+  } finally {
+    // Uncached client — the auth key lives on in the saved session string, so
+    // releasing the socket here costs nothing and avoids leaking one per start.
+    await client.disconnect().catch(() => {});
   }
-  const token = Buffer.from(result.token).toString("base64url");
-  const pendingSession = (client.session as StringSession).save();
-  return {
-    pendingSession,
-    qrUrl: `tg://login?token=${token}`,
-    expiresAt: result.expires * 1000
-  };
 }
 
 export type QrPoll =
@@ -87,28 +119,48 @@ export async function pollQrLogin(pendingSession: string): Promise<QrPoll> {
     const result = await client.invoke(new Api.auth.ExportLoginToken({ apiId, apiHash, exceptIds: [] }));
 
     if (result instanceof Api.auth.LoginTokenSuccess) {
-      return authorizedResult(client);
+      return authorizedResult(client, pendingSession);
     }
     if (result instanceof Api.auth.LoginTokenMigrateTo) {
+      // The account lives on another data centre; move this session there and
+      // redeem the token against it.
       await client._switchDC(result.dcId);
       const migrated = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
-      if (migrated instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client);
+      if (migrated instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client, pendingSession);
     }
     return { status: "pending" };
   } catch (err) {
-    const message = (err as Error).message || "";
-    if (message.includes("SESSION_PASSWORD_NEEDED")) {
-      return { status: "password", pendingSession: (client.session as StringSession).save() };
+    if (needsPassword(err)) {
+      // The client authorised far enough to need a password; its session string
+      // has moved on, so drop the entry filed under the old one rather than
+      // leaving a second socket cached against a stale key.
+      const next = (client.session as StringSession).save();
+      if (next !== pendingSession) {
+        clients.delete(pendingSession);
+        clients.set(next, client);
+      }
+      return { status: "password", pendingSession: next };
     }
     throw err;
   }
 }
 
-async function authorizedResult(client: TelegramClient): Promise<QrPoll & { status: "authorized" }> {
+/** Telegram signals a 2FA account by failing the sign-in with this code. */
+function needsPassword(error: unknown) {
+  const code = (error as { errorMessage?: string })?.errorMessage ?? "";
+  return code === "SESSION_PASSWORD_NEEDED" || String((error as Error)?.message ?? "").includes("SESSION_PASSWORD_NEEDED");
+}
+
+async function authorizedResult(client: TelegramClient, previousKey?: string): Promise<Authorized> {
   const me = (await client.getMe()) as Api.User;
+  const session = (client.session as StringSession).save();
+  // The client authorised in place, so any cache entry under the half-built
+  // session string now points at a session string that no longer describes it.
+  if (previousKey && previousKey !== session) clients.delete(previousKey);
+  clients.set(session, client);
   return {
     status: "authorized",
-    session: (client.session as StringSession).save(),
+    session,
     userId: String(me.id),
     premium: Boolean(me.premium),
     name: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "Telegram user"
@@ -117,21 +169,33 @@ async function authorizedResult(client: TelegramClient): Promise<QrPoll & { stat
 
 // ── Authorisation: phone + code ──────────────────────────────────────────────
 
+/** Normalise to the E.164-ish form Telegram expects: digits with a leading +. */
+export function normalisePhone(input: string) {
+  const digits = input.replace(/[^\d]/g, "");
+  return digits ? `+${digits}` : "";
+}
+
 export async function startPhoneLogin(phone: string): Promise<{ pendingSession: string; phoneCodeHash: string }> {
   const { apiId, apiHash } = apiCredentials();
-  const client = await connect("");
-  const sent = await client.invoke(
-    new Api.auth.SendCode({
-      phoneNumber: phone,
-      apiId,
-      apiHash,
-      settings: new Api.CodeSettings({})
-    })
-  );
-  if (!(sent instanceof Api.auth.SentCode)) {
-    throw new Error("Telegram could not send a login code to that number.");
+  const client = await connectFresh();
+  try {
+    // gramjs transparently follows the PHONE_MIGRATE_x redirect this can raise,
+    // reconnecting to the user's home data centre; the saved session records it.
+    const sent = await client.invoke(
+      new Api.auth.SendCode({
+        phoneNumber: normalisePhone(phone),
+        apiId,
+        apiHash,
+        settings: new Api.CodeSettings({})
+      })
+    );
+    if (!(sent instanceof Api.auth.SentCode)) {
+      throw new Error("Telegram could not send a login code to that number.");
+    }
+    return { pendingSession: (client.session as StringSession).save(), phoneCodeHash: sent.phoneCodeHash };
+  } finally {
+    await client.disconnect().catch(() => {});
   }
-  return { pendingSession: (client.session as StringSession).save(), phoneCodeHash: sent.phoneCodeHash };
 }
 
 export type Authorized = { status: "authorized"; session: string; userId: string; premium: boolean; name: string };
@@ -145,14 +209,24 @@ export async function signInWithCode(
 ): Promise<SignInResult> {
   const client = await connect(pendingSession);
   try {
-    await client.invoke(new Api.auth.SignIn({ phoneNumber: phone, phoneCodeHash, phoneCode: code }));
+    await client.invoke(
+      new Api.auth.SignIn({ phoneNumber: normalisePhone(phone), phoneCodeHash, phoneCode: code })
+    );
   } catch (err) {
-    if (((err as Error).message || "").includes("SESSION_PASSWORD_NEEDED")) {
-      return { status: "password", pendingSession: (client.session as StringSession).save() };
+    if (needsPassword(err)) {
+      // The client authorised far enough to need a password; its session string
+      // has moved on, so drop the entry filed under the old one rather than
+      // leaving a second socket cached against a stale key.
+      const next = (client.session as StringSession).save();
+      if (next !== pendingSession) {
+        clients.delete(pendingSession);
+        clients.set(next, client);
+      }
+      return { status: "password", pendingSession: next };
     }
     throw err;
   }
-  return authorizedResult(client);
+  return authorizedResult(client, pendingSession);
 }
 
 /** Two-factor step — required when the account has a cloud password set. */
@@ -161,7 +235,7 @@ export async function signInWithPassword(pendingSession: string, password: strin
   const pwd = await client.invoke(new Api.account.GetPassword());
   const check = await computeCheck(pwd, password);
   await client.invoke(new Api.auth.CheckPassword({ password: check }));
-  return authorizedResult(client);
+  return authorizedResult(client, pendingSession);
 }
 
 // ── Big-file upload ──────────────────────────────────────────────────────────

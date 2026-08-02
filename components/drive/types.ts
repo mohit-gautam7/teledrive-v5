@@ -33,13 +33,34 @@ export type UploadItem = {
   id: string;
   name: string;
   size: number;
+  /** Bytes confirmed stored. Percent, speed and ETA are derived from this. */
+  loaded: number;
   percent: number;
+  /** Bytes per second over a recent window; null until there's enough signal. */
+  speed: number | null;
+  /** Seconds remaining at the current speed, or null when unknown. */
+  eta: number | null;
   status: "pending" | "uploading" | "done" | "error";
   error?: string;
   file: File;
   /** Relative path when the item came from a folder drop / directory picker. */
   path?: string;
 };
+
+export function formatSpeed(bytesPerSecond: number | null) {
+  if (!bytesPerSecond || bytesPerSecond <= 0) return "—";
+  const mb = bytesPerSecond / (1024 * 1024);
+  if (mb >= 1) return `${mb.toFixed(1)} MB/s`;
+  return `${(bytesPerSecond / 1024).toFixed(0)} KB/s`;
+}
+
+export function formatEta(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return `${Math.ceil(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
 
 export type TelegramLink = {
   available: boolean;

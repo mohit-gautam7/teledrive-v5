@@ -52,6 +52,14 @@ export async function readPendingLogin(userId: string) {
   };
 }
 
+/** Discard only a half-finished login, leaving any established link intact. */
+export async function clearPendingLogin(userId: string) {
+  await prisma.storageConfig.updateMany({
+    where: { userId },
+    data: { pendingSession: null, pendingHash: null, pendingPhone: null }
+  });
+}
+
 export async function clearMtproto(userId: string) {
   await prisma.storageConfig.updateMany({
     where: { userId },
