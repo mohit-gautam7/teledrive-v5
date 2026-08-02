@@ -22,6 +22,19 @@ services:
       - key: NODE_ENV
         value: production
 
+      # ── Feature flags — off by default ──
+      # The AI platform (BYO-key vault, router, /api/ai/*) stays dark unless this
+      # is "1". With it unset every AI route answers 404 and the Settings card
+      # hides itself, so the flag can be flipped here with a restart — no rebuild,
+      # because nothing about it is baked into the browser bundle.
+      - key: AI_ENABLED
+        value: "0"
+      # Drains the background job queue in this process. Safe to turn on here
+      # precisely because Render runs one long-lived container; keep it off until
+      # there is queued work, and never enable it on a serverless deployment.
+      - key: JOB_WORKER_ENABLED
+        value: "0"
+
       # ── Secrets — set these in the Render dashboard (never commit real values) ──
       - key: BOT_TOKEN
         sync: false

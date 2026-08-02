@@ -55,7 +55,28 @@ these once after the first successful deploy:
 3. **Register the domain with BotFather** for the one-tap login widget:
    `/setdomain` → your bot → `https://<your-service>.onrender.com`
 
-## 5. Keep it awake (optional but recommended)
+## 5. AI features (optional, off by default)
+
+`render.yaml` sets both flags to `"0"`, so the AI platform ships dark: every
+`/api/ai/*` route answers 404 and the **AI keys** card in Settings hides itself.
+
+| Variable | Set to | Effect |
+|---|---|---|
+| `AI_ENABLED` | `1` | Turns on the BYO-key vault, router and `/api/ai/*` routes. |
+| `JOB_WORKER_ENABLED` | `1` | Drains the background job queue **in this container**. |
+| `SESSION_ENCRYPTION_KEY` | required | Without it the vault refuses to store keys rather than saving them unencrypted. |
+
+Two things worth knowing:
+
+- Changing these needs only a **restart, not a rebuild**. The Settings card asks
+  the server whether the feature exists instead of reading a `NEXT_PUBLIC_*`
+  value, and `NEXT_PUBLIC_*` is the only thing baked into the browser bundle.
+- Only turn on `JOB_WORKER_ENABLED` here, never on a serverless deployment: the
+  worker is a loop that outlives a request, and a serverless function is killed
+  long before a job finishes. Note that a sleeping free service is not draining
+  the queue either — see the keep-alive note below.
+
+## 6. Keep it awake (optional but recommended)
 
 A free service sleeps after ~15 minutes idle; the next visit then waits ~30–60 s
 for a cold start, which can interrupt an in-flight upload. Ping it every ~10

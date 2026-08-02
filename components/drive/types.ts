@@ -98,6 +98,39 @@ export type Insights = {
 
 export const BOT_USERNAME = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "";
 
+/** A provider the vault can hold keys for. Mirrors publicProviders() — no secrets. */
+export type AiProvider = {
+  id: string;
+  label: string;
+  defaultBaseUrl: string | null;
+  keysUrl: string | null;
+  local: boolean;
+  /** True when a key for this provider must carry its own endpoint. */
+  requiresBaseUrl: boolean;
+};
+
+/**
+ * A stored key as the browser is allowed to see it: `hint` is the last four
+ * characters, and the secret itself is never sent back.
+ */
+export type AiKeyRow = {
+  id: string;
+  provider: string;
+  nickname: string;
+  hint: string;
+  baseUrl: string | null;
+  model: string | null;
+  enabled: boolean;
+  priority: number;
+  dailyLimitMicros: number | null;
+  health: string;
+  failureCount: number;
+  lastError: string | null;
+  lastUsedAt: string | null;
+  disabledAt: string | null;
+  createdAt: string;
+};
+
 /** Where this file actually lives in Telegram, for the "open in Telegram" action. */
 export function telegramDeepLink(file: DriveFile, mtprotoUserId: string | null): string | null {
   if (file.backend === "mtproto" && file.telegramMessageId && mtprotoUserId) {

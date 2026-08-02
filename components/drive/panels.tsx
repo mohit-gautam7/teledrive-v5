@@ -21,10 +21,10 @@ import {
   Unlink
 } from "lucide-react";
 import { toast } from "sonner";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
 import { MAX_FILE_SIZE } from "@/lib/upload-config";
-import type { Insights, ShareRow, TelegramLink, ThemeMode } from "./types";
+import type { AiKeyRow, AiProvider, Insights, ShareRow, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
 
@@ -315,6 +315,8 @@ export function SettingsPanel({
 
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
 
+      <AiKeysCard />
+
       <section className="panel p-5 lg:col-span-2">
         <h2 className="display t-h2">Limits</h2>
         <ul className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -335,6 +337,224 @@ export function SettingsPanel({
         </p>
       </section>
     </div>
+  );
+}
+
+/**
+ * Bring-your-own AI keys.
+ *
+ * The card asks the server whether the feature exists rather than reading a
+ * build-time flag: `/api/ai/keys` answers 404 when AI_ENABLED is unset, and the
+ * whole section renders nothing. That keeps one source of truth on the server
+ * and means switching the flag needs a restart, not a rebuild — which matters
+ * because NEXT_PUBLIC_* values are baked into the bundle at build time.
+ */
+function AiKeysCard() {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [providers, setProviders] = useState<AiProvider[]>([]);
+  const [keys, setKeys] = useState<AiKeyRow[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const [provider, setProvider] = useState("");
+  const [nickname, setNickname] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+
+  const load = useCallback(() => {
+    apiFetch<{ providers: AiProvider[]; keys: AiKeyRow[] }>("/api/ai/keys")
+      .then(d => {
+        setProviders(d.providers);
+        setKeys(d.keys);
+        setAvailable(true);
+        setProvider(p => p || d.providers[0]?.id || "");
+      })
+      .catch(err => {
+        // 404 is the feature being switched off, not a failure worth reporting.
+        if (err instanceof ApiError && err.status === 404) setAvailable(false);
+        else {
+          setAvailable(false);
+          toast.error("Could not load AI keys.");
+        }
+      });
+  }, []);
+
+  useEffect(load, [load]);
+
+  const spec = providers.find(p => p.id === provider) || null;
+
+  const submit = async () => {
+    if (!apiKey.trim() || !model.trim()) {
+      toast.error("A key and a model are both required.");
+      return;
+    }
+    setAdding(true);
+    try {
+      await apiFetch("/api/ai/keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          nickname: nickname.trim(),
+          apiKey: apiKey.trim(),
+          model: model.trim(),
+          baseUrl: baseUrl.trim() || null
+        })
+      });
+      // Clear the secret from component state the moment it is stored.
+      setApiKey("");
+      setNickname("");
+      setModel("");
+      setBaseUrl("");
+      toast.success("Key saved.");
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save the key.");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const toggle = async (row: AiKeyRow) => {
+    setBusy(row.id);
+    try {
+      await apiFetch(`/api/ai/keys/${row.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: !row.enabled })
+      });
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not update the key.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (row: AiKeyRow) => {
+    setBusy(row.id);
+    try {
+      await apiFetch(`/api/ai/keys/${row.id}`, { method: "DELETE" });
+      toast.success("Key removed.");
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not remove the key.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Hidden entirely until the server says the feature exists.
+  if (available !== true) return null;
+
+  return (
+    <section className="panel p-5 lg:col-span-2">
+      <h2 className="display t-h2">AI keys</h2>
+      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        Bring your own provider key. Keys are encrypted before they are stored and never sent back to this page —
+        only the last four characters are shown. Choose <span className="font-semibold">Local</span> and point it at
+        your own machine (Ollama, LM Studio, llama.cpp, vLLM) to keep everything on your hardware.
+      </p>
+
+      {keys.length > 0 && (
+        <ul className="mt-4 grid gap-2">
+          {keys.map(row => {
+            const label = providers.find(p => p.id === row.provider)?.label || row.provider;
+            return (
+              <li key={row.id} className="flex flex-wrap items-center gap-3 rounded-xl p-3.5" style={{ background: "var(--surface)" }}>
+                <div className="min-w-0 flex-1">
+                  <p className="t-body font-semibold" style={{ color: "var(--text-1)" }}>
+                    {row.nickname}{" "}
+                    <span className="t-xs font-normal" style={{ color: "var(--text-3)" }}>· {label}</span>
+                  </p>
+                  <p className="t-xs mono mt-0.5" style={{ color: "var(--text-3)" }}>
+                    ••••{row.hint} · {row.model || "no model"}
+                    {row.baseUrl ? ` · ${row.baseUrl}` : ""}
+                  </p>
+                  {row.lastError && !row.enabled && (
+                    <p className="t-xs mt-1" style={{ color: "var(--danger)" }}>{row.lastError}</p>
+                  )}
+                </div>
+
+                <Tag tone={!row.enabled ? "danger" : row.health === "ok" ? "ok" : row.health === "failing" ? "danger" : undefined}>
+                  {row.enabled ? row.health : "off"}
+                </Tag>
+
+                <button onClick={() => toggle(row)} disabled={busy === row.id} className="btn btn-ghost" style={{ minHeight: 40 }}>
+                  <Power className="h-4 w-4" />
+                  {row.enabled ? "Disable" : "Enable"}
+                </button>
+                <button onClick={() => remove(row)} disabled={busy === row.id} className="btn btn-ghost" style={{ minHeight: 40 }}>
+                  {busy === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  Remove
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        <label className="grid gap-1">
+          <span className="eyebrow">Provider</span>
+          <select value={provider} onChange={e => setProvider(e.target.value)} className="field" style={{ minHeight: 44 }}>
+            {providers.map(p => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="grid gap-1">
+          <span className="eyebrow">Name</span>
+          <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder={spec?.label || "My key"} className="field" style={{ minHeight: 44 }} />
+        </label>
+
+        <label className="grid gap-1">
+          <span className="eyebrow">API key</span>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            placeholder={spec?.local ? "any value your runtime accepts" : "sk-…"}
+            autoComplete="off"
+            className="field"
+            style={{ minHeight: 44 }}
+          />
+        </label>
+
+        <label className="grid gap-1">
+          <span className="eyebrow">Model</span>
+          <input value={model} onChange={e => setModel(e.target.value)} placeholder="model name" className="field" style={{ minHeight: 44 }} />
+        </label>
+
+        {/* Shown for every provider: a hosted key may also need a proxy URL. */}
+        <label className="grid gap-1 sm:col-span-2">
+          <span className="eyebrow">
+            Base URL {spec?.requiresBaseUrl ? "(required)" : "(optional — overrides the default)"}
+          </span>
+          <input
+            value={baseUrl}
+            onChange={e => setBaseUrl(e.target.value)}
+            placeholder={spec?.defaultBaseUrl || "http://localhost:11434/v1"}
+            className="field"
+            style={{ minHeight: 44 }}
+          />
+        </label>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button onClick={submit} disabled={adding} className="btn btn-accent" style={{ minHeight: 44 }}>
+          {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
+          Save key
+        </button>
+        {spec?.keysUrl && (
+          <a href={spec.keysUrl} target="_blank" rel="noreferrer" className="t-sm underline" style={{ color: "var(--text-3)" }}>
+            Get a {spec.label} key
+          </a>
+        )}
+      </div>
+    </section>
   );
 }
 
