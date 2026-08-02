@@ -661,12 +661,3 @@ button:not(:disabled),
     scroll-behavior: auto !important;
   }
 }
-
-/* Thumbnails reserve their box before the image decodes, so a grid of tiles
-   does not reflow line by line as each one arrives. */
-.thumb-box {
-  aspect-ratio: 4 / 3;
-  overflow: hidden;
-  background: var(--surface);
-  contain: paint;
-}

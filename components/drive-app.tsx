@@ -727,16 +727,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   }
 
   async function restoreFile(fileId: string) {
+    // Leaves the trash list immediately; the row is put back if the server
+    // disagrees, which is the same shape as trash/move/favourite above.
+    const previous = files;
+    setFiles(fs => fs.filter(f => f.id !== fileId));
     try {
       await apiFetch(`/api/files/${fileId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ restore: true })
       });
-      setFiles(fs => fs.filter(f => f.id !== fileId));
       toast.success("File restored");
       refreshStats();
     } catch (error) {
+      setFiles(previous);
       toast.error(error instanceof Error ? error.message : "Could not restore file.");
     }
   }
@@ -761,27 +765,46 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   async function submitFolderModal(name: string) {
     if (!folderModal) return;
-    try {
-      if (folderModal.mode === "create") {
+    const modal = folderModal;
+    const previous = folderTree;
+    // Close and paint the result straight away; the server answer only ever
+    // reconciles or rolls back.
+    setFolderModal(null);
+
+    if (modal.mode === "create") {
+      // A placeholder id keyed so it cannot collide with a real cuid, swapped
+      // for the server's row once it arrives.
+      const tempId = `pending:${Date.now()}`;
+      setFolderTree(fs => [
+        ...fs,
+        { id: tempId, name, parentId: folderId ?? null, createdAt: new Date().toISOString(), size: 0, fileCount: 0 }
+      ]);
+      try {
         const { folder } = await apiFetch<{ folder: DriveFolder }>("/api/folders", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ name, parentId: folderId })
         });
-        setFolderTree(fs => [...fs, folder]);
+        setFolderTree(fs => fs.map(f => (f.id === tempId ? folder : f)));
         toast.success("Folder created");
-      } else {
-        await apiFetch(`/api/folders/${folderModal.id}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name })
-        });
-        setFolderTree(fs => fs.map(f => (f.id === folderModal.id ? { ...f, name } : f)));
-        toast.success("Folder renamed");
+      } catch (error) {
+        setFolderTree(previous);
+        toast.error(error instanceof Error ? error.message : "Could not create folder.");
       }
-      setFolderModal(null);
+      return;
+    }
+
+    setFolderTree(fs => fs.map(f => (f.id === modal.id ? { ...f, name } : f)));
+    try {
+      await apiFetch(`/api/folders/${modal.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      toast.success("Folder renamed");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save folder.");
+      setFolderTree(previous);
+      toast.error(error instanceof Error ? error.message : "Could not rename folder.");
     }
   }
 
