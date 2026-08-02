@@ -107,9 +107,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (input.action === "phone-start") {
-      const { pendingSession, phoneCodeHash } = await startPhoneLogin(input.phone);
+      const { pendingSession, phoneCodeHash, delivery } = await startPhoneLogin(input.phone);
       await savePendingLogin(user.id, pendingSession, phoneCodeHash, input.phone);
-      return NextResponse.json({ status: "code-sent" });
+      return NextResponse.json({ status: "code-sent", delivery });
     }
 
     const pending = await readPendingLogin(user.id);

@@ -454,7 +454,19 @@ export function normalisePhone(input: string) {
   return digits ? `+${digits}` : "";
 }
 
-export async function startPhoneLogin(phone: string): Promise<{ pendingSession: string; phoneCodeHash: string }> {
+/** Which channel Telegram used for the login code. */
+export type CodeDelivery = "app" | "sms" | "call" | "other";
+
+function describeDelivery(type: unknown): CodeDelivery {
+  if (type instanceof Api.auth.SentCodeTypeApp) return "app";
+  if (type instanceof Api.auth.SentCodeTypeSms) return "sms";
+  if (type instanceof Api.auth.SentCodeTypeCall) return "call";
+  return "other";
+}
+
+export async function startPhoneLogin(
+  phone: string
+): Promise<{ pendingSession: string; phoneCodeHash: string; delivery: CodeDelivery }> {
   const { apiId, apiHash } = apiCredentials();
   const client = await connectFresh();
   try {
@@ -471,7 +483,17 @@ export async function startPhoneLogin(phone: string): Promise<{ pendingSession: 
     if (!(sent instanceof Api.auth.SentCode)) {
       throw new Error("Telegram could not send a login code to that number.");
     }
-    return { pendingSession: (client.session as StringSession).save(), phoneCodeHash: sent.phoneCodeHash };
+    // Telegram chooses the channel, and it is almost always the app rather than
+    // SMS when the account has any active session. Reporting which one removes
+    // the most common confusion — "no code arrived" is usually a code sitting
+    // unread in Telegram itself.
+    const delivery = describeDelivery(sent.type);
+    tgLog("SendCode ok, delivery=", delivery, "dc=", currentDc(client));
+    return {
+      pendingSession: (client.session as StringSession).save(),
+      phoneCodeHash: sent.phoneCodeHash,
+      delivery
+    };
   } finally {
     await client.disconnect().catch(() => {});
   }

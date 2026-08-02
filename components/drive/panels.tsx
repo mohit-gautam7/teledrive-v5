@@ -1166,9 +1166,11 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
   const [qrError, setQrError] = useState("");
   /** What the handshake is actually doing, so the panel never just spins. */
   const [qrState, setQrState] = useState<"waiting" | "migrating">("waiting");
+  /** Which channel Telegram actually used for the login code. */
+  const [delivery, setDelivery] = useState<string>("");
 
   const post = useCallback(async (body: Record<string, unknown>) => {
-    return apiFetch<{ status?: string; state?: string; qrUrl?: string; expiresAt?: number; premium?: boolean; name?: string }>("/api/telegram/link", {
+    return apiFetch<{ status?: string; state?: string; delivery?: string; qrUrl?: string; expiresAt?: number; premium?: boolean; name?: string }>("/api/telegram/link", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
@@ -1423,9 +1425,16 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
                   onClick={async () => {
                     setBusy(true);
                     try {
-                      await post({ action: "phone-start", phone: phone.replace(/\s/g, "") });
+                      const sent = await post({ action: "phone-start", phone: phone.replace(/\s/g, "") });
+                      setDelivery(sent.delivery || "");
                       setStep("code");
-                      toast.success("Code sent — check your Telegram app, not SMS.");
+                      toast.success(
+                        sent.delivery === "sms"
+                          ? "Code sent by SMS."
+                          : sent.delivery === "call"
+                            ? "Telegram is calling you with the code."
+                            : "Code sent to your Telegram app."
+                      );
                     } catch (err) {
                       toast.error(err instanceof Error ? err.message : "Could not send a code.");
                     } finally {
@@ -1440,8 +1449,17 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
           ) : step === "code" ? (
             <>
               <p className="t-sm leading-relaxed" style={{ color: "var(--text-2)" }}>
-                Telegram sent the code to your <b>Telegram app</b>, not by SMS — open any device where you are already
-                signed in and look for the message from <b>Telegram</b>. SMS only arrives if you have no active session.
+                {delivery === "sms" ? (
+                  <>Telegram sent the code by <b>SMS</b> to that number.</>
+                ) : delivery === "call" ? (
+                  <>Telegram is <b>calling</b> that number and will read the code aloud.</>
+                ) : (
+                  <>
+                    Telegram sent the code to your <b>Telegram app</b>, not by SMS — open any device where you are
+                    already signed in and look for the message from <b>Telegram</b>. SMS is only used when the account
+                    has no active session.
+                  </>
+                )}
               </p>
               <input value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} placeholder="Login code" className="field mono" inputMode="numeric" aria-label="Login code" />
               <button
