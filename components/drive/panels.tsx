@@ -1164,9 +1164,11 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
   const [step, setStep] = useState<"start" | "code" | "password">("start");
   const [busy, setBusy] = useState(false);
   const [qrError, setQrError] = useState("");
+  /** What the handshake is actually doing, so the panel never just spins. */
+  const [qrState, setQrState] = useState<"waiting" | "migrating">("waiting");
 
   const post = useCallback(async (body: Record<string, unknown>) => {
-    return apiFetch<{ status?: string; qrUrl?: string; expiresAt?: number; premium?: boolean; name?: string }>("/api/telegram/link", {
+    return apiFetch<{ status?: string; state?: string; qrUrl?: string; expiresAt?: number; premium?: boolean; name?: string }>("/api/telegram/link", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
@@ -1206,6 +1208,11 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
         if (cancelled) return;
         failures = 0;
         setQrError("");
+        if (result.state === "migrating" || result.state === "waiting") setQrState(result.state);
+        if (typeof window !== "undefined" && window.localStorage.getItem("td:debugLink") === "1") {
+          // Opt-in client trace, paired with DEBUG_TG_LINK=1 on the server.
+          console.log("[tg-link] poll ->", result.status, result.state ?? "", "qr=", Boolean(result.qrUrl));
+        }
 
         if (result.status === "linked") {
           toast.success(`Telegram account linked${result.premium ? " (Premium — 4 GB files)" : ""}`);
@@ -1236,7 +1243,9 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
         // retrying, backing off so a sleeping host is not hammered.
         failures += 1;
         if (failures >= QR_MAX_FAILURES) {
-          setQrError("Lost contact with the server. Check your connection and start again.");
+          // The actual message, not a generic one — it is usually a Telegram
+          // error worth reading (a flood wait, a dead session).
+          setQrError(err instanceof Error ? err.message : "Lost contact with the server. Start again.");
           return;
         }
       }
@@ -1369,7 +1378,10 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
             </p>
           ) : (
             <p className="t-xs mt-2 flex items-center gap-2" style={{ color: "var(--text-3)" }}>
-              <Loader2 className="h-3 w-3 animate-spin" /> Waiting for the scan — the code refreshes itself.
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {qrState === "migrating"
+                ? "Scanned — moving your session to your account's data centre…"
+                : "Waiting for the scan — the code refreshes itself."}
             </p>
           )}
           <div className="mt-3 flex gap-2">
@@ -1413,7 +1425,7 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
                     try {
                       await post({ action: "phone-start", phone: phone.replace(/\s/g, "") });
                       setStep("code");
-                      toast.success("Telegram sent you a code.");
+                      toast.success("Code sent — check your Telegram app, not SMS.");
                     } catch (err) {
                       toast.error(err instanceof Error ? err.message : "Could not send a code.");
                     } finally {
@@ -1427,6 +1439,10 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
             </>
           ) : step === "code" ? (
             <>
+              <p className="t-sm leading-relaxed" style={{ color: "var(--text-2)" }}>
+                Telegram sent the code to your <b>Telegram app</b>, not by SMS — open any device where you are already
+                signed in and look for the message from <b>Telegram</b>. SMS only arrives if you have no active session.
+              </p>
               <input value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} placeholder="Login code" className="field mono" inputMode="numeric" aria-label="Login code" />
               <button
                 className="btn btn-primary"

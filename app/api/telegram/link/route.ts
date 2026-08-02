@@ -20,6 +20,7 @@ import {
   clearPendingLogin
 } from "@/lib/mtproto-session";
 import { mapMtprotoError, isDeadSession } from "@/lib/mtproto-errors";
+import { tgLog } from "@/lib/telegram-user";
 import { MAX_FILE_SIZE, MAX_FILE_SIZE_PREMIUM } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
@@ -120,6 +121,13 @@ export async function POST(request: NextRequest) {
       const result = await pollQrLogin(pending.session);
       if (result.status === "authorized") {
         await saveMtprotoSession(user.id, result.session, result.userId, result.premium);
+        // Prove the write landed: if this reads back false, the problem is
+        // persistence, not the Telegram handshake.
+        const check = await prisma.storageConfig.findUnique({
+          where: { userId: user.id },
+          select: { mtprotoSession: true }
+        });
+        tgLog("saveMtprotoSession stored=", Boolean(check?.mtprotoSession));
         return NextResponse.json({ status: "linked", premium: result.premium, name: result.name });
       }
       if (result.status === "password") {
@@ -132,6 +140,7 @@ export async function POST(request: NextRequest) {
       await savePendingLogin(user.id, result.pendingSession);
       return NextResponse.json({
         status: "pending",
+        state: result.state ?? "waiting",
         qrUrl: result.qrUrl,
         expiresAt: result.expiresAt
       });

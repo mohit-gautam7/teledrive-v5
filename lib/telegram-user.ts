@@ -146,26 +146,39 @@ export async function startQrLogin(): Promise<QrStart> {
 }
 
 export type QrPoll =
-  /** Not scanned yet. `qrUrl` is the *current* token and must be redrawn. */
-  | { status: "pending"; pendingSession: string; qrUrl?: string; expiresAt?: number }
+  /** Not scanned yet. `qrUrl` is the *current* token and must be redrawn.
+   *  `state` distinguishes plain waiting from a data-centre migration in
+   *  progress, so the panel can say which rather than spinning identically. */
+  | { status: "pending"; pendingSession: string; qrUrl?: string; expiresAt?: number; state?: "waiting" | "migrating" }
   | { status: "password"; pendingSession: string }
   | { status: "authorized"; session: string; userId: string; premium: boolean; name: string };
 
-/** Re-key the in-process socket cache after a session string changes. */
-function migratedKey(client: TelegramClient, previous: string) {
-  const next = (client.session as StringSession).save();
-  if (next !== previous) {
-    clients.delete(previous);
-    lastUsed.delete(previous);
+/**
+ * Diagnostics for the QR handshake, off unless DEBUG_TG_LINK=1.
+ *
+ * Session strings and tokens are credentials, so nothing here prints them —
+ * only class names, data-centre ids and lengths, which is all that is needed to
+ * tell the branches apart in a log.
+ */
+export function tgLog(...parts: unknown[]) {
+  if (process.env.DEBUG_TG_LINK !== "1") return;
+  console.log("[tg-link]", ...parts);
+}
+
+function currentDc(client: TelegramClient) {
+  try {
+    return (client.session as StringSession).dcId;
+  } catch {
+    return "?";
   }
-  return previous;
 }
 
 /** A "keep waiting" answer that carries the freshest token and session string. */
 function pendingWithToken(
   client: TelegramClient,
   previous: string,
-  token?: Api.auth.LoginToken
+  token?: Api.auth.LoginToken,
+  state: "waiting" | "migrating" = "waiting"
 ): QrPoll {
   const next = (client.session as StringSession).save();
   if (next !== previous) {
@@ -174,9 +187,11 @@ function pendingWithToken(
     clients.set(next, client);
     lastUsed.set(next, Date.now());
   }
+  tgLog("pending", state, "sessionRotated=", next !== previous, "hasToken=", Boolean(token));
   return {
     status: "pending",
     pendingSession: next,
+    state,
     ...(token
       ? {
           qrUrl: `tg://login?token=${Buffer.from(token.token).toString("base64url")}`,
@@ -193,19 +208,42 @@ export async function pollQrLogin(pendingSession: string): Promise<QrPoll> {
   const client = await connect(pendingSession);
   try {
     const result = await client.invoke(new Api.auth.ExportLoginToken({ apiId, apiHash, exceptIds: [] }));
+    tgLog("export ->", result.className, "dc=", currentDc(client));
 
     if (result instanceof Api.auth.LoginTokenSuccess) {
+      tgLog("LOGIN_TOKEN_SUCCESS on first export — authorising");
       return authorizedResult(client, pendingSession);
     }
+
     if (result instanceof Api.auth.LoginTokenMigrateTo) {
-      // The account lives on another data centre; move this session there and
-      // redeem the token against it.
+      // The account lives on another data centre. This is the classic "phone
+      // says linked, web waits forever" case: the acceptance happened, but it
+      // only becomes an authorisation once the token is redeemed on the DC
+      // Telegram nominates here.
+      tgLog("LOGIN_TOKEN_MIGRATE_TO dc=", result.dcId, "— switching");
       await client._switchDC(result.dcId);
+      tgLog("switched, now dc=", currentDc(client), "— importing token");
+
       const migrated = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
-      if (migrated instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client, migratedKey(client, pendingSession));
-      // Still not accepted after the move. The session string has changed with
-      // the data centre, so hand the caller the new one to persist.
-      return pendingWithToken(client, pendingSession);
+      tgLog("import ->", migrated.className);
+
+      if (migrated instanceof Api.auth.LoginTokenSuccess) {
+        tgLog("migration authorised");
+        return authorizedResult(client, pendingSession);
+      }
+
+      // Import did not authorise. Re-export on the *new* DC so the user is shown
+      // a token that is actually valid here — previously this returned with no
+      // token at all, leaving a dead QR on screen with nothing to scan.
+      const reissued = await client.invoke(new Api.auth.ExportLoginToken({ apiId, apiHash, exceptIds: [] }));
+      tgLog("re-export after migrate ->", reissued.className);
+      if (reissued instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client, pendingSession);
+      return pendingWithToken(
+        client,
+        pendingSession,
+        reissued instanceof Api.auth.LoginToken ? reissued : undefined,
+        "migrating"
+      );
     }
     // Not scanned yet — and `result` is a *brand new* token, because
     // auth.exportLoginToken issues one on every call and invalidates the last.
@@ -213,8 +251,9 @@ export async function pollQrLogin(pendingSession: string): Promise<QrPoll> {
     // redrawn; otherwise the user scans a superseded token, their phone reports
     // success, and this session waits forever for an acceptance that can never
     // arrive. This is also what keeps the code fresh past its ~30 s expiry.
-    return pendingWithToken(client, pendingSession, result);
+    return pendingWithToken(client, pendingSession, result as Api.auth.LoginToken, "waiting");
   } catch (err) {
+    tgLog("poll threw:", (err as { errorMessage?: string })?.errorMessage || (err as Error)?.message);
     if (needsPassword(err)) {
       // The client authorised far enough to need a password; its session string
       // has moved on, so drop the entry filed under the old one rather than
@@ -239,6 +278,7 @@ function needsPassword(error: unknown) {
 async function authorizedResult(client: TelegramClient, previousKey?: string): Promise<Authorized> {
   const me = (await client.getMe()) as Api.User;
   const session = (client.session as StringSession).save();
+  tgLog("authorized userId=", String(me.id), "premium=", Boolean(me.premium), "sessionLen=", session.length);
   // The client authorised in place, so any cache entry under the half-built
   // session string now points at a session string that no longer describes it.
   if (previousKey && previousKey !== session) clients.delete(previousKey);
