@@ -13,7 +13,12 @@ const envSchema = z.object({
   API_ID: z.coerce.number().optional(),
   API_HASH: z.string().optional(),
   TELEGRAM_SESSION: z.string().optional(),
-  SESSION_ENCRYPTION_KEY: z.string().optional()
+  SESSION_ENCRYPTION_KEY: z.string().optional(),
+
+  // AI platform (Phase 2). Off unless AI_ENABLED is set.
+  AI_ENABLED: z.string().optional(),
+  JOB_WORKER_ENABLED: z.string().optional(),
+  AI_PRICING_JSON: z.string().optional()
 });
 
 export const env = envSchema.parse(process.env);

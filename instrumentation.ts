@@ -10,4 +10,15 @@ export async function register() {
     const { startBotPolling } = await import("./lib/bot-polling");
     startBotPolling();
   }
+
+  // The job worker needs a process that outlives a request, so it is opt-in via
+  // JOB_WORKER_ENABLED and stays off on serverless, where it would be started
+  // and killed once per invocation.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { jobWorkerEnabled } = await import("./lib/feature-flags");
+    if (jobWorkerEnabled()) {
+      const { startJobWorker } = await import("./lib/jobs/worker");
+      startJobWorker();
+    }
+  }
 }

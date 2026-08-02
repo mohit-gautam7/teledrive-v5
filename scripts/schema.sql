@@ -35,3 +35,93 @@ BEGIN
       FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;
 END $$;
+
+-- ── AI platform (Phase 2) ────────────────────────────────────────────────────
+-- All additive. The feature is off unless AI_ENABLED=1, so applying this early
+-- is harmless.
+
+-- AiKey: per-user bring-your-own provider keys. "encryptedKey" holds AES-256-GCM
+-- ciphertext; the plaintext key never leaves the server.
+CREATE TABLE IF NOT EXISTS "AiKey" (
+  "id"               TEXT NOT NULL,
+  "userId"           TEXT NOT NULL,
+  "provider"         TEXT NOT NULL,
+  "nickname"         TEXT NOT NULL,
+  "encryptedKey"     TEXT NOT NULL,
+  "hint"             TEXT NOT NULL,
+  "baseUrl"          TEXT,
+  "model"            TEXT,
+  "enabled"          BOOLEAN NOT NULL DEFAULT true,
+  "priority"         INTEGER NOT NULL DEFAULT 100,
+  "dailyLimitMicros" BIGINT,
+  "health"           TEXT NOT NULL DEFAULT 'unknown',
+  "failureCount"     INTEGER NOT NULL DEFAULT 0,
+  "lastError"        TEXT,
+  "lastUsedAt"       TIMESTAMP(3),
+  "disabledAt"       TIMESTAMP(3),
+  "createdAt"        TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "AiKey_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "AiKey_userId_provider_nickname_key" ON "AiKey"("userId", "provider", "nickname");
+CREATE INDEX IF NOT EXISTS "AiKey_userId_provider_enabled_idx" ON "AiKey"("userId", "provider", "enabled");
+
+-- AiUsage: one row per model call. Tokens always; cost only when a price is known.
+CREATE TABLE IF NOT EXISTS "AiUsage" (
+  "id"               TEXT NOT NULL,
+  "userId"           TEXT NOT NULL,
+  "keyId"            TEXT,
+  "provider"         TEXT NOT NULL,
+  "model"            TEXT NOT NULL,
+  "task"             TEXT NOT NULL,
+  "promptTokens"     INTEGER NOT NULL DEFAULT 0,
+  "completionTokens" INTEGER NOT NULL DEFAULT 0,
+  "costMicros"       BIGINT,
+  "latencyMs"        INTEGER NOT NULL DEFAULT 0,
+  "status"           TEXT NOT NULL,
+  "error"            TEXT,
+  "createdAt"        TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "AiUsage_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX IF NOT EXISTS "AiUsage_userId_createdAt_idx" ON "AiUsage"("userId", "createdAt");
+CREATE INDEX IF NOT EXISTS "AiUsage_keyId_createdAt_idx" ON "AiUsage"("keyId", "createdAt");
+
+-- Job: durable background queue, claimed with SKIP LOCKED.
+CREATE TABLE IF NOT EXISTS "Job" (
+  "id"          TEXT NOT NULL,
+  "userId"      TEXT NOT NULL,
+  "type"        TEXT NOT NULL,
+  "payload"     JSONB NOT NULL,
+  "status"      TEXT NOT NULL DEFAULT 'queued',
+  "priority"    INTEGER NOT NULL DEFAULT 100,
+  "attempts"    INTEGER NOT NULL DEFAULT 0,
+  "maxAttempts" INTEGER NOT NULL DEFAULT 3,
+  "runAt"       TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "startedAt"   TIMESTAMP(3),
+  "finishedAt"  TIMESTAMP(3),
+  "result"      JSONB,
+  "error"       TEXT,
+  "createdAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "Job_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX IF NOT EXISTS "Job_status_runAt_priority_idx" ON "Job"("status", "runAt", "priority");
+CREATE INDEX IF NOT EXISTS "Job_userId_createdAt_idx" ON "Job"("userId", "createdAt");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'AiKey_userId_fkey') THEN
+    ALTER TABLE "AiKey" ADD CONSTRAINT "AiKey_userId_fkey"
+      FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'AiUsage_userId_fkey') THEN
+    ALTER TABLE "AiUsage" ADD CONSTRAINT "AiUsage_userId_fkey"
+      FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'AiUsage_keyId_fkey') THEN
+    ALTER TABLE "AiUsage" ADD CONSTRAINT "AiUsage_keyId_fkey"
+      FOREIGN KEY ("keyId") REFERENCES "AiKey"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Job_userId_fkey') THEN
+    ALTER TABLE "Job" ADD CONSTRAINT "Job_userId_fkey"
+      FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;

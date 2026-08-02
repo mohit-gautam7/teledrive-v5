@@ -18,6 +18,97 @@ model User {
   files          File[]
   folders        Folder[]
   oauthAccounts  OAuthAccount[]
+  aiKeys         AiKey[]
+  aiUsage        AiUsage[]
+  jobs           Job[]
+}
+
+/// One bring-your-own API key. The secret is stored encrypted (AES-256-GCM, see
+/// lib/crypto) and never leaves the server — the UI only ever sees `hint`.
+///
+/// A user may hold several keys per provider; the router picks between them, so
+/// each carries its own budget, priority and health.
+model AiKey {
+  id            String    @id @default(cuid())
+  userId        String
+  provider      String
+  nickname      String
+  /// AES-256-GCM ciphertext. Never select this into anything client-bound.
+  encryptedKey  String
+  /// Last 4 characters, for telling two keys apart in the UI.
+  hint          String
+  /// Set only for OpenAI-compatible endpoints the user hosts themselves
+  /// (Ollama, LM Studio, llama.cpp, vLLM) or a provider proxy.
+  baseUrl       String?
+  /// Overrides the provider's default model when set.
+  model         String?
+  enabled       Boolean   @default(true)
+  /// Lower runs first under the "priority" strategy.
+  priority      Int       @default(100)
+  /// Optional spend ceiling per UTC day, in micro-USD. Null means no limit.
+  dailyLimitMicros BigInt?
+  /// unknown | ok | failing | disabled
+  health        String    @default("unknown")
+  failureCount  Int       @default(0)
+  lastError     String?
+  lastUsedAt    DateTime?
+  disabledAt    DateTime?
+  createdAt     DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usage         AiUsage[]
+
+  @@unique([userId, provider, nickname])
+  @@index([userId, provider, enabled])
+}
+
+/// One completed (or failed) model call. Tokens are always recorded; cost only
+/// when a price is configured for the model, so an unknown price reads as null
+/// rather than a fabricated number.
+model AiUsage {
+  id               String   @id @default(cuid())
+  userId           String
+  keyId            String?
+  provider         String
+  model            String
+  task             String
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  costMicros       BigInt?
+  latencyMs        Int      @default(0)
+  /// ok | error
+  status           String
+  error            String?
+  createdAt        DateTime @default(now())
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key              AiKey?   @relation(fields: [keyId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([keyId, createdAt])
+}
+
+/// Durable background work — AI calls, thumbnails, automations. Claimed with
+/// SELECT ... FOR UPDATE SKIP LOCKED so several workers can share one table
+/// without a broker. Needs an always-on host to drain.
+model Job {
+  id          String    @id @default(cuid())
+  userId      String
+  type        String
+  payload     Json
+  /// queued | running | done | failed
+  status      String    @default("queued")
+  priority    Int       @default(100)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  runAt       DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  result      Json?
+  error       String?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, runAt, priority])
+  @@index([userId, createdAt])
 }
 
 /// A third-party sign-in (Google, …) linked to a TeleDrive user. Storage always
