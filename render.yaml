@@ -1,0 +1,55 @@
+# Render blueprint for TeleDrive.
+# Deploys the existing Dockerfile as a single always-on web service — no 4.5 MB
+# request cap and no 60 s function timeout, so large uploads and streamed
+# downloads work (the two things Vercel's free tier can't do).
+#
+# How to use: push this file, then in the Render dashboard choose
+# "New +" -> "Blueprint" and point it at this repo. Render reads this file,
+# creates the service, and asks you to fill the secret env vars marked
+# `sync: false`. See docs/RENDER.md for the full walkthrough.
+
+services:
+  - type: web
+    name: teledrive
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free            # free web service; sleeps after ~15 min idle (see keep-alive note in docs/RENDER.md)
+    region: singapore     # closest free region to India
+    healthCheckPath: /
+    autoDeploy: true      # redeploy on every push to the connected branch
+    envVars:
+      # Render injects PORT; the Next standalone server honours it. Do not hardcode.
+      - key: NODE_ENV
+        value: production
+
+      # ── Secrets — set these in the Render dashboard (never commit real values) ──
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL          # use the Supabase transaction pooler URL (:6543)
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+
+      # NEXT_PUBLIC_* are inlined into the browser bundle at BUILD time. Render
+      # exposes service env vars as Docker build args, so setting them here is
+      # enough for the Dockerfile's ARG lines to pick them up.
+      - key: NEXT_PUBLIC_APP_URL   # set to your Render URL, e.g. https://teledrive.onrender.com
+        sync: false
+      - key: NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
+        sync: false
+
+      # ── Optional: large files via the user's own Telegram account ──
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: SESSION_ENCRYPTION_KEY
+        sync: false
+
+      # ── Optional: Google sign-in ──
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
