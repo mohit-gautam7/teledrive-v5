@@ -1,0 +1,8 @@
+# Shell scripts and Dockerfiles run on Linux. A CRLF line ending in a script
+# committed from Windows makes the kernel look for an interpreter named
+# "bash\r", which fails with a confusing "bad interpreter" error.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Caddyfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

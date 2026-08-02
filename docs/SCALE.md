@@ -110,3 +110,61 @@ There is no route past 4 GB. It is Telegram's number, not ours.
 
 `File.backend` records which one holds each file, and downloads route
 accordingly, so both coexist and older files keep working.
+
+## Should this run on several platforms at once?
+
+Short answer: **no — one always-on origin behind Cloudflare, and add *bots*
+rather than *hosts* when it saturates.**
+
+The idea is to spread load across Vercel + Oracle + others simultaneously. It is
+worth taking seriously, and it does not survive contact with where the limit
+actually is.
+
+### The bottleneck is not compute
+
+Every constraint above except bandwidth is a **Telegram** constraint. One bot
+token gets ~30 messages/second no matter how many machines are calling it — the
+budget lives on Telegram's side, keyed to the token, not to the caller. So:
+
+> Adding a second origin adds **zero** Telegram throughput. Two hosts sharing one
+> bot token hit the same 429s at the same aggregate rate, just from two IPs.
+
+That single fact removes most of the appeal. The thing you would be scaling
+(compute) is not the thing that is scarce (Telegram's per-token budget). A 2 OCPU
+ARM box is nowhere near saturated when the bot starts rate-limiting — the app is
+I/O-bound, streaming a few MB at a time.
+
+### And it breaks things that currently work
+
+| | What multi-origin costs |
+| --- | --- |
+| **Telegram webhook** | A bot can register exactly **one** webhook URL. Two origins means one of them never receives bot updates, so login codes only work on whichever host won. This alone is close to disqualifying. |
+| **MTProto sessions** | Warm connections are per-process. Two origins double the handshakes and double the risk of Telegram flagging concurrent session use from different IPs. |
+| **Resumable uploads** | Chunk state lives in Postgres, so it technically survives — but a resumed upload landing on a different origin loses any in-process warm client and re-handshakes. |
+| **Rate-limit guards** | The in-process cap on in-flight `sendDocument` calls is per-process. Split across N origins it silently becomes N× more permissive, which *causes* the 429s it exists to prevent. Fixing that needs shared state (Redis), i.e. another service to run. |
+| **Debugging** | Every "why did this upload fail" question starts with "which origin served it". |
+
+### What actually adds headroom, in order
+
+1. **Cloudflare in front of one origin** — removes the bandwidth ceiling, which
+   is the only limit multi-origin would genuinely have helped with. Free.
+2. **More bot tokens.** `StorageConfig.botToken` is already per-user, so a heavy
+   user brings their own bot and their own 30 msg/s. This is the real horizontal
+   scale axis, and it scales the resource that is actually scarce.
+3. **Linked accounts (MTProto).** Uploads move onto the user's own Telegram
+   account and off the shared bot budget entirely.
+4. **A bigger box.** Only after CPU or NIC is measurably the limit.
+
+Multiple origins are step 5 at the earliest, and only for **geographic latency**
+— not for throughput.
+
+### When to revisit
+
+Shard to a second origin only when all three are true, measured rather than
+assumed:
+
+- Sustained CPU on the VM > 70% at peak, **and**
+- Telegram 429 rate near zero (i.e. compute really is the binding constraint), **and**
+- Cloudflare cache hit ratio already high, so the traffic is genuinely dynamic.
+
+Until then a second origin adds failure modes and no capacity.

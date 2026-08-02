@@ -68,22 +68,64 @@ slim so `sharp` uses its prebuilt glibc arm64 binary), `docker-compose.yml`, and
    sudo usermod -aG docker $USER && newgrp docker
    ```
 
-4. **Deploy**
+4. **Point DNS first** — an A record for `APP_DOMAIN` at the instance's public
+   IP. Do this *before* deploying: Caddy requests the certificate on first
+   request, and the deploy script's last step verifies the domain end to end.
+
+5. **Deploy**
    ```bash
    git clone https://github.com/mohit-gautam7/teledrive-v5.git && cd teledrive-v5
    cp .env.example .env && nano .env      # add APP_DOMAIN too
-   docker compose up -d --build
+   ./scripts/deploy.sh
    ```
 
-5. **Point DNS** — an A record for `APP_DOMAIN` at the instance's public IP.
-   Caddy issues the certificate on first request.
+   `scripts/deploy.sh` is the whole deployment in one command. It checks `.env`
+   for the values the app cannot start without, applies the schema, builds and
+   starts the containers, waits for the healthcheck, and re-points the Telegram
+   webhook at the new host. It is safe to re-run — the DDL is idempotent and the
+   webhook registration just overwrites whatever URL Telegram currently holds.
 
-6. **Re-register the Telegram webhook** at the new host:
-   ```
-   https://<your-domain>/api/bot/setup?key=<WEBHOOK_SECRET>
+   For routine redeploys afterwards:
+   ```bash
+   ./scripts/deploy.sh --pull --no-schema
    ```
 
-7. **Apply the schema** once: `pnpm db:sync` (see below).
+   The schema step runs in a throwaway `node:20-slim` container, so the VM never
+   needs a Node toolchain of its own. If you would rather run it from a machine
+   that has one, `pnpm db:sync` does exactly the same thing (see below).
+
+   If the webhook step fails, the app is still running — Telegram just could not
+   reach it. Almost always that is DNS not yet propagated or ports 80/443 still
+   closed (step 2). Fix and re-run.
+
+### Cloudflare in front (free, recommended)
+
+Oracle's 10 TB/month egress is generous but not infinite, and the VM is a single
+box on the public internet. Cloudflare's free plan fixes both for nothing:
+
+1. Add the domain to Cloudflare and switch the nameservers at your registrar.
+2. Set the `APP_DOMAIN` A record to the VM's IP with the **orange cloud on**
+   (proxied).
+3. SSL/TLS mode → **Full (strict)**. Caddy already serves a real Let's Encrypt
+   certificate, so strict validation passes and the hop stays encrypted.
+
+What this buys:
+
+- **Cached bytes never touch the VM.** Static assets and any download served
+  with a cacheable response come from Cloudflare's edge instead of your egress
+  allowance.
+- **The origin IP stops being public**, which removes the easiest way to bypass
+  or flood the box.
+- **Free TLS termination at the edge** and HTTP/3 for clients that support it.
+
+Two settings matter for this app specifically:
+
+- **Do not enable "Cache Everything" globally.** Downloads are authenticated per
+  user; a blanket cache rule would serve one user's file to another. Cache by
+  extension or path only.
+- Free-plan Cloudflare has a **100 MB request-body limit**. That is far above the
+  10–50 MB upload chunks this app uses, so uploads are unaffected — but it is the
+  reason chunk size should not be raised past ~50 MB while proxied.
 
 ### Database
 
