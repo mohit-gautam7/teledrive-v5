@@ -38,6 +38,50 @@ function build(sessionString: string) {
 }
 
 /**
+ * Best-effort muzzle for GramJS's background update loop.
+ *
+ * Nothing here consumes updates — files move explicitly and the bot has its own
+ * webhook — but the loop still raises `Error: TIMEOUT` around disconnects and
+ * freshly opened data centres. Measured honestly: this override does *not*
+ * reliably bind (GramJS holds its own reference), and the library logs and
+ * swallows those timeouts itself, so they are noise in the log rather than a
+ * thrown failure.
+ *
+ * It is kept because it costs nothing where it does bind, but it is not what
+ * makes the redeem safe. That is the combination of a fresh fully-handshaked
+ * client per data centre, `withTimeout` plus retries around the one call that
+ * matters, and persisting the migrated session — none of which depend on the
+ * update loop behaving.
+ */
+function silenceBackgroundErrors(client: TelegramClient) {
+  const loop = (client as unknown as { _updateLoop?: () => Promise<unknown> })._updateLoop;
+  if (typeof loop === "function") {
+    (client as unknown as { _updateLoop: () => Promise<unknown> })._updateLoop = function patched() {
+      return Promise.resolve(loop.call(this)).catch(err => {
+        tgLog("update loop suppressed:", (err as Error)?.message);
+      });
+    };
+  }
+}
+
+/** Reject if a call outlives `ms`, so one stuck invoke cannot hold a request. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      err => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
  * Connect a client for an *existing* session, reusing the socket within this
  * process.
  *
@@ -56,6 +100,7 @@ async function connect(sessionString: string): Promise<TelegramClient> {
   }
 
   const client = build(sessionString);
+  silenceBackgroundErrors(client);
   await client.connect();
   clients.set(sessionString, client);
   lastUsed.set(sessionString, Date.now());
@@ -100,6 +145,7 @@ function startReaper() {
 /** A brand-new, never-cached client for starting an authorisation flow. */
 async function connectFresh(): Promise<TelegramClient> {
   const client = build("");
+  silenceBackgroundErrors(client);
   await client.connect();
   return client;
 }
@@ -173,6 +219,87 @@ function currentDc(client: TelegramClient) {
   }
 }
 
+const REDEEM_TIMEOUT_MS = 25_000;
+const REDEEM_ATTEMPTS = 3;
+
+/**
+ * Redeem an accepted QR token on the data centre Telegram migrated it to.
+ *
+ * A brand-new client is built and pointed at the target DC before connecting, so
+ * `connect()` performs the full handshake there rather than patching a live
+ * connection mid-flight. The token is the bearer — it authorises this new
+ * session regardless of which DC issued it.
+ *
+ * Each attempt is bounded and retried, because the first call against a
+ * just-opened DC connection is the one that was timing out in production. On
+ * exhaustion the migrated session is still returned so the caller can persist
+ * it: the next poll then starts on the correct DC instead of replaying the
+ * whole migration, which is what made the old code loop forever.
+ */
+async function redeemMigratedToken(dcId: number, token: Buffer, previous: string): Promise<QrPoll> {
+  const { apiId, apiHash } = apiCredentials();
+  const session = new StringSession("");
+  const client = new TelegramClient(session, apiId, apiHash, {
+    connectionRetries: 3,
+    useWSS: false,
+    requestRetries: 3
+  });
+
+  // Point the session at the target DC before connecting, so the handshake
+  // happens there and no reconnect-in-place is needed.
+  const dc = await client.getDC(dcId, false);
+  session.setDC(dcId, dc.ipAddress, dc.port);
+
+  silenceBackgroundErrors(client);
+  await client.connect();
+  tgLog("connected to dc=", dcId, "for redeem");
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= REDEEM_ATTEMPTS; attempt++) {
+    try {
+      const imported = await withTimeout(
+        client.invoke(new Api.auth.ImportLoginToken({ token })),
+        REDEEM_TIMEOUT_MS,
+        `importLoginToken attempt ${attempt}`
+      );
+      tgLog("import attempt", attempt, "->", imported.className);
+
+      if (imported instanceof Api.auth.LoginTokenSuccess) {
+        tgLog("migration authorised on dc=", dcId);
+        // Cache and hand back under the *migrated* session.
+        const saved = session.save();
+        clients.delete(previous);
+        lastUsed.delete(previous);
+        clients.set(saved, client);
+        lastUsed.set(saved, Date.now());
+        return authorizedResult(client, previous);
+      }
+      // Anything else means the token is not (yet) redeemable here; retrying the
+      // same token would only repeat the answer.
+      break;
+    } catch (err) {
+      lastError = err as Error;
+      const message = (err as { errorMessage?: string })?.errorMessage || (err as Error)?.message || "";
+      tgLog("import attempt", attempt, "failed:", message);
+      // A 2FA account answers the redeem with this; it is a result, not a fault.
+      if (needsPassword(err)) {
+        const saved = session.save();
+        clients.set(saved, client);
+        lastUsed.set(saved, Date.now());
+        return { status: "password", pendingSession: saved };
+      }
+      if (attempt < REDEEM_ATTEMPTS) await new Promise(r => setTimeout(r, 1_000 * attempt));
+    }
+  }
+
+  // Keep the migrated session either way — the next poll resumes on this DC.
+  const saved = session.save();
+  clients.set(saved, client);
+  lastUsed.set(saved, Date.now());
+  tgLog("redeem unresolved on dc=", dcId, "— persisting migrated session;", lastError?.message ?? "no error");
+  return { status: "pending", pendingSession: saved, state: "migrating" };
+}
+
 /** A "keep waiting" answer that carries the freshest token and session string. */
 function pendingWithToken(
   client: TelegramClient,
@@ -216,34 +343,16 @@ export async function pollQrLogin(pendingSession: string): Promise<QrPoll> {
     }
 
     if (result instanceof Api.auth.LoginTokenMigrateTo) {
-      // The account lives on another data centre. This is the classic "phone
-      // says linked, web waits forever" case: the acceptance happened, but it
-      // only becomes an authorisation once the token is redeemed on the DC
-      // Telegram nominates here.
-      tgLog("LOGIN_TOKEN_MIGRATE_TO dc=", result.dcId, "— switching");
-      await client._switchDC(result.dcId);
-      tgLog("switched, now dc=", currentDc(client), "— importing token");
-
-      const migrated = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
-      tgLog("import ->", migrated.className);
-
-      if (migrated instanceof Api.auth.LoginTokenSuccess) {
-        tgLog("migration authorised");
-        return authorizedResult(client, pendingSession);
-      }
-
-      // Import did not authorise. Re-export on the *new* DC so the user is shown
-      // a token that is actually valid here — previously this returned with no
-      // token at all, leaving a dead QR on screen with nothing to scan.
-      const reissued = await client.invoke(new Api.auth.ExportLoginToken({ apiId, apiHash, exceptIds: [] }));
-      tgLog("re-export after migrate ->", reissued.className);
-      if (reissued instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client, pendingSession);
-      return pendingWithToken(
-        client,
-        pendingSession,
-        reissued instanceof Api.auth.LoginToken ? reissued : undefined,
-        "migrating"
-      );
+      // The scan already happened; it only becomes an authorisation once the
+      // token is redeemed on the data centre Telegram nominates here.
+      //
+      // `_switchDC` was the wrong tool: it mutates a live client in place, and
+      // the half-migrated result timed out on the very first call against the
+      // new DC. A fresh client for the target DC gets the whole documented
+      // handshake — auth key, initConnection, invokeWithLayer — from connect(),
+      // which is what the redeem needs.
+      tgLog("LOGIN_TOKEN_MIGRATE_TO dc=", result.dcId, "(from dc=", currentDc(client), ") — redeeming on target DC");
+      return redeemMigratedToken(result.dcId, result.token, pendingSession);
     }
     // Not scanned yet — and `result` is a *brand new* token, because
     // auth.exportLoginToken issues one on every call and invalidates the last.
