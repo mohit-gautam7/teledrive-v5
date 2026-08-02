@@ -37,6 +37,16 @@ function isAbort(err: unknown) {
   return err instanceof UploadAbortedError || (err instanceof DOMException && err.name === "AbortError");
 }
 
+/** Best-effort: the upload has already failed, so a failure to tidy up must not
+ *  replace the real error the caller is about to see. */
+async function discardSession(fileId: string) {
+  try {
+    await fetch(`/api/upload/abort/${fileId}`, { method: "DELETE" });
+  } catch {
+    /* the stale session is garbage-collected server-side instead */
+  }
+}
+
 async function putChunk(fileId: string, index: number, blob: Blob, signal?: AbortSignal) {
   let lastErr: unknown;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -131,7 +141,13 @@ export async function uploadFileInChunks({
     Array.from({ length: Math.min(CHUNK_CONCURRENCY, Math.max(pending.length, 1)) }, worker)
   );
   const failure = results.find(r => r.status === "rejected") as PromiseRejectedResult | undefined;
-  if (failure) throw failure.reason;
+  if (failure) {
+    // A cancel leaves the session alone so the user can resume it. Any other
+    // failure has exhausted its retries, so the half-created row is discarded
+    // rather than left in the drive as a phantom file of the full size.
+    if (!isAbort(failure.reason)) await discardSession(fileId);
+    throw failure.reason;
+  }
 
   // 3. Complete
   if (signal?.aborted) throw new UploadAbortedError();

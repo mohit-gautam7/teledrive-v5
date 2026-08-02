@@ -30,3 +30,19 @@ export const MTPROTO_PART_SIZE = 512 * 1024;
 export const MTPROTO_PREFERRED_ABOVE = 64 * 1024 * 1024; // 64 MB
 
 export type UploadBackend = "bot" | "mtproto";
+
+/**
+ * An upload session becomes a `File` row before any bytes reach Telegram, so a
+ * failed or abandoned upload leaves a row whose `size` is the *intended* size
+ * and whose chunks may not exist. Listing those made a phantom file appear in
+ * the drive — full size, broken thumbnail, nothing behind it — and counted
+ * toward the storage total.
+ *
+ * Every query that answers "what does the user actually have stored?" filters
+ * on this. Written as `not: "uploading"` rather than `equals: "complete"` so
+ * rows predating the column (default `"complete"`) are unaffected.
+ */
+export const STORED_ONLY = { uploadStatus: { not: "uploading" } } as const;
+
+/** Abandoned upload sessions are garbage-collected after this long. */
+export const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;

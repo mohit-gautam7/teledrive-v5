@@ -5,7 +5,8 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
-import { CHUNK_SIZE, MTPROTO_PREFERRED_ABOVE } from "@/lib/upload-config";
+import { CHUNK_SIZE, MTPROTO_PREFERRED_ABOVE, STALE_UPLOAD_MS } from "@/lib/upload-config";
+import { purgeTelegramCopies } from "@/lib/file-delete";
 import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
@@ -39,6 +40,29 @@ export async function POST(request: NextRequest) {
 
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
     const targetFolder = typeof folderId === "string" && folderId ? folderId : null;
+
+    // Sweep this user's long-abandoned sessions. A session is kept resumable for
+    // a day; past that the browser that started it is not coming back, and the
+    // row would otherwise sit in the database forever. Capped per call so a user
+    // with a backlog does not pay for the whole cleanup on one upload, and never
+    // fatal — a failed sweep must not block a working upload.
+    try {
+      const stale = await prisma.file.findMany({
+        where: {
+          userId: user.id,
+          uploadStatus: "uploading",
+          createdAt: { lt: new Date(Date.now() - STALE_UPLOAD_MS) }
+        },
+        include: { chunks: true, user: { include: { storageConfig: true } } },
+        take: 5
+      });
+      for (const old of stale) {
+        await purgeTelegramCopies(old);
+        await prisma.file.delete({ where: { id: old.id } });
+      }
+    } catch (sweepError) {
+      console.warn("[upload/init] stale-session sweep failed (continuing):", (sweepError as Error).message);
+    }
 
     // Big files go through the user's own Telegram session when they've linked
     // one: a single message instead of hundreds of 4 MB bot chunks, and the only

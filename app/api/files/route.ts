@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { toPublicFile } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
+import { STORED_ONLY } from "@/lib/upload-config";
 
 const PAGE_SIZE = 48;
 const MAX_PAGE_SIZE = 100;
@@ -35,6 +36,7 @@ export async function GET(request: NextRequest) {
 
     const where = {
       userId: user.id,
+      ...STORED_ONLY,
       isDeleted: view === "trash" ? true : false,
       ...(view === "favorites" ? { isFavorite: true } : {}),
       ...(spansFolders ? {} : { folderId: folderId || null }),

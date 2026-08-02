@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { mapMtprotoError } from "@/lib/mtproto-errors";
+import { BotApiError } from "@/lib/telegram-bot";
 
 export function jsonError(error: unknown, fallback = "Something went wrong.") {
   if (error instanceof Response) return error;
@@ -39,6 +40,37 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
     }
     if (message.includes("entity too large") || message.includes("Request Entity Too Large")) {
       return NextResponse.json({ error: "This upload is too large for the current server limit." }, { status: 413 });
+    }
+    // Bot API failures carry Telegram's own status code. Without this they all
+    // collapsed into a bare 500, which the chunk uploader reads as "transient"
+    // and retries five times per chunk — so a revoked token or a blocked bot
+    // produced a slow storm of identical failures and an opaque error.
+    // 4xx here is permanent for this chat, so it is reported as such.
+    if (error instanceof BotApiError) {
+      if (error.code === 401) {
+        return NextResponse.json(
+          { error: "Telegram rejected this server's bot token. The site owner needs to check BOT_TOKEN." },
+          { status: 409 }
+        );
+      }
+      if (error.code === 403) {
+        const bot = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME;
+        return NextResponse.json(
+          {
+            error: `Telegram refused to deliver to your chat — ${bot ? `@${bot}` : "the bot"} was blocked or removed. Unblock it, send it a message, then retry.`
+          },
+          { status: 409 }
+        );
+      }
+      if (error.code === 429) {
+        return NextResponse.json({ error: "Telegram is rate limiting this action. Please wait and retry." }, { status: 429 });
+      }
+      // Telegram's own 5xx (and network failures, which carry code 0) are worth
+      // another attempt; 502 keeps the uploader's retry behaviour.
+      return NextResponse.json(
+        { error: "Telegram storage is unavailable right now. Please retry." },
+        { status: error.code >= 500 || error.code === 0 ? 502 : 400 }
+      );
     }
     // An unhandled exception's message is for the logs, not the user — it can
     // carry table names, paths or connection details. The caller's fallback is

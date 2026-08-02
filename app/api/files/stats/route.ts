@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
+import { STORED_ONLY } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
 
@@ -17,7 +18,7 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   try {
     const user = await requireUser();
-    const live = { userId: user.id, isDeleted: false };
+    const live = { userId: user.id, isDeleted: false, ...STORED_ONLY };
 
     if (new URL(request.url).searchParams.get("full") !== "1") {
       const agg = await prisma.file.aggregate({ where: live, _sum: { size: true }, _count: true });
