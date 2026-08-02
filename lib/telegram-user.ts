@@ -50,12 +50,51 @@ async function connect(sessionString: string): Promise<TelegramClient> {
   if (!sessionString) return connectFresh();
 
   const cached = clients.get(sessionString);
-  if (cached?.connected) return cached;
+  if (cached?.connected) {
+    lastUsed.set(sessionString, Date.now());
+    return cached;
+  }
 
   const client = build(sessionString);
   await client.connect();
   clients.set(sessionString, client);
+  lastUsed.set(sessionString, Date.now());
+  startReaper();
   return client;
+}
+
+/**
+ * Keeping sockets warm is the point of the cache — a cold MTProto handshake
+ * costs a second or two, which was paid on *every* serverless invocation. On an
+ * always-on host the opposite risk appears: a map that only ever grows, holding
+ * a socket per user who has ever uploaded.
+ *
+ * So idle clients are disconnected after a while. The next call simply
+ * reconnects, which is the same cost serverless paid every time.
+ */
+const IDLE_TTL_MS = 10 * 60_000;
+const REAP_EVERY_MS = 60_000;
+const lastUsed = new Map<string, number>();
+let reaper: ReturnType<typeof setInterval> | null = null;
+
+function startReaper() {
+  if (reaper) return;
+  reaper = setInterval(() => {
+    const cutoff = Date.now() - IDLE_TTL_MS;
+    for (const [session, when] of lastUsed) {
+      if (when > cutoff) continue;
+      const client = clients.get(session);
+      clients.delete(session);
+      lastUsed.delete(session);
+      void client?.disconnect().catch(() => {});
+    }
+    if (!clients.size && reaper) {
+      clearInterval(reaper);
+      reaper = null;
+    }
+  }, REAP_EVERY_MS);
+  // Never hold the process open just to reap idle sockets.
+  reaper.unref?.();
 }
 
 /** A brand-new, never-cached client for starting an authorisation flow. */
@@ -69,6 +108,7 @@ async function connectFresh(): Promise<TelegramClient> {
 export function forgetSession(sessionString: string) {
   const cached = clients.get(sessionString);
   clients.delete(sessionString);
+  lastUsed.delete(sessionString);
   void cached?.disconnect().catch(() => {});
 }
 

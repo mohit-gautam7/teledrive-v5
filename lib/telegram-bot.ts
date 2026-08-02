@@ -34,16 +34,53 @@ function token(botToken?: string | null) {
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /**
- * A Telegram bot is allowed ~30 messages/second overall. Serverless gives us no
- * cross-instance coordination, but a single instance handling a burst of chunk
- * uploads is the common case, so we cap in-flight document sends per instance.
- * Anything beyond the cap waits its turn instead of piling into a 429 storm.
+ * A Telegram bot is allowed ~30 messages/second overall, and there is no
+ * cross-instance coordination, so in-flight document sends are capped per
+ * process. Anything beyond the cap waits its turn instead of piling into a 429
+ * storm.
+ *
+ * Two gates, because they stop different things going wrong.
+ *
+ * The global gate protects the bot's ~30 msg/s budget, which is shared by every
+ * user of the deployment. The per-user gate stops one uploader with a fast link
+ * from occupying every global slot and starving everyone else — with a single
+ * gate, raising concurrency for throughput also hands one person the whole
+ * budget. Defaults scale with UPLOAD_CONCURRENCY so the two stay in proportion.
  */
-const MAX_INFLIGHT_SENDS = 4;
+const MAX_INFLIGHT_SENDS = (() => {
+  const raw = Number(process.env.TELEGRAM_MAX_INFLIGHT);
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 32) : 4;
+})();
+
+const MAX_INFLIGHT_PER_USER = (() => {
+  const raw = Number(process.env.TELEGRAM_MAX_INFLIGHT_PER_USER);
+  if (Number.isFinite(raw) && raw >= 1) return Math.min(Math.floor(raw), MAX_INFLIGHT_SENDS);
+  return Math.max(1, Math.ceil(MAX_INFLIGHT_SENDS / 2));
+})();
+
 let inflight = 0;
 const waiters: Array<() => void> = [];
 
-async function acquireSendSlot() {
+const perUser = new Map<string, { count: number; waiters: Array<() => void> }>();
+
+function userGate(key: string) {
+  let gate = perUser.get(key);
+  if (!gate) {
+    gate = { count: 0, waiters: [] };
+    perUser.set(key, gate);
+  }
+  return gate;
+}
+
+async function acquireSendSlot(userKey?: string) {
+  if (userKey) {
+    const gate = userGate(userKey);
+    if (gate.count >= MAX_INFLIGHT_PER_USER) {
+      await new Promise<void>(resolve => gate.waiters.push(resolve));
+    }
+    gate.count++;
+  }
+
   if (inflight < MAX_INFLIGHT_SENDS) {
     inflight++;
     return;
@@ -52,9 +89,18 @@ async function acquireSendSlot() {
   inflight++;
 }
 
-function releaseSendSlot() {
+function releaseSendSlot(userKey?: string) {
   inflight--;
   waiters.shift()?.();
+
+  if (!userKey) return;
+  const gate = perUser.get(userKey);
+  if (!gate) return;
+  gate.count--;
+  gate.waiters.shift()?.();
+  // Drop idle entries so a long-lived process does not accumulate one per user
+  // who ever uploaded.
+  if (gate.count <= 0 && !gate.waiters.length) perUser.delete(userKey);
 }
 
 /** Full jitter exponential backoff — spreads retries so concurrent uploaders
@@ -159,6 +205,8 @@ export async function sendDocumentToChat(params: {
   mimeType?: string;
   caption?: string;
   botToken?: string | null;
+  /** Whose upload this is, for the per-user fairness gate. */
+  userKey?: string;
 }): Promise<SentDocument> {
   const bytes = params.data instanceof Uint8Array ? params.data : new Uint8Array(params.data);
 
@@ -172,14 +220,14 @@ export async function sendDocumentToChat(params: {
     return form;
   };
 
-  await acquireSendSlot();
+  await acquireSendSlot(params.userKey);
   try {
     const msg = await callBotApi<TgMessage>("sendDocument", buildForm, params.botToken);
     const media = msg.document || msg.audio || msg.video;
     if (!media?.file_id) throw new BotApiError("Telegram did not return a file id.", 500);
     return { messageId: msg.message_id, fileId: media.file_id, fileUniqueId: media.file_unique_id };
   } finally {
-    releaseSendSlot();
+    releaseSendSlot(params.userKey);
   }
 }
 

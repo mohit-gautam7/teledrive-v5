@@ -102,11 +102,23 @@ export async function uploadFileInChunks({
     const body = (await initRes.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error || "Failed to initialise chunked upload.");
   }
-  const { fileId, totalChunks, received = [] } = (await initRes.json()) as {
+  const {
+    fileId,
+    totalChunks,
+    received = [],
+    chunkSizeBytes
+  } = (await initRes.json()) as {
     fileId: string;
     totalChunks: number;
     received?: number[];
+    chunkSizeBytes?: number;
   };
+
+  // The server owns the chunk size. Taking it from the response rather than the
+  // shared constant means an operator can change UPLOAD_CHUNK_MB without
+  // stranding an upload that is mid-resume at the old size, and a stale bundle
+  // in someone's tab cannot slice at a size the server will reject.
+  const chunkSize = chunkSizeBytes && chunkSizeBytes > 0 ? chunkSizeBytes : CHUNK_SIZE;
 
   // 2. Upload only the chunks that are still missing, a few at a time.
   const done = new Set(received);
@@ -118,7 +130,7 @@ export async function uploadFileInChunks({
   // below the total until /complete returns, so the UI never sits at a finished
   // 100% while the file is still being finalised.
   const report = () =>
-    onProgress(Math.min(completed * CHUNK_SIZE, Math.max(0, file.size - 1)));
+    onProgress(Math.min(completed * chunkSize, Math.max(0, file.size - 1)));
   report();
 
   let cursor = 0;
@@ -128,8 +140,8 @@ export async function uploadFileInChunks({
       const slot = cursor++;
       if (slot >= pending.length) return;
       const i = pending[slot];
-      const start = i * CHUNK_SIZE;
-      await putChunk(fileId, i, file.slice(start, Math.min(start + CHUNK_SIZE, file.size)), signal);
+      const start = i * chunkSize;
+      await putChunk(fileId, i, file.slice(start, Math.min(start + chunkSize, file.size)), signal);
       completed++;
       report();
     }

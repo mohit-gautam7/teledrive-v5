@@ -66,3 +66,15 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+
+      # ── Throughput ──
+      # Render has no request-body cap, so chunks can be far larger than the
+      # 4 MB that Vercel forced. 16 MB is a safe, well-tested step up; the
+      # client takes this value from /api/upload/init, so changing it does not
+      # strand an upload that is mid-resume.
+      - key: UPLOAD_CHUNK_MB
+        value: "16"
+      - key: UPLOAD_CONCURRENCY
+        value: "4"
+      - key: TELEGRAM_MAX_INFLIGHT
+        value: "8"

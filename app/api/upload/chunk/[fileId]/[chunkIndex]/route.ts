@@ -90,7 +90,8 @@ export async function POST(
       mimeType: single ? file.mimeType : "application/octet-stream",
       caption: single
         ? `📄 ${file.originalName}`
-        : `📦 ${file.originalName} — part ${chunkIndex + 1}/${file.totalChunks}`
+        : `📦 ${file.originalName} — part ${chunkIndex + 1}/${file.totalChunks}`,
+      userKey: user.id
     });
 
     await prisma.chunk.upsert({

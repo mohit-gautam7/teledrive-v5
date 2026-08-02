@@ -111,6 +111,62 @@ There is no route past 4 GB. It is Telegram's number, not ours.
 `File.backend` records which one holds each file, and downloads route
 accordingly, so both coexist and older files keep working.
 
+## Throughput after moving off Vercel
+
+The 4 MB chunk was never a Telegram limit — it was Vercel's 4.5 MB request-body
+cap. On Render (or any always-on host) that cap is gone, so chunk size,
+parallelism and the rate gates are now configurable.
+
+| Setting | Default | On Render | What it changes |
+| --- | --- | --- | --- |
+| `UPLOAD_CHUNK_MB` | 4 | 16 | Bytes per chunk, so requests *and* Telegram messages per file |
+| `UPLOAD_CONCURRENCY` | 3 | 4 | Chunks in flight per file, per browser |
+| `TELEGRAM_MAX_INFLIGHT` | 4 | 8 | Process-wide `sendDocument` cap |
+| `TELEGRAM_MAX_INFLIGHT_PER_USER` | half the above | — | Fairness: one uploader cannot take every slot |
+
+### Measured
+
+Chunk size resolution and the resulting request count, read from
+`/api/upload/init` against a production build for a 100 MB file:
+
+| `UPLOAD_CHUNK_MB` | Resolved chunk | Chunks for 100 MB |
+| --- | --- | --- |
+| 4 | 4,194,304 (4 MiB) | 25 |
+| 16 | 16,777,216 (16 MiB) | **7** |
+| 0.75 | 1,048,576 (clamped up to 1 MiB) | 100 |
+| 999 | 52,428,800 (capped at 50 MiB) | 2 |
+
+So 4 MB → 16 MB is **3.6× fewer requests and 3.6× fewer Telegram messages** for
+the same file. That matters more than it sounds: the binding constraint is the
+bot's ~30 messages/second, so a file that cost 25 messages now costs 7, and the
+same budget carries roughly three and a half times as many concurrent uploads.
+
+The ceiling is 50 MB because Cloudflare's free plan caps a request body at
+100 MB, and a chunk that fails is re-sent in full — past ~50 MB a single flaky
+chunk costs more than the round-trips it saved.
+
+**Not measured:** wall-clock throughput against real Telegram. That needs a live
+bot token and a real account, and the numbers would say more about the uplink
+than about this code. What is verified is the arithmetic above and that the
+gates serialise correctly.
+
+### Why chunk size is served, not baked in
+
+`/api/upload/init` reports `chunkSizeBytes` and the browser slices at whatever
+it says. Two things follow: an operator can change `UPLOAD_CHUNK_MB` without
+stranding an upload that is mid-resume, and a stale tab cannot slice at a size
+the server would reject. A resumable session whose `totalChunks` no longer
+matches the current chunk size is not reused — it is left to the sweeper and a
+fresh session starts.
+
+### Warm MTProto clients
+
+Sockets are cached per session, so a 2 GB upload no longer pays a 1–2 second
+handshake on every request the way it did on serverless. On an always-on host
+the opposite risk appears — a map holding a socket per user who ever uploaded —
+so idle clients are disconnected after 10 minutes. The next call reconnects,
+which costs exactly what serverless paid every single time.
+
 ## Should this run on several platforms at once?
 
 Short answer: **no — one always-on origin behind Cloudflare, and add *bots*

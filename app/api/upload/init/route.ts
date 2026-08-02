@@ -83,7 +83,11 @@ export async function POST(request: NextRequest) {
         },
         include: { chunks: { select: { chunkIndex: true } } }
       });
-      if (existing) {
+      // Only resume a session that was chunked at the size we use now. If
+      // UPLOAD_CHUNK_MB changed since it started, its chunk boundaries no longer
+      // line up and reusing it would interleave slices of two different sizes —
+      // so it is left to the sweeper and a fresh session is created instead.
+      if (existing && existing.totalChunks === totalChunks) {
         return NextResponse.json({
           fileId: existing.id,
           totalChunks: existing.totalChunks,

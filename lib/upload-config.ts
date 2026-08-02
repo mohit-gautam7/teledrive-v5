@@ -5,7 +5,36 @@
  * every stored chunk under Telegram's 20 MB bot-download limit, while staying
  * far below the 50 MB bot-upload limit.
  */
-export const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MiB
+/** MTProto uploads in 512 KiB parts, so a chunk must be a whole number of them. */
+const PART = 512 * 1024;
+const DEFAULT_CHUNK_MB = 4;
+/** Cloudflare's free plan caps a request body at 100 MB; staying well under it
+ *  leaves room for multipart overhead and keeps a failed chunk cheap to retry. */
+const MAX_CHUNK_MB = 50;
+
+function resolveChunkSize() {
+  const raw = Number(process.env.UPLOAD_CHUNK_MB);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_CHUNK_MB * 1024 * 1024;
+  const mb = Math.min(Math.max(raw, 1), MAX_CHUNK_MB);
+  // Round down to a whole number of MTProto parts; a ragged chunk would make
+  // PARTS_PER_CHUNK fractional and misalign every big-file upload.
+  return Math.max(PART, Math.floor((mb * 1024 * 1024) / PART) * PART);
+}
+
+/**
+ * Bytes per upload chunk.
+ *
+ * 4 MiB is the default because it is the only value that fits Vercel's 4.5 MB
+ * request-body cap. On an always-on host (Render, a VM) there is no such cap, and
+ * raising this to 16–32 MB cuts the number of round-trips — and therefore the
+ * number of Telegram messages — by the same factor.
+ *
+ * Read from the environment at module load, which is safe because the value
+ * reaches the browser through /api/upload/init rather than a build-time constant:
+ * the client chunks at whatever size the server reports, so changing this cannot
+ * strand an in-flight resumable upload.
+ */
+export const CHUNK_SIZE = resolveChunkSize();
 
 /** Telegram's per-file ceiling on a normal user account. */
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
@@ -20,7 +49,10 @@ export const MAX_FILE_SIZE_PREMIUM = 4 * 1024 * 1024 * 1024; // 4 GB
  * budget. Three is enough to hide per-request latency without a single user
  * monopolising the bot when several people upload at the same time.
  */
-export const CHUNK_CONCURRENCY = 3;
+export const CHUNK_CONCURRENCY = (() => {
+  const raw = Number(process.env.UPLOAD_CONCURRENCY);
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(Math.floor(raw), 12) : 3;
+})();
 
 /** MTProto splits big files into 512 KiB parts; 4 MiB of payload = 8 parts. */
 export const MTPROTO_PART_SIZE = 512 * 1024;
