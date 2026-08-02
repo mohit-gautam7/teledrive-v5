@@ -319,6 +319,8 @@ export function SettingsPanel({
 
       <AiModeCard />
 
+      <AiToolsCard />
+
       <AiUsageCard />
 
       <section className="panel p-5 lg:col-span-2">
@@ -341,6 +343,207 @@ export function SettingsPanel({
         </p>
       </section>
     </div>
+  );
+}
+
+type AutomationRow = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: { event: string; mimePrefix?: string; nameContains?: string };
+  steps: Array<{ type: string; language?: string }>;
+  runCount: number;
+  lastRunAt: string | null;
+};
+
+/** Semantic search, and the rules that run automatically on upload. */
+function AiToolsCard() {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [rules, setRules] = useState<AutomationRow[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<Array<{ fileId: string; fileName: string; score: number; excerpt: string }> | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  const [name, setName] = useState("");
+  const [mimePrefix, setMimePrefix] = useState("image/");
+  const [stepType, setStepType] = useState("ocr");
+
+  const load = useCallback(() => {
+    apiFetch<{ automations: AutomationRow[] }>("/api/ai/automations")
+      .then(d => {
+        setRules(d.automations);
+        setAvailable(true);
+      })
+      .catch(err => {
+        setAvailable(false);
+        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load automations.");
+      });
+  }, []);
+  useEffect(load, [load]);
+
+  const search = async () => {
+    if (!query.trim()) return;
+    setSearching(true);
+    try {
+      const d = await apiFetch<{ hits: typeof hits }>("/api/ai/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ q: query.trim() })
+      });
+      setHits(d.hits ?? []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Search failed.");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const createRule = async () => {
+    if (!name.trim()) {
+      toast.error("Give the rule a name.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await apiFetch("/api/ai/automations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          trigger: { event: "file.uploaded", ...(mimePrefix.trim() ? { mimePrefix: mimePrefix.trim() } : {}) },
+          steps: [{ type: stepType }]
+        })
+      });
+      setName("");
+      toast.success("Rule created.");
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not create the rule.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const patchRule = async (row: AutomationRow, body: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/ai/automations/${row.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not update the rule.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeRule = async (row: AutomationRow) => {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/ai/automations/${row.id}`, { method: "DELETE" });
+      toast.success("Rule removed.");
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not remove the rule.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (available !== true) return null;
+
+  return (
+    <section className="panel p-5 lg:col-span-2">
+      <h2 className="display t-h2">AI tools</h2>
+
+      <p className="eyebrow mt-4">Semantic search</p>
+      <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>
+        Searches the meaning of indexed documents, not just their names. A file has to be indexed first — add an
+        “Index” rule below, or index one from its menu.
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") search();
+          }}
+          placeholder="e.g. the invoice from the landlord"
+          className="field"
+          style={{ minHeight: 44, flex: "1 1 260px" }}
+          aria-label="Semantic search query"
+        />
+        <button onClick={search} disabled={searching} className="btn btn-accent" style={{ minHeight: 44 }}>
+          {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Search
+        </button>
+      </div>
+
+      {hits !== null && (
+        <ul className="mt-3 grid gap-1.5">
+          {hits.length === 0 ? (
+            <li className="t-sm" style={{ color: "var(--text-3)" }}>
+              No matches. Nothing is indexed yet, or nothing came close.
+            </li>
+          ) : (
+            hits.map(h => (
+              <li key={h.fileId} className="rounded-lg px-3 py-2" style={{ background: "var(--surface)" }}>
+                <p className="t-sm font-semibold" style={{ color: "var(--text-1)" }}>
+                  {h.fileName} <span className="t-xs mono font-normal" style={{ color: "var(--text-3)" }}>{h.score.toFixed(3)}</span>
+                </p>
+                <p className="t-xs mt-0.5" style={{ color: "var(--text-3)" }}>{h.excerpt}</p>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+
+      <p className="eyebrow mt-6">Automations</p>
+      <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>
+        Run automatically when a matching file finishes uploading. These need the background worker
+        (<span className="mono">JOB_WORKER_ENABLED=1</span>) to actually execute.
+      </p>
+
+      {rules.length > 0 && (
+        <ul className="mt-2 grid gap-1.5">
+          {rules.map(r => (
+            <li key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg px-3 py-2" style={{ background: "var(--surface)" }}>
+              <div className="min-w-0 flex-1">
+                <p className="t-sm font-semibold" style={{ color: "var(--text-1)" }}>{r.name}</p>
+                <p className="t-xs mono mt-0.5" style={{ color: "var(--text-3)" }}>
+                  on upload{r.trigger.mimePrefix ? ` · ${r.trigger.mimePrefix}*` : ""} → {r.steps.map(s => s.type).join(", ")} · ran {r.runCount}×
+                </p>
+              </div>
+              <Tag tone={r.enabled ? "ok" : undefined}>{r.enabled ? "on" : "off"}</Tag>
+              <button onClick={() => patchRule(r, { enabled: !r.enabled })} disabled={busy} className="btn btn-ghost" style={{ minHeight: 36 }}>
+                <Power className="h-4 w-4" />
+              </button>
+              <button onClick={() => removeRule(r)} disabled={busy} className="btn btn-ghost" style={{ minHeight: 36 }}>
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Rule name" className="field" style={{ minHeight: 44, flex: "1 1 180px" }} aria-label="Rule name" />
+        <input value={mimePrefix} onChange={e => setMimePrefix(e.target.value)} placeholder="image/" className="field mono" style={{ minHeight: 44, width: 130 }} aria-label="MIME prefix" />
+        <select value={stepType} onChange={e => setStepType(e.target.value)} className="field" style={{ minHeight: 44, width: 150 }} aria-label="Step">
+          {["ocr", "caption", "summarize", "transcribe", "index", "favorite"].map(s => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <button onClick={createRule} disabled={busy} className="btn btn-accent" style={{ minHeight: 44 }}>
+          Add rule
+        </button>
+      </div>
+    </section>
   );
 }
 
