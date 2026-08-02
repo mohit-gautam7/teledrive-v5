@@ -146,3 +146,51 @@ BEGIN
       FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;
 END $$;
+
+-- FileEmbedding: semantic-search vectors. JSONB rather than pgvector, which is
+-- not enabled on this project; an exact scan in the app is accurate and fast
+-- enough at personal-drive scale.
+CREATE TABLE IF NOT EXISTS "FileEmbedding" (
+  "id"         TEXT NOT NULL,
+  "userId"     TEXT NOT NULL,
+  "fileId"     TEXT NOT NULL,
+  "chunkIndex" INTEGER NOT NULL,
+  "text"       TEXT NOT NULL,
+  "vector"     JSONB NOT NULL,
+  "model"      TEXT NOT NULL,
+  "createdAt"  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "FileEmbedding_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "FileEmbedding_fileId_chunkIndex_key" ON "FileEmbedding"("fileId", "chunkIndex");
+CREATE INDEX IF NOT EXISTS "FileEmbedding_userId_idx" ON "FileEmbedding"("userId");
+
+-- Automation: trigger + steps, run by the job worker.
+CREATE TABLE IF NOT EXISTS "Automation" (
+  "id"        TEXT NOT NULL,
+  "userId"    TEXT NOT NULL,
+  "name"      TEXT NOT NULL,
+  "enabled"   BOOLEAN NOT NULL DEFAULT true,
+  "trigger"   JSONB NOT NULL,
+  "steps"     JSONB NOT NULL,
+  "lastRunAt" TIMESTAMP(3),
+  "runCount"  INTEGER NOT NULL DEFAULT 0,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "Automation_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX IF NOT EXISTS "Automation_userId_enabled_idx" ON "Automation"("userId", "enabled");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FileEmbedding_userId_fkey') THEN
+    ALTER TABLE "FileEmbedding" ADD CONSTRAINT "FileEmbedding_userId_fkey"
+      FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FileEmbedding_fileId_fkey') THEN
+    ALTER TABLE "FileEmbedding" ADD CONSTRAINT "FileEmbedding_fileId_fkey"
+      FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Automation_userId_fkey') THEN
+    ALTER TABLE "Automation" ADD CONSTRAINT "Automation_userId_fkey"
+      FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;

@@ -22,6 +22,49 @@ model User {
   aiUsage        AiUsage[]
   jobs           Job[]
   aiPreference   AiPreference?
+  embeddings     FileEmbedding[]
+  automations    Automation[]
+}
+
+/// One embedded slice of a file's text, for semantic search.
+///
+/// The vector is JSONB rather than a pgvector column: pgvector is not enabled on
+/// this Supabase project, and for a personal drive an exact scan in the app is
+/// both accurate and fast enough. See docs/AI.md for the size at which that
+/// stops being true.
+model FileEmbedding {
+  id         String   @id @default(cuid())
+  userId     String
+  fileId     String
+  chunkIndex Int
+  /// The slice this vector was built from, so a hit can be shown in context.
+  text       String
+  vector     Json
+  model      String
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, chunkIndex])
+  @@index([userId])
+}
+
+/// A trigger and the steps to run when it fires.
+model Automation {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  enabled   Boolean  @default(true)
+  /// { event: "file.uploaded", mimePrefix?: string, nameContains?: string }
+  trigger   Json
+  /// [{ type: "summarize" | "ocr" | "transcribe" | "index" | "move", ... }]
+  steps     Json
+  lastRunAt DateTime?
+  runCount  Int      @default(0)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, enabled])
 }
 
 /// How this user wants AI requests routed. One row per user; absent means the
@@ -198,6 +241,7 @@ model File {
   @@index([userId, folderId])
   @@index([userId, createdAt])
   @@index([userId, resumeKey])
+  embeddings        FileEmbedding[]
 }
 
 model Chunk {

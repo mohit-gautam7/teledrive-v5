@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { chat, ProviderError, type ChatMessage, type ChatResult } from "@/lib/ai/client";
+import { chat, embed, transcribe, ProviderError, type ChatMessage, type ChatResult } from "@/lib/ai/client";
 import { revealKey } from "@/lib/ai/vault";
 import { costMicros, estimateMicros, approxTokens, priceFor } from "@/lib/ai/pricing";
 
@@ -275,7 +275,14 @@ export async function estimate(opts: Omit<RunOptions, "signal">) {
  * Run a prompt against the user's keys, walking the fallback chain until one
  * succeeds. Throws only when every candidate has been tried.
  */
-export async function run(opts: RunOptions): Promise<RunResult> {
+/** Constraints shared by every kind of call the router can make. */
+type SelectOptions = Pick<
+  RunOptions,
+  "userId" | "providers" | "strategy" | "localOnly" | "freeOnly"
+>;
+
+/** The keys that may serve this request, best first. */
+async function orderedUsable(opts: SelectOptions) {
   const candidates = await candidatesFor(opts.userId, opts.providers);
   if (!candidates.length) {
     throw new NoKeyAvailableError("No enabled AI key. Add one in Settings to use this feature.");
@@ -305,7 +312,25 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     );
   }
 
-  const ordered = await orderCandidates(usable, opts.strategy ?? "priority", spend);
+  return orderCandidates(usable, opts.strategy ?? "priority", spend);
+}
+
+/**
+ * Walk the fallback chain, recording usage and health for each attempt.
+ *
+ * Chat, embeddings and transcription differ only in the call they make, so the
+ * selection, retry, metering and auto-disable logic lives here once rather than
+ * being reimplemented — and drifting — three times.
+ */
+async function attempt<T>(
+  opts: SelectOptions & { task: string; signal?: AbortSignal },
+  call: (ctx: { provider: string; apiKey: string; baseUrl: string | null; model: string }) => Promise<{
+    value: T;
+    promptTokens: number;
+    completionTokens: number;
+  }>
+): Promise<{ value: T; provider: string; model: string; keyId: string; latencyMs: number; costMicros: number | null }> {
+  const ordered = await orderedUsable(opts);
 
   let lastError: Error | null = null;
   for (const candidate of ordered) {
@@ -315,13 +340,7 @@ export async function run(opts: RunOptions): Promise<RunResult> {
     const model = candidate.model as string;
     const started = Date.now();
     try {
-      const result = await chat(candidate.provider, apiKey, candidate.baseUrl, {
-        messages: opts.messages,
-        model,
-        maxTokens: opts.maxTokens,
-        temperature: opts.temperature,
-        signal: opts.signal
-      });
+      const out = await call({ provider: candidate.provider, apiKey, baseUrl: candidate.baseUrl, model });
       const latencyMs = Date.now() - started;
 
       const cost = await recordUsage({
@@ -330,14 +349,14 @@ export async function run(opts: RunOptions): Promise<RunResult> {
         provider: candidate.provider,
         model,
         task: opts.task,
-        promptTokens: result.promptTokens,
-        completionTokens: result.completionTokens,
+        promptTokens: out.promptTokens,
+        completionTokens: out.completionTokens,
         latencyMs,
         status: "ok"
       });
       await noteSuccess(candidate.id);
 
-      return { ...result, provider: candidate.provider, model, keyId: candidate.id, latencyMs, costMicros: cost };
+      return { value: out.value, provider: candidate.provider, model, keyId: candidate.id, latencyMs, costMicros: cost };
     } catch (err) {
       const error = err instanceof ProviderError ? err : new ProviderError((err as Error).message, 0);
       lastError = error;
@@ -363,4 +382,54 @@ export async function run(opts: RunOptions): Promise<RunResult> {
   }
 
   throw lastError ?? new NoKeyAvailableError("No AI key could serve this request.");
+}
+
+export async function run(opts: RunOptions): Promise<RunResult> {
+  const out = await attempt<ChatResult>(opts, async ctx => {
+    const result = await chat(ctx.provider, ctx.apiKey, ctx.baseUrl, {
+      messages: opts.messages,
+      model: ctx.model,
+      maxTokens: opts.maxTokens,
+      temperature: opts.temperature,
+      signal: opts.signal
+    });
+    return { value: result, promptTokens: result.promptTokens, completionTokens: result.completionTokens };
+  });
+
+  return {
+    ...out.value,
+    provider: out.provider,
+    model: out.model,
+    keyId: out.keyId,
+    latencyMs: out.latencyMs,
+    costMicros: out.costMicros
+  };
+}
+
+/** Speech to text, through the same key selection and metering as chat. */
+export async function runTranscribe(
+  opts: SelectOptions & {
+    task: string;
+    audio: { bytes: Buffer; filename: string; mimeType: string };
+    signal?: AbortSignal;
+  }
+) {
+  const out = await attempt<string>(opts, async ctx => {
+    const result = await transcribe(ctx.provider, ctx.apiKey, ctx.baseUrl, ctx.model, opts.audio, opts.signal);
+    // Transcription endpoints do not report token usage; the duration is what
+    // costs money, and providers price that separately.
+    return { value: result.text, promptTokens: 0, completionTokens: 0 };
+  });
+  return { text: out.value, provider: out.provider, model: out.model, latencyMs: out.latencyMs };
+}
+
+/** Embeddings, through the same key selection and metering as chat. */
+export async function runEmbed(
+  opts: SelectOptions & { task: string; inputs: string[]; signal?: AbortSignal }
+) {
+  const out = await attempt<number[][]>(opts, async ctx => {
+    const result = await embed(ctx.provider, ctx.apiKey, ctx.baseUrl, ctx.model, opts.inputs, opts.signal);
+    return { value: result.vectors, promptTokens: result.promptTokens, completionTokens: 0 };
+  });
+  return { vectors: out.value, provider: out.provider, model: out.model, costMicros: out.costMicros };
 }

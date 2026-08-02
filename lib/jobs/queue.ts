@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
  * nothing there stays alive long enough to drain.
  */
 
-export type JobType = "ai.completion" | "thumbnail" | "automation";
+export type JobType = "ai.completion" | "ai.file" | "ai.index" | "thumbnail" | "automation";
 
 export type EnqueueInput = {
   userId: string;

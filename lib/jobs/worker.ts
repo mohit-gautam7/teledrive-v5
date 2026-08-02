@@ -3,6 +3,11 @@ import { jobWorkerEnabled } from "@/lib/feature-flags";
 import { run as runAi } from "@/lib/ai/router";
 import type { ChatMessage } from "@/lib/ai/client";
 import { resolvePlan } from "@/lib/ai/modes";
+import { prisma } from "@/lib/prisma";
+import { streamInclude } from "@/lib/file-stream";
+import { runFileTask, isFileAction } from "@/lib/ai/file-tasks";
+import { indexFile } from "@/lib/ai/search";
+import { runAutomation } from "@/lib/ai/automation";
 
 /**
  * The loop that drains the job queue. Started once per always-on process from
@@ -50,6 +55,43 @@ const handlers: Record<string, Handler> = {
       costMicros: result.costMicros
     };
   }
+};
+
+/** An AI action against a stored file. The payload carries the file id, not its
+ *  bytes — the worker re-reads it, so a queued row stays small. */
+type AiFilePayload = { fileId: string; action: string; question?: string; language?: string };
+
+handlers["ai.file"] = async job => {
+  const payload = job.payload as AiFilePayload;
+  if (!payload?.fileId || !isFileAction(payload.action)) {
+    throw new Error("ai.file job is missing a file id or has an unknown action.");
+  }
+  const file = await prisma.file.findFirst({
+    where: { id: payload.fileId, userId: job.userId, isDeleted: false },
+    include: streamInclude
+  });
+  if (!file) throw new Error("The file no longer exists.");
+
+  const result = await runFileTask({
+    userId: job.userId,
+    file,
+    action: payload.action,
+    question: payload.question,
+    language: payload.language
+  });
+  return result;
+};
+
+handlers["ai.index"] = async job => {
+  const { fileId } = job.payload as { fileId?: string };
+  if (!fileId) throw new Error("ai.index job has no file id.");
+  return indexFile(job.userId, fileId);
+};
+
+handlers["automation"] = async job => {
+  const { automationId, fileId } = job.payload as { automationId?: string; fileId?: string };
+  if (!automationId || !fileId) throw new Error("automation job is missing an automation or file id.");
+  return runAutomation(job.userId, automationId, fileId);
 };
 
 /** Register work types outside this file (thumbnails, automations) without

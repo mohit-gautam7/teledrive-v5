@@ -5,7 +5,16 @@ import { getProvider, type ProviderSpec } from "@/lib/ai/providers";
  * whatever a given provider wants, so callers never branch on provider.
  */
 
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+/** An image sent alongside a prompt, for OCR and captioning. */
+export type InlineImage = { mimeType: string; base64: string };
+
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  /** Requires a vision-capable model; the adapters translate to each provider's
+   *  own multimodal shape. */
+  images?: InlineImage[];
+};
 
 export type ChatRequest = {
   messages: ChatMessage[];
@@ -83,7 +92,22 @@ async function chatOpenAiCompatible(
       },
       body: JSON.stringify({
         model: req.model,
-        messages: req.messages,
+        // A plain string stays a string: some OpenAI-compatible servers (several
+        // local runtimes among them) reject the content-parts array outright.
+        messages: req.messages.map(m =>
+          m.images?.length
+            ? {
+                role: m.role,
+                content: [
+                  { type: "text", text: m.content },
+                  ...m.images.map(img => ({
+                    type: "image_url",
+                    image_url: { url: `data:${img.mimeType};base64,${img.base64}` }
+                  }))
+                ]
+              }
+            : { role: m.role, content: m.content }
+        ),
         max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
         ...(req.temperature === undefined ? {} : { temperature: req.temperature })
       }),
@@ -135,7 +159,20 @@ async function chatAnthropic(
         max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
         ...(system ? { system } : {}),
         ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
-        messages
+        messages: messages.map(m =>
+          m.images?.length
+            ? {
+                role: m.role,
+                content: [
+                  { type: "text", text: m.content },
+                  ...m.images.map(img => ({
+                    type: "image",
+                    source: { type: "base64", media_type: img.mimeType, data: img.base64 }
+                  }))
+                ]
+              }
+            : { role: m.role, content: m.content }
+        )
       }),
       signal
     });
@@ -178,4 +215,97 @@ export async function chat(
   return spec.kind === "anthropic"
     ? chatAnthropic(spec, apiKey, baseUrl, req)
     : chatOpenAiCompatible(spec, apiKey, baseUrl, req);
+}
+
+/**
+ * Vector embeddings, for semantic search.
+ *
+ * Only the OpenAI-compatible shape — Anthropic has no embeddings endpoint, so
+ * a key for it is rejected here rather than failing obscurely upstream.
+ */
+export async function embed(
+  providerId: string,
+  apiKey: string,
+  baseUrlOverride: string | null,
+  model: string,
+  input: string[],
+  signal?: AbortSignal
+): Promise<{ vectors: number[][]; promptTokens: number }> {
+  const spec = getProvider(providerId);
+  if (!spec) throw new ProviderError(`Unknown provider "${providerId}".`, 400);
+  if (spec.kind === "anthropic") {
+    throw new ProviderError("Anthropic does not provide embeddings. Use another provider for semantic search.", 400);
+  }
+  const baseUrl = baseUrlOverride || spec.baseUrl;
+  if (!baseUrl) throw new ProviderError(`${spec.label} needs a base URL on the key.`, 400);
+
+  const { signal: timed, done } = withTimeout(signal);
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/embeddings`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, input }),
+      signal: timed
+    });
+    if (!res.ok) throw new ProviderError(`${spec.label}: ${await readError(res)}`, res.status);
+
+    const json = (await res.json()) as {
+      data?: Array<{ embedding?: number[] }>;
+      usage?: { prompt_tokens?: number };
+    };
+    const vectors = (json.data ?? []).map(d => d.embedding ?? []);
+    if (vectors.length !== input.length) {
+      throw new ProviderError(`${spec.label} returned ${vectors.length} embeddings for ${input.length} inputs.`, 502);
+    }
+    return { vectors, promptTokens: json.usage?.prompt_tokens ?? 0 };
+  } catch (err) {
+    if (err instanceof ProviderError) throw err;
+    throw new ProviderError(`${spec.label}: ${(err as Error).message}`, 0);
+  } finally {
+    done();
+  }
+}
+
+/**
+ * Speech to text. Uses the OpenAI-compatible `/audio/transcriptions` multipart
+ * endpoint, which is what Groq, OpenAI and most local Whisper servers expose.
+ */
+export async function transcribe(
+  providerId: string,
+  apiKey: string,
+  baseUrlOverride: string | null,
+  model: string,
+  audio: { bytes: Buffer; filename: string; mimeType: string },
+  signal?: AbortSignal
+): Promise<{ text: string }> {
+  const spec = getProvider(providerId);
+  if (!spec) throw new ProviderError(`Unknown provider "${providerId}".`, 400);
+  if (spec.kind === "anthropic") {
+    throw new ProviderError("Anthropic does not transcribe audio. Use another provider for transcripts.", 400);
+  }
+  const baseUrl = baseUrlOverride || spec.baseUrl;
+  if (!baseUrl) throw new ProviderError(`${spec.label} needs a base URL on the key.`, 400);
+
+  const { signal: timed, done } = withTimeout(signal);
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(audio.bytes)], { type: audio.mimeType }), audio.filename);
+    form.append("model", model);
+
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/audio/transcriptions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}` }, // no content-type: fetch sets the multipart boundary
+      body: form,
+      signal: timed
+    });
+    if (!res.ok) throw new ProviderError(`${spec.label}: ${await readError(res)}`, res.status);
+
+    const json = (await res.json()) as { text?: string };
+    return { text: json.text ?? "" };
+  } catch (err) {
+    if (err instanceof ProviderError) throw err;
+    throw new ProviderError(`${spec.label}: ${(err as Error).message}`, 0);
+  } finally {
+    done();
+  }
 }

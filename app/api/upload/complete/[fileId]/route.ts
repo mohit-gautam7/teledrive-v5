@@ -3,6 +3,22 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { toPublicFile } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
+import { aiEnabled } from "@/lib/feature-flags";
+
+/**
+ * Let any matching automation rule queue itself now the bytes are really
+ * stored. Gated on the flag and deliberately non-fatal: the upload has already
+ * succeeded, and a rule failing must never turn that into an error.
+ */
+async function fireAutomations(userId: string, file: { id: string; originalName: string; mimeType: string }) {
+  if (!aiEnabled()) return;
+  try {
+    const { onFileUploaded } = await import("@/lib/ai/automation");
+    await onFileUploaded(userId, file);
+  } catch (err) {
+    console.warn("[upload/complete] automation dispatch failed (continuing):", (err as Error).message);
+  }
+}
 import { finalizeBigFile } from "@/lib/telegram-user";
 import { userMtprotoSession } from "@/lib/mtproto-session";
 import { MTPROTO_PART_SIZE } from "@/lib/upload-config";
@@ -72,6 +88,7 @@ export async function POST(
         }
       });
       await prisma.chunk.deleteMany({ where: { fileId } });
+      await fireAutomations(user.id, updated);
       return NextResponse.json({ file: toPublicFile(updated) });
     }
 
@@ -80,6 +97,7 @@ export async function POST(
       data: { uploadStatus: "complete" }
     });
 
+    await fireAutomations(user.id, updated);
     return NextResponse.json({ file: toPublicFile(updated) });
   } catch (error) {
     return jsonError(error, "Could not complete upload.");
