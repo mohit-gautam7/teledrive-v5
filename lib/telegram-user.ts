@@ -146,9 +146,45 @@ export async function startQrLogin(): Promise<QrStart> {
 }
 
 export type QrPoll =
-  | { status: "pending" }
+  /** Not scanned yet. `qrUrl` is the *current* token and must be redrawn. */
+  | { status: "pending"; pendingSession: string; qrUrl?: string; expiresAt?: number }
   | { status: "password"; pendingSession: string }
   | { status: "authorized"; session: string; userId: string; premium: boolean; name: string };
+
+/** Re-key the in-process socket cache after a session string changes. */
+function migratedKey(client: TelegramClient, previous: string) {
+  const next = (client.session as StringSession).save();
+  if (next !== previous) {
+    clients.delete(previous);
+    lastUsed.delete(previous);
+  }
+  return previous;
+}
+
+/** A "keep waiting" answer that carries the freshest token and session string. */
+function pendingWithToken(
+  client: TelegramClient,
+  previous: string,
+  token?: Api.auth.LoginToken
+): QrPoll {
+  const next = (client.session as StringSession).save();
+  if (next !== previous) {
+    clients.delete(previous);
+    lastUsed.delete(previous);
+    clients.set(next, client);
+    lastUsed.set(next, Date.now());
+  }
+  return {
+    status: "pending",
+    pendingSession: next,
+    ...(token
+      ? {
+          qrUrl: `tg://login?token=${Buffer.from(token.token).toString("base64url")}`,
+          expiresAt: token.expires * 1000
+        }
+      : {})
+  };
+}
 
 /** Step 2 of QR login: re-export the token; Telegram answers with the account
  *  once the user has scanned it. `migrateTo` means retry against another DC. */
@@ -166,9 +202,18 @@ export async function pollQrLogin(pendingSession: string): Promise<QrPoll> {
       // redeem the token against it.
       await client._switchDC(result.dcId);
       const migrated = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
-      if (migrated instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client, pendingSession);
+      if (migrated instanceof Api.auth.LoginTokenSuccess) return authorizedResult(client, migratedKey(client, pendingSession));
+      // Still not accepted after the move. The session string has changed with
+      // the data centre, so hand the caller the new one to persist.
+      return pendingWithToken(client, pendingSession);
     }
-    return { status: "pending" };
+    // Not scanned yet — and `result` is a *brand new* token, because
+    // auth.exportLoginToken issues one on every call and invalidates the last.
+    // The QR already on screen is therefore dead, so it must be handed back and
+    // redrawn; otherwise the user scans a superseded token, their phone reports
+    // success, and this session waits forever for an acceptance that can never
+    // arrive. This is also what keeps the code fresh past its ~30 s expiry.
+    return pendingWithToken(client, pendingSession, result);
   } catch (err) {
     if (needsPassword(err)) {
       // The client authorised far enough to need a password; its session string

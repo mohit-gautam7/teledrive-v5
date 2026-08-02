@@ -50,8 +50,15 @@ export async function GET() {
       select: { mtprotoSession: true, mtprotoUserId: true, mtprotoPremium: true }
     });
     const linked = Boolean(config?.mtprotoSession);
+    // Name the exact variables that are missing. "Unavailable" with no reason is
+    // indistinguishable from a bug when the same build works on another host.
+    const missing = (["API_ID", "API_HASH", "SESSION_ENCRYPTION_KEY"] as const).filter(k => !process.env[k]);
     return NextResponse.json({
       available: mtprotoConfigured(),
+      // SESSION_ENCRYPTION_KEY is not needed to *start* a login, but without it
+      // lib/crypto stores the Telegram session in clear text, so linking is
+      // blocked rather than silently downgraded.
+      missingEnv: missing,
       linked,
       telegramUserId: config?.mtprotoUserId ?? null,
       premium: config?.mtprotoPremium ?? false,
@@ -75,9 +82,20 @@ export async function POST(request: NextRequest) {
     }
 
     if (!mtprotoConfigured()) {
+      const missing = (["API_ID", "API_HASH"] as const).filter(k => !process.env[k]);
       return NextResponse.json(
-        { error: "Large-file storage is not configured on this server (API_ID / API_HASH are missing)." },
+        { error: `Large-file storage is not configured on this server — missing ${missing.join(" and ")}.` },
         { status: 501 }
+      );
+    }
+    // Refuse before a session exists rather than storing one unencrypted.
+    if (!process.env.SESSION_ENCRYPTION_KEY) {
+      return NextResponse.json(
+        {
+          error:
+            "SESSION_ENCRYPTION_KEY is not set on this server, so your Telegram session cannot be stored encrypted. Linking is disabled until the site owner sets it."
+        },
+        { status: 503 }
       );
     }
 
@@ -108,7 +126,15 @@ export async function POST(request: NextRequest) {
         await savePendingLogin(user.id, result.pendingSession);
         return NextResponse.json({ status: "password" });
       }
-      return NextResponse.json({ status: "pending" });
+      // The session string rotates as Telegram moves the login between data
+      // centres, so persist whatever it is now — otherwise the next poll
+      // reconnects with a stale one and the scan is never seen.
+      await savePendingLogin(user.id, result.pendingSession);
+      return NextResponse.json({
+        status: "pending",
+        qrUrl: result.qrUrl,
+        expiresAt: result.expiresAt
+      });
     }
 
     if (input.action === "phone-code") {

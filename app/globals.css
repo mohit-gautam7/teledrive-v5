@@ -643,3 +643,30 @@ button:not(:disabled),
 }
 
 } /* @layer components */
+
+/* ── Motion ──────────────────────────────────────────────────────────────────
+   Some people get motion sickness or vestibular symptoms from movement on
+   screen, and the OS-level setting is how they say so. Transitions are reduced
+   to a near-instant cross-fade rather than removed outright: keeping a 1ms
+   duration means anything relying on a transitionend/animationend event still
+   fires, so nothing gets stuck waiting for an animation that never runs.
+   Framer Motion reads the same preference via useReducedMotion(). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Thumbnails reserve their box before the image decodes, so a grid of tiles
+   does not reflow line by line as each one arrives. */
+.thumb-box {
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--surface);
+  contain: paint;
+}

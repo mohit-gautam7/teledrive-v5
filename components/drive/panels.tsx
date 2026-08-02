@@ -346,6 +346,45 @@ export function SettingsPanel({
   );
 }
 
+
+/**
+ * One request for the whole AI section.
+ *
+ * The four cards below are independent components but must not each fetch: four
+ * concurrent calls serialise behind the pooler's single connection, and the card
+ * that lost the race rendered blank. They share one in-flight promise instead —
+ * whoever asks first triggers the request, everyone else awaits the same one.
+ *
+ * `reloadAiOverview()` after a mutation drops the cached promise so the next
+ * read is fresh.
+ */
+export type AiOverview = {
+  providers: AiProvider[];
+  keys: AiKeyRow[];
+  preferences: { mode: string; strategy: string; taskOverrides: Record<string, { mode?: string }> };
+  modes: string[];
+  automations: AutomationRow[];
+  usage: AiUsage;
+};
+
+let aiOverviewPromise: Promise<AiOverview> | null = null;
+
+function loadAiOverview(): Promise<AiOverview> {
+  if (!aiOverviewPromise) {
+    aiOverviewPromise = apiFetch<AiOverview>("/api/ai/overview").catch(err => {
+      // A failed attempt must not be cached, or every card retries nothing.
+      aiOverviewPromise = null;
+      throw err;
+    });
+  }
+  return aiOverviewPromise;
+}
+
+function reloadAiOverview(): Promise<AiOverview> {
+  aiOverviewPromise = null;
+  return loadAiOverview();
+}
+
 type AutomationRow = {
   id: string;
   name: string;
@@ -371,7 +410,7 @@ function AiToolsCard() {
   const [stepType, setStepType] = useState("ocr");
 
   const load = useCallback(() => {
-    apiFetch<{ automations: AutomationRow[] }>("/api/ai/automations")
+    loadAiOverview()
       .then(d => {
         setRules(d.automations);
         setAvailable(true);
@@ -418,7 +457,7 @@ function AiToolsCard() {
       });
       setName("");
       toast.success("Rule created.");
-      load();
+      reloadAiOverview().then(d => setRules(d.automations)).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not create the rule.");
     } finally {
@@ -434,7 +473,7 @@ function AiToolsCard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
       });
-      load();
+      reloadAiOverview().then(d => setRules(d.automations)).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not update the rule.");
     } finally {
@@ -447,7 +486,7 @@ function AiToolsCard() {
     try {
       await apiFetch(`/api/ai/automations/${row.id}`, { method: "DELETE" });
       toast.success("Rule removed.");
-      load();
+      reloadAiOverview().then(d => setRules(d.automations)).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not remove the rule.");
     } finally {
@@ -576,9 +615,7 @@ function AiModeCard() {
 
   useEffect(() => {
     let cancelled = false;
-    apiFetch<{ preferences: { mode: string; strategy: string; taskOverrides: Record<string, { mode?: string }> }; modes: string[] }>(
-      "/api/ai/settings"
-    )
+    loadAiOverview()
       .then(d => {
         if (cancelled) return;
         setMode(d.preferences.mode);
@@ -716,7 +753,7 @@ function AiUsageCard() {
 
   useEffect(() => {
     let cancelled = false;
-    apiFetch<AiUsage>(`/api/ai/usage?days=${days}`)
+    (days === 30 ? loadAiOverview().then(d => d.usage) : apiFetch<AiUsage>(`/api/ai/usage?days=${days}`))
       .then(d => {
         if (cancelled) return;
         setData(d);
@@ -867,7 +904,7 @@ function AiKeysCard() {
   const [baseUrl, setBaseUrl] = useState("");
 
   const load = useCallback(() => {
-    apiFetch<{ providers: AiProvider[]; keys: AiKeyRow[] }>("/api/ai/keys")
+    loadAiOverview()
       .then(d => {
         setProviders(d.providers);
         setKeys(d.keys);
@@ -912,7 +949,7 @@ function AiKeysCard() {
       setModel("");
       setBaseUrl("");
       toast.success("Key saved.");
-      load();
+      reloadAiOverview().then(d => { setProviders(d.providers); setKeys(d.keys); }).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not save the key.");
     } finally {
@@ -928,7 +965,7 @@ function AiKeysCard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
       });
-      load();
+      reloadAiOverview().then(d => setKeys(d.keys)).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not update the key.");
     } finally {
@@ -943,7 +980,7 @@ function AiKeysCard() {
     try {
       await apiFetch(`/api/ai/keys/${row.id}`, { method: "DELETE" });
       toast.success("Key removed.");
-      load();
+      reloadAiOverview().then(d => setKeys(d.keys)).catch(() => {});
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not remove the key.");
     } finally {
@@ -1104,6 +1141,19 @@ function AiKeysCard() {
   );
 }
 
+/**
+ * QR polling cadence.
+ *
+ * Telegram's login token lives ~30 s and every poll mints a fresh one, so this
+ * doubles as the redraw interval. Four seconds is frequent enough that the code
+ * on screen is always live, without minting tokens fast enough to trip a flood
+ * wait. Give-up is generous because a cold free-tier instance can take tens of
+ * seconds to answer the first request.
+ */
+const QR_POLL_MS = 4_000;
+const QR_GIVE_UP_MS = 3 * 60_000;
+const QR_MAX_FAILURES = 5;
+
 /** Link the user's own Telegram account over MTProto (QR or phone code). */
 function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onChanged: () => void }) {
   const [mode, setMode] = useState<"idle" | "qr" | "phone">("idle");
@@ -1113,53 +1163,131 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
   const [password, setPassword] = useState("");
   const [step, setStep] = useState<"start" | "code" | "password">("start");
   const [busy, setBusy] = useState(false);
+  const [qrError, setQrError] = useState("");
 
   const post = useCallback(async (body: Record<string, unknown>) => {
-    return apiFetch<{ status?: string; qrUrl?: string; premium?: boolean; name?: string }>("/api/telegram/link", {
+    return apiFetch<{ status?: string; qrUrl?: string; expiresAt?: number; premium?: boolean; name?: string }>("/api/telegram/link", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
     });
   }, []);
 
-  // Poll while a QR code is on screen; Telegram answers once it's scanned.
+  /**
+   * Poll while a QR is on screen.
+   *
+   * Every poll asks Telegram for the current login token, and Telegram issues a
+   * *new* one each time — so the answer always carries the QR that is actually
+   * live, and it is redrawn here. Without that the code on screen goes stale
+   * within one interval: the phone reports a successful scan while this panel
+   * waits forever for an acceptance that can never arrive.
+   *
+   * A self-scheduling timeout rather than setInterval, so a slow response on a
+   * cold Render instance cannot stack overlapping requests.
+   */
   useEffect(() => {
-    if (mode !== "qr" || !qrUrl) return;
+    if (mode !== "qr") return;
+
     let cancelled = false;
-    const timer = setInterval(async () => {
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    const startedAt = Date.now();
+
+    const tick = async () => {
+      if (cancelled) return;
+
+      if (Date.now() - startedAt > QR_GIVE_UP_MS) {
+        setQrError("This QR code expired. Start again, or use your phone number.");
+        return;
+      }
+
       try {
         const result = await post({ action: "qr-poll" });
         if (cancelled) return;
+        failures = 0;
+        setQrError("");
+
         if (result.status === "linked") {
           toast.success(`Telegram account linked${result.premium ? " (Premium — 4 GB files)" : ""}`);
           setMode("idle");
           setQrUrl("");
           onChanged();
-        } else if (result.status === "password") {
+          return;
+        }
+        if (result.status === "password") {
+          // A 2FA account gets this far and then needs the cloud password.
           setStep("password");
           setMode("phone");
           setQrUrl("");
+          toast.info("Two-step verification is on — enter your cloud password.");
+          return;
         }
-      } catch {
-        /* keep polling — the token is valid for ~30s and we re-issue below */
+        // Still waiting. Redraw whatever token is current now.
+        if (result.qrUrl) setQrUrl(result.qrUrl);
+      } catch (err) {
+        if (cancelled) return;
+        // A 409 means the server has no half-finished login left (restart, or
+        // it was cleared) — polling can never succeed, so say so and stop.
+        if (err instanceof ApiError && err.status === 409) {
+          setQrError("This login attempt expired. Start again.");
+          return;
+        }
+        // Anything else — a cold instance, a dropped connection — is worth
+        // retrying, backing off so a sleeping host is not hammered.
+        failures += 1;
+        if (failures >= QR_MAX_FAILURES) {
+          setQrError("Lost contact with the server. Check your connection and start again.");
+          return;
+        }
       }
-    }, 3000);
+
+      timer = setTimeout(tick, failures ? Math.min(QR_POLL_MS * 2 ** failures, 15_000) : QR_POLL_MS);
+    };
+
+    timer = setTimeout(tick, QR_POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
-  }, [mode, qrUrl, post, onChanged]);
+  }, [mode, post, onChanged]);
 
   if (!link) return <section className="panel p-5"><PanelSkeleton rows={1} /></section>;
 
-  if (!link.available) {
+  const missing = link.missingEnv ?? [];
+
+  // Naming the variables matters: the same build behaves differently per host
+  // purely on environment, and "unavailable" with no reason is indistinguishable
+  // from a bug when it works on localhost.
+  if (!link.available || missing.length) {
     return (
       <section className="panel p-5">
-        <h2 className="display t-h2">Large files</h2>
+        <h2 className="display t-h2">Your Telegram account</h2>
         <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
-          This server has no Telegram <span className="mono">API_ID</span> / <span className="mono">API_HASH</span>, so
-          account linking is unavailable. Bot storage still handles files up to {formatBytes(MAX_FILE_SIZE)}.
+          Account linking is unavailable on this host because{" "}
+          {missing.length ? (
+            <>
+              {missing.length === 1 ? "this variable is" : "these variables are"} not set:{" "}
+              {missing.map((k, i) => (
+                <span key={k}>
+                  {i > 0 ? ", " : ""}
+                  <span className="mono">{k}</span>
+                </span>
+              ))}
+              .
+            </>
+          ) : (
+            <>
+              <span className="mono">API_ID</span> / <span className="mono">API_HASH</span> are not set.
+            </>
+          )}{" "}
+          Bot storage still handles files up to {formatBytes(MAX_FILE_SIZE)}.
         </p>
+        {missing.includes("SESSION_ENCRYPTION_KEY") ? (
+          <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+            <span className="mono">SESSION_ENCRYPTION_KEY</span> encrypts the stored Telegram session. Linking is
+            blocked without it rather than saving your session in clear text.
+          </p>
+        ) : null}
       </section>
     );
   }
@@ -1210,6 +1338,7 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
               try {
                 const result = await post({ action: "qr-start" });
                 setQrUrl(result.qrUrl || "");
+                setQrError("");
                 setMode("qr");
               } catch (err) {
                 toast.error(err instanceof Error ? err.message : "Could not start QR login.");
@@ -1233,8 +1362,40 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
             {/* Rendered from the tg:// login URL Telegram returned. */}
             <QrCanvas value={qrUrl} />
           </div>
+          {qrError ? (
+            <p className="t-sm mt-3 rounded-xl px-3.5 py-3 leading-relaxed"
+               style={{ background: "var(--danger-dim)", border: "1px solid var(--danger-border)", color: "var(--danger)" }}>
+              {qrError}
+            </p>
+          ) : (
+            <p className="t-xs mt-2 flex items-center gap-2" style={{ color: "var(--text-3)" }}>
+              <Loader2 className="h-3 w-3 animate-spin" /> Waiting for the scan — the code refreshes itself.
+            </p>
+          )}
           <div className="mt-3 flex gap-2">
-            <button className="btn btn-ghost" onClick={() => { setMode("idle"); setQrUrl(""); }}>Cancel</button>
+            <button className="btn btn-ghost" onClick={() => { setMode("idle"); setQrUrl(""); setQrError(""); }}>
+              {qrError ? "Back" : "Cancel"}
+            </button>
+            {qrError ? (
+              <button
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const result = await post({ action: "qr-start" });
+                    setQrUrl(result.qrUrl || "");
+                    setQrError("");
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : "Could not start QR login.");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Try again
+              </button>
+            ) : null}
           </div>
         </div>
       ) : (

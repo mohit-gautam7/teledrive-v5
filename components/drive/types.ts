@@ -68,7 +68,9 @@ export type TelegramLink = {
   telegramUserId: string | null;
   premium: boolean;
   maxBytes: number;
-};
+
+  /** Names of env vars this host is missing, so the card can say which. */
+  missingEnv?: string[];};
 
 export type ShareRow = {
   id: string;
