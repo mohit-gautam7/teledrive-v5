@@ -21,6 +21,24 @@ model User {
   aiKeys         AiKey[]
   aiUsage        AiUsage[]
   jobs           Job[]
+  aiPreference   AiPreference?
+}
+
+/// How this user wants AI requests routed. One row per user; absent means the
+/// defaults in lib/ai/modes.ts apply.
+model AiPreference {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  /// free | premium | hybrid | offline | custom
+  mode      String   @default("hybrid")
+  /// Rotation strategy when the mode does not dictate one.
+  strategy  String   @default("priority")
+  /// Per-task overrides: { "summarize": { "mode": "offline" }, … }
+  /// A task absent from this map uses `mode`.
+  taskOverrides Json @default("{}")
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 /// One bring-your-own API key. The secret is stored encrypted (AES-256-GCM, see

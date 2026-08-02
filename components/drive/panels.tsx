@@ -24,7 +24,7 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
 import { MAX_FILE_SIZE } from "@/lib/upload-config";
-import type { AiKeyRow, AiProvider, Insights, ShareRow, TelegramLink, ThemeMode } from "./types";
+import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
 
@@ -317,6 +317,10 @@ export function SettingsPanel({
 
       <AiKeysCard />
 
+      <AiModeCard />
+
+      <AiUsageCard />
+
       <section className="panel p-5 lg:col-span-2">
         <h2 className="display t-h2">Limits</h2>
         <ul className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -337,6 +341,303 @@ export function SettingsPanel({
         </p>
       </section>
     </div>
+  );
+}
+
+/** Tasks the user can route differently from their account-wide default. */
+const AI_TASKS: Array<[string, string]> = [
+  ["summarize", "Summarize"],
+  ["translate", "Translate"],
+  ["chat", "Document chat"],
+  ["ocr", "Image OCR"],
+  ["caption", "Image caption"],
+  ["transcribe", "Transcribe"]
+];
+
+const MODE_BLURB: Record<string, string> = {
+  free: "Only keys that cost nothing — local, or priced at 0. An unpriced key is excluded, because unknown is not free.",
+  premium: "Every enabled key, best-first by the priority you set.",
+  hybrid: "Every enabled key, cheapest first, falling back up the chain.",
+  offline: "Only your own machine. Nothing leaves it.",
+  custom: "Your own strategy, plus per-task overrides below."
+};
+
+/** Account-wide AI mode, with per-task overrides. */
+function AiModeCard() {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [modes, setModes] = useState<string[]>([]);
+  const [mode, setMode] = useState("hybrid");
+  const [strategy, setStrategy] = useState("priority");
+  const [overrides, setOverrides] = useState<Record<string, { mode?: string }>>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch<{ preferences: { mode: string; strategy: string; taskOverrides: Record<string, { mode?: string }> }; modes: string[] }>(
+      "/api/ai/settings"
+    )
+      .then(d => {
+        if (cancelled) return;
+        setMode(d.preferences.mode);
+        setStrategy(d.preferences.strategy);
+        setOverrides(d.preferences.taskOverrides || {});
+        setModes(d.modes);
+        setAvailable(true);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setAvailable(false);
+        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load AI settings.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = async (next: { mode?: string; strategy?: string; taskOverrides?: Record<string, { mode?: string }> }) => {
+    const body = { mode, strategy, taskOverrides: overrides, ...next };
+    setSaving(true);
+    try {
+      await apiFetch("/api/ai/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      setMode(body.mode);
+      setStrategy(body.strategy);
+      setOverrides(body.taskOverrides);
+      toast.success("AI mode saved.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save AI settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (available !== true) return null;
+
+  return (
+    <section className="panel p-5 lg:col-span-2">
+      <h2 className="display t-h2">AI mode</h2>
+      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        {MODE_BLURB[mode] || ""}
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {modes.map(m => (
+          <button
+            key={m}
+            onClick={() => save({ mode: m })}
+            disabled={saving}
+            className={mode === m ? "btn btn-accent" : "btn btn-ghost"}
+            style={{ minHeight: 40, textTransform: "capitalize" }}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {mode === "custom" && (
+        <label className="mt-4 grid gap-1 sm:max-w-xs">
+          <span className="eyebrow">Key rotation</span>
+          <select value={strategy} onChange={e => save({ strategy: e.target.value })} disabled={saving} className="field" style={{ minHeight: 44 }}>
+            {["priority", "round-robin", "least-used", "lowest-cost", "fastest"].map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      <div className="mt-5">
+        <p className="eyebrow">Per-task override</p>
+        <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>
+          Leave as “Default” to use the mode above. Useful for keeping something sensitive offline while everything
+          else uses a hosted model.
+        </p>
+        <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
+          {AI_TASKS.map(([task, label]) => (
+            <li key={task} className="flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: "var(--surface)" }}>
+              <span className="t-sm" style={{ color: "var(--text-1)" }}>{label}</span>
+              <select
+                value={overrides[task]?.mode || ""}
+                disabled={saving}
+                onChange={e => {
+                  const next = { ...overrides };
+                  if (e.target.value) next[task] = { mode: e.target.value };
+                  else delete next[task];
+                  save({ taskOverrides: next });
+                }}
+                className="field"
+                style={{ width: 130, minHeight: 36, padding: "0.3rem 0.5rem" }}
+                aria-label={`Mode for ${label}`}
+              >
+                <option value="">Default</option>
+                {modes.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+/** Micro-USD to a readable amount. Sub-cent spend is common, so it does not
+ *  round to two places and claim $0.00 for real usage. */
+function formatUsd(micros: number) {
+  const usd = micros / 1_000_000;
+  if (usd === 0) return "$0";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function formatTokens(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/**
+ * AI usage and spend.
+ *
+ * Cost is only meaningful for models the operator has priced (AI_PRICING_JSON),
+ * so the card reports how many calls were priced rather than presenting a total
+ * that silently ignores the rest.
+ */
+function AiUsageCard() {
+  const [data, setData] = useState<AiUsage | null>(null);
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [days, setDays] = useState(30);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch<AiUsage>(`/api/ai/usage?days=${days}`)
+      .then(d => {
+        if (cancelled) return;
+        setData(d);
+        setAvailable(true);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setAvailable(false);
+        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load AI usage.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
+
+  if (available !== true || !data) return null;
+
+  const peak = Math.max(1, ...data.byDay.map(d => d.calls));
+  const unpriced = data.calls - data.pricedCalls;
+
+  return (
+    <section className="panel p-5 lg:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="display t-h2">AI usage</h2>
+        <div className="flex gap-1.5">
+          {[7, 30, 90].map(d => (
+            <button key={d} onClick={() => setDays(d)} className={days === d ? "btn btn-accent" : "btn btn-ghost"} style={{ minHeight: 34, fontSize: 12 }}>
+              {d}d
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {data.calls === 0 ? (
+        <p className="t-sm mt-4" style={{ color: "var(--text-3)" }}>
+          No AI calls in the last {data.days} days.
+        </p>
+      ) : (
+        <>
+          <ul className="mt-4 grid gap-3 sm:grid-cols-4">
+            {[
+              ["Calls", String(data.calls)],
+              ["Tokens", formatTokens(data.promptTokens + data.completionTokens)],
+              ["Cost", formatUsd(data.costMicros)],
+              ["Avg latency", `${data.avgLatencyMs} ms`]
+            ].map(([label, value]) => (
+              <li key={label} className="rounded-xl p-3.5" style={{ background: "var(--surface)" }}>
+                <p className="eyebrow">{label}</p>
+                <p className="t-body mt-1 font-semibold" style={{ color: "var(--text-1)" }}>{value}</p>
+              </li>
+            ))}
+          </ul>
+
+          {(unpriced > 0 || data.errors > 0) && (
+            <p className="t-xs mt-3" style={{ color: "var(--text-3)" }}>
+              {unpriced > 0 && (
+                <>
+                  {unpriced} of {data.calls} calls have no configured price, so they are not counted in the cost.
+                  Set <span className="mono">AI_PRICING_JSON</span> to include them.
+                </>
+              )}
+              {unpriced > 0 && data.errors > 0 ? " " : ""}
+              {data.errors > 0 && <>{data.errors} call{data.errors === 1 ? "" : "s"} failed.</>}
+            </p>
+          )}
+
+          {/* Per-day calls. A plain CSS bar chart — no charting dependency for
+              what is a single series. */}
+          {data.byDay.length > 0 && (
+            <div className="mt-5">
+              <p className="eyebrow">Calls per day</p>
+              <div className="mt-2 flex items-end gap-1" style={{ height: 72 }}>
+                {data.byDay.map(d => (
+                  <div
+                    key={d.day}
+                    title={`${d.day} · ${d.calls} call${d.calls === 1 ? "" : "s"} · ${formatUsd(d.costMicros)}`}
+                    className="flex-1 rounded-t"
+                    style={{
+                      height: `${Math.max(4, (d.calls / peak) * 100)}%`,
+                      background: "var(--accent)",
+                      opacity: 0.55,
+                      minWidth: 3
+                    }}
+                  />
+                ))}
+              </div>
+              <div className="t-xs mt-1 flex justify-between" style={{ color: "var(--text-3)" }}>
+                <span>{data.byDay[0]?.day}</span>
+                <span>{data.byDay[data.byDay.length - 1]?.day}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <p className="eyebrow">By provider</p>
+              <ul className="mt-2 grid gap-1.5">
+                {data.byProvider.map(p => (
+                  <li key={p.provider} className="flex items-center justify-between rounded-lg px-3 py-2" style={{ background: "var(--surface)" }}>
+                    <span className="t-sm" style={{ color: "var(--text-1)" }}>{p.provider}</span>
+                    <span className="t-xs mono" style={{ color: "var(--text-3)" }}>
+                      {p.calls} · {formatTokens(p.promptTokens + p.completionTokens)} · {formatUsd(p.costMicros)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="eyebrow">By task</p>
+              <ul className="mt-2 grid gap-1.5">
+                {data.byTask.map(t => (
+                  <li key={t.task} className="flex items-center justify-between rounded-lg px-3 py-2" style={{ background: "var(--surface)" }}>
+                    <span className="t-sm" style={{ color: "var(--text-1)" }}>{t.task}</span>
+                    <span className="t-xs mono" style={{ color: "var(--text-3)" }}>
+                      {t.calls} · {formatUsd(t.costMicros)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -416,13 +717,13 @@ function AiKeysCard() {
     }
   };
 
-  const toggle = async (row: AiKeyRow) => {
+  const patch = async (row: AiKeyRow, body: Record<string, unknown>) => {
     setBusy(row.id);
     try {
       await apiFetch(`/api/ai/keys/${row.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enabled: !row.enabled })
+        body: JSON.stringify(body)
       });
       load();
     } catch (err) {
@@ -431,6 +732,8 @@ function AiKeysCard() {
       setBusy(null);
     }
   };
+
+  const toggle = (row: AiKeyRow) => patch(row, { enabled: !row.enabled });
 
   const remove = async (row: AiKeyRow) => {
     setBusy(row.id);
@@ -476,6 +779,46 @@ function AiKeysCard() {
                     <p className="t-xs mt-1" style={{ color: "var(--danger)" }}>{row.lastError}</p>
                   )}
                 </div>
+
+                {/* Priority orders the router's fallback chain; the limit caps
+                    spend per UTC day. Both are stored in micro-USD server-side,
+                    but a person thinks in dollars, so the field converts. */}
+                <label className="t-xs flex items-center gap-1.5" style={{ color: "var(--text-3)" }}>
+                  Priority
+                  <input
+                    type="number"
+                    min={0}
+                    max={1000}
+                    defaultValue={row.priority}
+                    onBlur={e => {
+                      const next = Number(e.target.value);
+                      if (Number.isFinite(next) && next !== row.priority) patch(row, { priority: next });
+                    }}
+                    className="field mono"
+                    style={{ width: 68, minHeight: 36, padding: "0.3rem 0.5rem" }}
+                    aria-label={`Priority for ${row.nickname}`}
+                  />
+                </label>
+
+                <label className="t-xs flex items-center gap-1.5" style={{ color: "var(--text-3)" }}>
+                  $/day
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    placeholder="none"
+                    defaultValue={row.dailyLimitMicros === null ? "" : row.dailyLimitMicros / 1_000_000}
+                    onBlur={e => {
+                      const raw = e.target.value.trim();
+                      const next = raw === "" ? null : Math.round(Number(raw) * 1_000_000);
+                      if (next !== null && !Number.isFinite(next)) return;
+                      if (next !== row.dailyLimitMicros) patch(row, { dailyLimitMicros: next });
+                    }}
+                    className="field mono"
+                    style={{ width: 84, minHeight: 36, padding: "0.3rem 0.5rem" }}
+                    aria-label={`Daily spend limit for ${row.nickname}`}
+                  />
+                </label>
 
                 <Tag tone={!row.enabled ? "danger" : row.health === "ok" ? "ok" : row.health === "failing" ? "danger" : undefined}>
                   {row.enabled ? row.health : "off"}

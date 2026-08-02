@@ -7,6 +7,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { run, estimate, NoKeyAvailableError } from "@/lib/ai/router";
 import { ProviderError } from "@/lib/ai/client";
 import { enqueue } from "@/lib/jobs/queue";
+import { AI_MODES, resolvePlan } from "@/lib/ai/modes";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -34,6 +35,8 @@ const body = z.object({
   strategy: z.enum(["priority", "round-robin", "least-used", "lowest-cost", "fastest"]).optional(),
   maxTokens: z.number().int().min(1).max(32_000).optional(),
   temperature: z.number().min(0).max(2).optional(),
+  /** Overrides the account mode for this one request. */
+  mode: z.enum(AI_MODES).optional(),
   estimateOnly: z.boolean().optional(),
   async: z.boolean().optional()
 });
@@ -75,12 +78,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ job });
     }
 
+    // The mode decides which keys may answer; anything the caller states
+    // explicitly (providers, strategy) still wins over the resolved plan.
+    const plan = await resolvePlan(user.id, input.task, input.mode);
     const result = await run({
       userId: user.id,
       task: input.task,
       messages: input.messages,
-      providers: input.providers,
-      strategy: input.strategy,
+      providers: input.providers ?? plan.providers,
+      strategy: input.strategy ?? plan.strategy,
+      localOnly: plan.localOnly,
+      freeOnly: plan.freeOnly,
       maxTokens: input.maxTokens,
       temperature: input.temperature,
       signal: request.signal

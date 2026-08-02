@@ -51,6 +51,22 @@ export async function GET(request: NextRequest) {
 
     const errors = await prisma.aiUsage.count({ where: { ...scope, status: "error" } });
 
+    // Per-day series. Prisma cannot group by a date truncation, so this is raw
+    // SQL; date_trunc runs in UTC to match the router's daily-limit window.
+    const daily = await prisma.$queryRaw<
+      Array<{ day: Date; calls: bigint; prompt: bigint | null; completion: bigint | null; cost: bigint | null }>
+    >`
+      SELECT date_trunc('day', "createdAt") AS day,
+             COUNT(*)                       AS calls,
+             SUM("promptTokens")            AS prompt,
+             SUM("completionTokens")        AS completion,
+             SUM("costMicros")              AS cost
+      FROM "AiUsage"
+      WHERE "userId" = ${user.id} AND "createdAt" >= ${since}
+      GROUP BY 1
+      ORDER BY 1 ASC
+    `;
+
     return NextResponse.json({
       days,
       calls: totals._count._all,
@@ -71,6 +87,13 @@ export async function GET(request: NextRequest) {
         task: t.task,
         calls: t._count._all,
         costMicros: Number(t._sum.costMicros ?? BigInt(0))
+      })),
+      byDay: daily.map(d => ({
+        day: d.day.toISOString().slice(0, 10),
+        calls: Number(d.calls),
+        promptTokens: Number(d.prompt ?? 0),
+        completionTokens: Number(d.completion ?? 0),
+        costMicros: Number(d.cost ?? 0)
       }))
     });
   } catch (error) {

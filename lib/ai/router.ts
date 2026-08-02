@@ -28,6 +28,11 @@ export type RunOptions = {
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  /** Offline mode: only the user's own machine may answer. */
+  localOnly?: boolean;
+  /** Free mode: only keys that provably cost nothing. An unpriced key is not
+   *  free — its price is merely unknown — so it is excluded. */
+  freeOnly?: boolean;
 };
 
 export type RunResult = ChatResult & {
@@ -221,6 +226,22 @@ async function candidatesFor(userId: string, providers?: string[]): Promise<Cand
   });
 }
 
+/**
+ * Whether a key satisfies the mode's constraints.
+ *
+ * "Free" deliberately requires a *known* zero price. Treating an unpriced model
+ * as free is how a free mode quietly spends money.
+ */
+function modeAllows(c: Candidate, opts: Pick<RunOptions, "localOnly" | "freeOnly">) {
+  if (opts.localOnly && c.provider !== "local") return false;
+  if (opts.freeOnly) {
+    if (c.provider === "local") return true;
+    const price = c.model ? priceFor(c.provider, c.model) : null;
+    return price !== null && price.in === 0 && price.out === 0;
+  }
+  return true;
+}
+
 export class NoKeyAvailableError extends Error {
   status = 409;
   constructor(message: string) {
@@ -262,7 +283,18 @@ export async function run(opts: RunOptions): Promise<RunResult> {
 
   const spend = await todaySpend(candidates.map(c => c.id));
 
-  const usable = candidates.filter(c => {
+  const eligible = candidates.filter(c => modeAllows(c, opts));
+  if (!eligible.length) {
+    throw new NoKeyAvailableError(
+      opts.localOnly
+        ? "Offline mode only uses local keys, and you have none enabled. Add a Local key in Settings."
+        : opts.freeOnly
+          ? "Free mode only uses keys that cost nothing — a local key, or one priced at 0 in AI_PRICING_JSON."
+          : "No enabled AI key matches this mode."
+    );
+  }
+
+  const usable = eligible.filter(c => {
     if (!c.model) return false;
     if (c.dailyLimitMicros === null) return true;
     return (spend.get(c.id)?.micros ?? BigInt(0)) < c.dailyLimitMicros;

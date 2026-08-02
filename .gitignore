@@ -127,3 +127,8 @@ vercel-env.txt
 # Local-only helper scripts (test harnesses, dev server wrapper)
 *.local.mjs
 *.local.sh
+
+# Local-only test artifacts (session tokens, throwaway scripts)
+*.local.txt
+*.local.mjs
+*.local.bin

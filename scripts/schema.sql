@@ -125,3 +125,24 @@ BEGIN
       FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;
 END $$;
+
+-- AiPreference: per-user AI routing mode and per-task overrides (Phase 2).
+CREATE TABLE IF NOT EXISTS "AiPreference" (
+  "id"            TEXT NOT NULL,
+  "userId"        TEXT NOT NULL,
+  "mode"          TEXT NOT NULL DEFAULT 'hybrid',
+  "strategy"      TEXT NOT NULL DEFAULT 'priority',
+  "taskOverrides" JSONB NOT NULL DEFAULT '{}',
+  "updatedAt"     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdAt"     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "AiPreference_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "AiPreference_userId_key" ON "AiPreference"("userId");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'AiPreference_userId_fkey') THEN
+    ALTER TABLE "AiPreference" ADD CONSTRAINT "AiPreference_userId_fkey"
+      FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;

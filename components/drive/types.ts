@@ -98,6 +98,23 @@ export type Insights = {
 
 export const BOT_USERNAME = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "";
 
+/** Aggregated AI spend. `costMicros` is micro-USD; see AiUsage.pricedCalls. */
+export type AiUsage = {
+  days: number;
+  calls: number;
+  errors: number;
+  /** How many of `calls` had a configured price. The rest contribute nothing to
+   *  costMicros, so a total without this number is misleading. */
+  pricedCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  costMicros: number;
+  avgLatencyMs: number;
+  byProvider: Array<{ provider: string; calls: number; promptTokens: number; completionTokens: number; costMicros: number }>;
+  byTask: Array<{ task: string; calls: number; costMicros: number }>;
+  byDay: Array<{ day: string; calls: number; promptTokens: number; completionTokens: number; costMicros: number }>;
+};
+
 /** A provider the vault can hold keys for. Mirrors publicProviders() — no secrets. */
 export type AiProvider = {
   id: string;

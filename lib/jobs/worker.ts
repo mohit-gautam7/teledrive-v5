@@ -2,6 +2,7 @@ import { claim, complete, fail, requeueStuck, type ClaimedJob } from "@/lib/jobs
 import { jobWorkerEnabled } from "@/lib/feature-flags";
 import { run as runAi } from "@/lib/ai/router";
 import type { ChatMessage } from "@/lib/ai/client";
+import { resolvePlan } from "@/lib/ai/modes";
 
 /**
  * The loop that drains the job queue. Started once per always-on process from
@@ -25,11 +26,18 @@ const handlers: Record<string, Handler> = {
   "ai.completion": async job => {
     const payload = job.payload as AiCompletionPayload;
     if (!payload?.messages?.length) throw new Error("ai.completion job has no messages.");
+    const task = payload.task || "ai.completion";
+    // Resolved at run time, not enqueue time: a job that waited in the queue
+    // should honour the mode the user has now, not the one they had then.
+    const plan = await resolvePlan(job.userId, task);
     const result = await runAi({
       userId: job.userId,
-      task: payload.task || "ai.completion",
+      task,
       messages: payload.messages,
-      providers: payload.providers,
+      providers: payload.providers ?? plan.providers,
+      strategy: plan.strategy,
+      localOnly: plan.localOnly,
+      freeOnly: plan.freeOnly,
       maxTokens: payload.maxTokens
     });
     // The generated text plus what it cost — no key material.
