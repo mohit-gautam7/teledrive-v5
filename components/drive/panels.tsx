@@ -199,7 +199,16 @@ const TYPE_COLORS: Record<string, string> = {
   document: "var(--amber)"
 };
 
-export function InsightsPanel({ insights, onOpenFile }: { insights: Insights | null; onOpenFile: (id: string) => void }) {
+export function InsightsPanel({
+  insights,
+  user,
+  onOpenFile
+}: {
+  insights: Insights | null;
+  /** Shown as the header of the stats view when it is opened from the profile. */
+  user?: { name: string; username?: string | null };
+  onOpenFile: (id: string) => void;
+}) {
   // The sidebar's cheap stats call only fills totalSize/count; wait for the
   // full breakdown before drawing the charts.
   if (!insights?.byType || !insights.byBackend || !insights.largest) return <PanelSkeleton rows={2} />;
@@ -208,11 +217,31 @@ export function InsightsPanel({ insights, onOpenFile }: { insights: Insights | n
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      {user ? (
+        <section className="panel flex items-center gap-4 p-5 lg:col-span-2">
+          <span
+            className="grid h-14 w-14 shrink-0 place-items-center rounded-full text-xl font-bold"
+            style={{ background: "var(--accent-grad)", color: "#04070c" }}
+          >
+            {user.name.charAt(0).toUpperCase()}
+          </span>
+          <div className="min-w-0">
+            <p className="display truncate t-h2">{user.name}</p>
+            <p className="mono truncate" style={{ color: "var(--text-3)" }}>
+              {user.username ? `@${user.username}` : "Telegram"}
+            </p>
+          </div>
+        </section>
+      ) : null}
+
       <section className="panel p-5 lg:col-span-2">
         <p className="eyebrow">Total stored</p>
         <p className="display mt-1" style={{ fontSize: "clamp(2rem,6vw,3rem)" }}>{formatBytes(insights.totalSize)}</p>
         <p className="t-sm mt-1" style={{ color: "var(--text-2)" }}>
           {insights.count} file{insights.count === 1 ? "" : "s"}
+          {insights.folderCount !== undefined
+            ? ` · ${insights.folderCount} folder${insights.folderCount === 1 ? "" : "s"}`
+            : ""}
           {insights.trashCount ? ` · ${formatBytes(insights.trashSize)} recoverable in trash` : ""}
         </p>
 

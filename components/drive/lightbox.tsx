@@ -28,12 +28,12 @@ function Unsupported({
   icon,
   title,
   body,
-  fileId
+  onDownload
 }: {
   icon: React.ReactNode;
   title: string;
   body: string;
-  fileId: string;
+  onDownload: () => void;
 }) {
   return (
     <div className="px-6 text-center">
@@ -45,9 +45,131 @@ function Unsupported({
       </span>
       <p className="t-body font-semibold" style={{ color: "var(--text-2)" }}>{title}</p>
       <p className="t-sm mx-auto mt-1 max-w-[40ch]" style={{ color: "var(--text-3)" }}>{body}</p>
-      <a href={`/api/download/${fileId}`} className="btn btn-accent mt-5">
+      <button onClick={onDownload} className="btn btn-accent mt-5">
         <Download className="h-4 w-4" /> Download
-      </a>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * A video that survives a bad connection.
+ *
+ * Streaming a multi-gigabyte file from Telegram through this app means every few
+ * seconds of playback is a fresh ranged request, and on a weak link one of them
+ * will eventually fail. The media element's answer to that is to fire `error`
+ * and reset — which threw away the position and dropped the viewer at 0:00 with
+ * a "couldn't load this file" card, twenty minutes into a film.
+ *
+ * So a network failure is treated as what it usually is: a stall. The position
+ * is remembered, the element is reloaded and seeked straight back to it, and the
+ * overlay says it is reconnecting. Only a failure that cannot be recovered
+ * several times over — or one the browser reports as an unplayable format —
+ * becomes the failure card. Buffering gets the same overlay rather than a frozen
+ * frame, so "still working" never looks like "broken".
+ */
+const MAX_STREAM_RECOVERIES = 6;
+
+function VideoStage({
+  src,
+  fileId,
+  onLoaded,
+  onUnrecoverable
+}: {
+  src: string;
+  fileId: string;
+  onLoaded: () => void;
+  onUnrecoverable: () => void;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const [state, setState] = useState<"idle" | "buffering" | "reconnecting">("buffering");
+  const recoveries = useRef(0);
+  const resumeAt = useRef(0);
+
+  // A fresh file starts a fresh budget: recoveries spent on the last video must
+  // not count against this one.
+  useEffect(() => {
+    recoveries.current = 0;
+    resumeAt.current = 0;
+    setState("buffering");
+  }, [fileId]);
+
+  const handleError = useCallback(() => {
+    const el = ref.current;
+    const code = el?.error?.code;
+    // A format the browser cannot decode will fail identically every time, so
+    // retrying it just spins. Only network/decode failures are worth another go.
+    const recoverable =
+      code === MediaError.MEDIA_ERR_NETWORK || code === MediaError.MEDIA_ERR_DECODE || code === undefined;
+
+    if (!el || !recoverable || recoveries.current >= MAX_STREAM_RECOVERIES) {
+      onUnrecoverable();
+      return;
+    }
+
+    recoveries.current += 1;
+    setState("reconnecting");
+    const wasPlaying = !el.paused;
+    // Back off a little: hammering a link that just dropped a window rarely
+    // helps, and the delay is invisible next to the stall the viewer already saw.
+    window.setTimeout(() => {
+      const current = ref.current;
+      if (!current) return;
+      current.load();
+      const seekBack = () => {
+        if (resumeAt.current > 0) current.currentTime = resumeAt.current;
+        if (wasPlaying) void current.play().catch(() => {});
+        current.removeEventListener("loadedmetadata", seekBack);
+      };
+      current.addEventListener("loadedmetadata", seekBack);
+    }, 400 * recoveries.current);
+  }, [onUnrecoverable]);
+
+  return (
+    <div className="relative flex max-h-full max-w-full items-center justify-center">
+      <video
+        ref={ref}
+        src={src}
+        controls
+        playsInline
+        // Metadata up front so duration and the scrub bar work immediately;
+        // seeking then issues Range requests against /api/stream.
+        preload="metadata"
+        onLoadedMetadata={() => {
+          setState("idle");
+          onLoaded();
+        }}
+        // The position is sampled continuously rather than read at failure time:
+        // by the time `error` fires the element has often already reset it to 0.
+        onTimeUpdate={event => {
+          const time = (event.currentTarget as HTMLVideoElement).currentTime;
+          if (time > 0) resumeAt.current = time;
+        }}
+        onWaiting={() => setState(s => (s === "reconnecting" ? s : "buffering"))}
+        onStalled={() => setState(s => (s === "reconnecting" ? s : "buffering"))}
+        onPlaying={() => {
+          setState("idle");
+          // Playback resumed, so whatever went wrong is behind us and the next
+          // rough patch deserves a full budget of its own.
+          recoveries.current = 0;
+        }}
+        onCanPlay={() => setState("idle")}
+        onError={handleError}
+        className="rounded-xl"
+        style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", background: "#000" }}
+      />
+
+      {state !== "idle" ? (
+        <span
+          className="pointer-events-none absolute inset-x-0 top-3 mx-auto flex w-fit items-center gap-2 rounded-full px-3 py-1.5"
+          style={{ background: "rgba(4,6,12,0.78)", border: "1px solid var(--border-med)" }}
+        >
+          <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: "var(--accent)" }} />
+          <span className="mono" style={{ color: "var(--text-2)" }}>
+            {state === "reconnecting" ? "Reconnecting…" : "Buffering…"}
+          </span>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -60,12 +182,15 @@ export function Lightbox({
   file,
   allFiles,
   onClose,
-  onNavigate
+  onNavigate,
+  onDownload
 }: {
   file: DriveFile;
   allFiles: DriveFile[];
   onClose: () => void;
   onNavigate: (file: DriveFile) => void;
+  /** Routed through the app so the transfer joins the panel with the rest. */
+  onDownload: (file: DriveFile) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
@@ -197,7 +322,7 @@ export function Lightbox({
             icon={<Icon className="h-9 w-9" style={{ color: "var(--danger)" }} />}
             title="Couldn't load this file"
             body="The transfer failed or the format isn't playable in a browser. Downloading it will still work."
-            fileId={file.id}
+            onDownload={() => onDownload(file)}
           />
         ) : image ? (
           <img
@@ -224,18 +349,12 @@ export function Lightbox({
             }
           />
         ) : video ? (
-          <video
+          <VideoStage
             key={file.id}
             src={src}
-            controls
-            playsInline
-            // Metadata up front so duration and the scrub bar work immediately;
-            // seeking then issues Range requests against /api/stream.
-            preload="metadata"
-            onLoadedMetadata={() => setLoaded(true)}
-            onError={() => setFailed(true)}
-            className="rounded-xl"
-            style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", background: "#000" }}
+            fileId={file.id}
+            onLoaded={() => setLoaded(true)}
+            onUnrecoverable={() => setFailed(true)}
           />
         ) : audio ? (
           <div className="w-full max-w-lg text-center">
@@ -261,7 +380,7 @@ export function Lightbox({
                 ? "Browsers can't display HEIC/HEIF. Download it to view."
                 : "This file type can't be shown in the browser."
             }
-            fileId={file.id}
+            onDownload={() => onDownload(file)}
           />
         )}
 

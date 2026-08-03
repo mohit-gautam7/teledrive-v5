@@ -1,5 +1,34 @@
+import { handleFromDataTransferItem, rememberHandle } from "@/lib/upload-store";
+
 /** A file plus the folder path it should be filed under, relative to the drop target. */
 export type PickedFile = { file: File; path?: string };
+
+/**
+ * Keep a durable handle for each dropped file, so an upload interrupted by a
+ * reload can pick the bytes back up on its own.
+ *
+ * Best-effort by design: only Chromium exposes `getAsFileSystemHandle`, and only
+ * for files (not the directories walked above). Everywhere else the transfer
+ * panel falls back to a Resume button that re-picks the file by hand, so nothing
+ * here is allowed to fail an upload — hence the silent catch.
+ */
+export async function rememberDroppedHandles(
+  items: DataTransferItem[],
+  keyFor: (file: File) => string
+): Promise<void> {
+  await Promise.all(
+    items.map(async item => {
+      try {
+        const handle = await handleFromDataTransferItem(item);
+        if (!handle) return;
+        const file = await handle.getFile();
+        await rememberHandle(keyFor(file), handle);
+      } catch {
+        /* no handle available — the manual Resume path covers it */
+      }
+    })
+  );
+}
 
 type FileSystemEntryLike = {
   isFile: boolean;

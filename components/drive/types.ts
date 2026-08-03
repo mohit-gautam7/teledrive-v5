@@ -43,12 +43,38 @@ export type UploadItem = {
   speed: number | null;
   /** Seconds remaining at the current speed, or null when unknown. */
   eta: number | null;
-  status: "pending" | "uploading" | "done" | "error";
+  /** `paused` is a session restored after a reload: the server still holds the
+   *  chunks, but this tab has no bytes to send until the file is handed back. */
+  status: "pending" | "uploading" | "done" | "error" | "paused";
   error?: string;
-  file: File;
+  /** Null only for a restored session whose file this tab cannot read yet. */
+  file: File | null;
+  /** Destination folder, kept so a restored session resumes into the right place. */
+  folderId?: string | null;
+  /** Server-side session fingerprint; the resume key is what makes this durable. */
+  resumeKey?: string;
   /** Relative path when the item came from a folder drop / directory picker. */
   path?: string;
 };
+
+/** One in-flight download, mirrored from the uploads so both read alike. */
+export type DownloadItem = {
+  id: string;
+  fileId: string;
+  name: string;
+  /** Total bytes, or 0 while the server has not said (no Content-Length yet). */
+  size: number;
+  loaded: number;
+  percent: number;
+  speed: number | null;
+  eta: number | null;
+  status: "downloading" | "done" | "error" | "cancelled";
+  error?: string;
+};
+
+export type TransferItem =
+  | ({ kind: "upload" } & UploadItem)
+  | ({ kind: "download" } & DownloadItem);
 
 export function formatSpeed(bytesPerSecond: number | null) {
   if (!bytesPerSecond || bytesPerSecond <= 0) return "—";
@@ -96,6 +122,8 @@ export type Insights = {
   count: number;
   trashSize: number;
   trashCount: number;
+  /** Folders the user owns, at every depth. Only in the ?full=1 response. */
+  folderCount?: number;
   byBackend: Array<{ backend: string; bytes: number; files: number }>;
   byType: Array<{ bucket: string; bytes: number; files: number }>;
   largest: Array<{ id: string; originalName: string; mimeType: string; size: number }>;

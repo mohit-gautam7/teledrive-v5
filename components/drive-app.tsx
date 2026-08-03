@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { toast } from "sonner";
@@ -35,20 +35,31 @@ import {
   X
 } from "lucide-react";
 import { apiFetch, uploadFile, UploadAbortedError } from "@/lib/api-client";
-import { uploadFileInChunks } from "@/lib/chunked-upload";
+import { uploadFileInChunks, resumeKeyFor } from "@/lib/chunked-upload";
+import {
+  fileFromHandle,
+  forgetHandle,
+  matchesSession,
+  readPersisted,
+  recallHandle,
+  rememberHandle,
+  writePersisted,
+  type PersistedUpload
+} from "@/lib/upload-store";
 import { CHUNK_SIZE, MAX_FILE_SIZE } from "@/lib/upload-config";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import { cn, formatBytes } from "@/lib/utils";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
-import { filesFromDataTransfer, filesFromInput, type PickedFile } from "@/components/drive/dnd";
+import { filesFromDataTransfer, filesFromInput, rememberDroppedHandles, type PickedFile } from "@/components/drive/dnd";
 import { Lightbox } from "@/components/drive/lightbox";
 import { ConfirmModal, MoveModal, NameModal, PropertiesModal, ShareModal } from "@/components/drive/modals";
 import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
+import { TransferPanel, sampleRate } from "@/components/drive/transfers";
+import { browserDownload, downloadWithProgress } from "@/lib/download-manager";
 import {
-  formatEta,
-  formatSpeed,
   type AppView,
+  type DownloadItem,
   type DriveFile,
   type DriveFolder,
   type Insights,
@@ -57,6 +68,7 @@ import {
   type SortField,
   type TelegramLink,
   type ThemeMode,
+  type TransferItem,
   type TypeFilter,
   type UploadItem
 } from "@/components/drive/types";
@@ -73,6 +85,30 @@ const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
 
 /** Views that show the file/folder browser rather than a standalone panel. */
 const BROWSE_VIEWS: AppView[] = ["files", "favorites", "trash"];
+
+/**
+ * Sidebar width, remembered across visits.
+ *
+ * Bounded rather than free: narrower than the minimum and the nav labels
+ * collapse into their icons, wider and the file grid loses a column on a laptop.
+ * Read during the first render so the page never paints at one width and jumps
+ * to another.
+ */
+const SIDEBAR_MIN = 208;
+const SIDEBAR_MAX = 460;
+const SIDEBAR_DEFAULT = 268;
+const SIDEBAR_KEY = "teledrive-sidebar-width";
+
+/** `useLayoutEffect`, minus the warning React prints when it is rendered on the
+ *  server. Nothing here runs during SSR, so falling back to useEffect is safe. */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+function readSidebarWidth() {
+  if (typeof window === "undefined") return SIDEBAR_DEFAULT;
+  const stored = Number(window.localStorage.getItem(SIDEBAR_KEY));
+  if (!Number.isFinite(stored) || stored <= 0) return SIDEBAR_DEFAULT;
+  return Math.min(Math.max(stored, SIDEBAR_MIN), SIDEBAR_MAX);
+}
 
 export default function DriveApp({ user }: { user: { name: string; username?: string | null; avatar?: string | null } }) {
   const reduceMotion = useReducedMotion();
@@ -106,8 +142,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const [uploading, setUploading] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
+  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [trayOpen, setTrayOpen] = useState(true);
   const abortControllers = useRef<Map<string, AbortController>>(new Map());
+  const downloadControllers = useRef<Map<string, AbortController>>(new Map());
   const progressSamples = useRef<Map<string, Array<{ t: number; loaded: number }>>>(new Map());
   const batchController = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -121,8 +159,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [propsTarget, setPropsTarget] = useState<PropsTarget | null>(null);
   const [shareTarget, setShareTarget] = useState<{ fileId?: string; folderId?: string; name: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Folders are selectable alongside files so several can be zipped together.
+  const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Starts at the default and is corrected before the first paint, below. A
+  // lazy initialiser cannot do this: the server renders the default, and React
+  // keeps the server's markup during hydration, so the remembered width was
+  // stored in state while the DOM stayed at 268px.
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const [resizing, setResizing] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("system");
   const [authStatus, setAuthStatus] = useState<"connected" | "pending" | "failed">("pending");
   const [insights, setInsights] = useState<Insights | null>(null);
@@ -328,6 +374,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     setTheme((window.localStorage.getItem("teledrive-theme") as ThemeMode | null) || "system");
   }, []);
 
+  // Layout, not effect: this runs after hydration but before the browser paints,
+  // so a remembered sidebar width is in place for the first frame the user sees
+  // rather than snapping into position afterwards.
+  useIsomorphicLayoutEffect(() => {
+    const stored = readSidebarWidth();
+    if (stored !== SIDEBAR_DEFAULT) setSidebarWidth(stored);
+  }, []);
+
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => document.documentElement.classList.toggle("dark", theme === "dark" || (theme === "system" && media.matches));
@@ -440,40 +494,42 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    * so the number reacts to the connection instead of slowly converging.
    */
   const reportProgress = useCallback((itemId: string, loaded: number, size: number) => {
-    const now = Date.now();
     const history = progressSamples.current.get(itemId) ?? [];
-    history.push({ t: now, loaded });
-    while (history.length > 2 && now - history[0].t > 6000) history.shift();
     progressSamples.current.set(itemId, history);
-
-    const first = history[0];
-    const elapsed = (now - first.t) / 1000;
-    const moved = loaded - first.loaded;
-    const speed = elapsed >= 0.75 && moved > 0 ? moved / elapsed : null;
-    const eta = speed && speed > 0 ? Math.max(0, (size - loaded) / speed) : null;
-
-    setUploadQueue(q =>
-      q.map(it =>
-        it.id === itemId
-          ? { ...it, loaded, percent: size ? Math.min(100, Math.round((loaded / size) * 100)) : 0, speed, eta }
-          : it
-      )
-    );
+    const rate = sampleRate(history, loaded, size);
+    setUploadQueue(q => q.map(it => (it.id === itemId ? { ...it, ...rate } : it)));
   }, []);
 
   const uploadOne = useCallback(
     async (item: UploadItem, targetFolderId: string | null) => {
+      if (!item.file) return;
+      const source = item.file;
       progressSamples.current.delete(item.id);
       setUploadQueue(q =>
-        q.map(it => (it.id === item.id ? { ...it, status: "uploading", loaded: 0, percent: 0, error: undefined } : it))
+        q.map(it =>
+          it.id === item.id
+            ? {
+                ...it,
+                status: "uploading",
+                // Not reset to 0: a resumed session starts from whatever the
+                // server already holds, and zeroing it would make a 90%-done
+                // upload appear to start again.
+                loaded: it.status === "paused" ? it.loaded : 0,
+                percent: it.status === "paused" ? it.percent : 0,
+                error: undefined,
+                folderId: targetFolderId,
+                resumeKey: resumeKeyFor(source, targetFolderId)
+              }
+            : it
+        )
       );
       const controller = new AbortController();
       abortControllers.current.set(item.id, controller);
       try {
         let created: DriveFile | null = null;
-        if (item.file.size > CHUNK_SIZE) {
+        if (source.size > CHUNK_SIZE) {
           const result = await uploadFileInChunks({
-            file: item.file,
+            file: source,
             folderId: targetFolderId,
             onProgress: loaded => reportProgress(item.id, loaded, item.size),
             signal: controller.signal
@@ -481,7 +537,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           created = (result.file as DriveFile) ?? null;
         } else {
           const form = new FormData();
-          form.append("file", item.file);
+          form.append("file", source);
           if (targetFolderId) form.append("folderId", targetFolderId);
           const result = await uploadFile<{ file: DriveFile }>(
             "/api/upload",
@@ -496,12 +552,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         // server takes the slow path — re-downloading the original from
         // Telegram and resizing it — which is precisely what generating one at
         // upload time is meant to avoid.
-        if (created && canThumbnail(item.file)) await uploadThumbnail(created.id, item.file);
+        if (created && canThumbnail(source)) await uploadThumbnail(created.id, source);
         addFileToState(created);
         progressSamples.current.delete(item.id);
         setUploadQueue(q =>
           q.map(it => (it.id === item.id ? { ...it, loaded: it.size, percent: 100, speed: null, eta: null, status: "done" } : it))
         );
+        // The session is finished, so the handle kept for resuming it is dead
+        // weight. Cheap to drop, and it keeps the store from growing forever.
+        void forgetHandle(resumeKeyFor(source, targetFolderId));
       } finally {
         abortControllers.current.delete(item.id);
       }
@@ -532,10 +591,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         eta: null,
         status: "pending",
         file,
+        folderId: destination,
+        resumeKey: resumeKeyFor(file, destination),
         path
       }));
 
-      setUploadQueue(items);
+      // Appended, not assigned: a session restored from a previous visit is
+      // waiting in this queue, and replacing it would strand chunks the server
+      // is still holding.
+      setUploadQueue(q => [...q.filter(it => it.status !== "done"), ...items]);
       setTrayOpen(true);
       setUploading(true);
       const batch = new AbortController();
@@ -567,7 +631,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       batchController.current = null;
       setUploading(false);
       refreshStats();
-      if (!failed) window.setTimeout(() => setUploadQueue([]), 2500);
+      // Only the finished rows are cleared; a paused session from an earlier
+      // visit stays until it is resumed or dismissed.
+      if (!failed) window.setTimeout(() => setUploadQueue(q => q.filter(it => it.status !== "done")), 2500);
     },
     [folderId, maxBytes, uploadOne, ensureFolderPath, refreshStats]
   );
@@ -589,16 +655,288 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const cancelUpload = useCallback((id: string) => {
     abortControllers.current.get(id)?.abort();
     abortControllers.current.delete(id);
-    setUploadQueue(q => q.filter(it => it.id !== id));
+    setUploadQueue(q => {
+      const item = q.find(it => it.id === id);
+      if (item?.resumeKey) void forgetHandle(item.resumeKey);
+      return q.filter(it => it.id !== id);
+    });
   }, []);
 
   const cancelAll = useCallback(() => {
     abortControllers.current.forEach(c => c.abort());
     abortControllers.current.clear();
     batchController.current?.abort();
-    setUploadQueue([]);
+    setUploadQueue(q => {
+      for (const item of q) if (item.resumeKey) void forgetHandle(item.resumeKey);
+      return [];
+    });
     setUploading(false);
   }, []);
+
+  // ── Uploads that outlive the page ─────────────────────────────────────────
+
+  /** Flipped once the stored sessions have been read back; see the restore below. */
+  const hydratedUploads = useRef(false);
+
+  /**
+   * Mirror the queue to storage on every change.
+   *
+   * Only chunked uploads are worth persisting: anything at or under one chunk is
+   * a single request with no server-side session to resume, and restarting it
+   * costs less than the bookkeeping would.
+   */
+  useEffect(() => {
+    // Not before the restore below has run: this effect fires on mount with an
+    // empty queue, and writing that would erase the very sessions it is meant to
+    // bring back.
+    if (!hydratedUploads.current) return;
+    const resumable = uploadQueue
+      .filter(it => it.size > CHUNK_SIZE && it.resumeKey && (it.status === "uploading" || it.status === "pending" || it.status === "paused" || it.status === "error"))
+      .map<PersistedUpload>(it => ({
+        id: it.id,
+        fileId: null,
+        name: it.name,
+        size: it.size,
+        lastModified: it.file?.lastModified ?? 0,
+        folderId: it.folderId ?? null,
+        resumeKey: it.resumeKey as string,
+        path: it.path,
+        loaded: it.loaded,
+        updatedAt: Date.now()
+      }));
+    writePersisted(cacheUser, resumable);
+  }, [uploadQueue, cacheUser]);
+
+  /**
+   * Put an interrupted upload back to work.
+   *
+   * `uploadFileInChunks` re-inits with the same resume key, and the server
+   * answers with the chunks it already holds — so this sends only what is
+   * missing, however far the upload had got before the page went away.
+   */
+  const resumeUpload = useCallback(
+    async (item: UploadItem, file: File) => {
+      const target = item.folderId ?? null;
+      const restored: UploadItem = { ...item, file };
+      setUploadQueue(q => q.map(it => (it.id === item.id ? restored : it)));
+      setUploading(true);
+      try {
+        await uploadOne(restored, target);
+        refreshStats();
+      } catch (error) {
+        if (error instanceof UploadAbortedError) return;
+        setUploadQueue(q =>
+          q.map(it =>
+            it.id === item.id ? { ...it, status: "error", error: error instanceof Error ? error.message : "Upload failed" } : it
+          )
+        );
+      } finally {
+        setUploading(false);
+      }
+    },
+    [uploadOne, refreshStats]
+  );
+
+  /** Hand the file back by picking it again — the fallback when no handle exists. */
+  const repickAndResume = useCallback(
+    (item: UploadItem) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.onchange = () => {
+        const picked = input.files?.[0];
+        if (!picked) return;
+        const session = { name: item.name, size: item.size, lastModified: item.file?.lastModified ?? 0 };
+        // The resume key is derived from name+size+lastModified, so a different
+        // file would resume against chunks that are not its own.
+        if (picked.name !== session.name || picked.size !== session.size) {
+          toast.error(`That is not the same file — pick "${item.name}" to carry on where it stopped.`);
+          return;
+        }
+        void resumeUpload(item, picked);
+      };
+      input.click();
+    },
+    [resumeUpload]
+  );
+
+  /**
+   * Restore unfinished uploads on load, and carry on where the browser lets us.
+   *
+   * A `File` cannot survive a reload, so the bytes have to come from somewhere.
+   * Chromium hands out a `FileSystemFileHandle` for dropped files, which is
+   * storable and — when its read permission is still granted — usable without
+   * asking, so those resume on their own. Everything else is listed as paused
+   * with a Resume button, which is the closest the platform allows.
+   */
+  useEffect(() => {
+    if (hydratedUploads.current) return;
+    hydratedUploads.current = true;
+
+    const sessions = readPersisted(cacheUser);
+    if (!sessions.length) return;
+
+    const items: UploadItem[] = sessions.map(session => ({
+      id: session.id,
+      name: session.name,
+      size: session.size,
+      loaded: session.loaded,
+      percent: session.size ? Math.min(100, Math.round((session.loaded / session.size) * 100)) : 0,
+      speed: null,
+      eta: null,
+      status: "paused",
+      file: null,
+      folderId: session.folderId,
+      resumeKey: session.resumeKey,
+      path: session.path
+    }));
+    setUploadQueue(q => [...items.filter(it => !q.some(existing => existing.resumeKey === it.resumeKey)), ...q]);
+    setTrayOpen(true);
+
+    void (async () => {
+      for (const session of sessions) {
+        const handle = await recallHandle(session.resumeKey);
+        if (!handle) continue;
+        const file = await fileFromHandle(handle, { prompt: false });
+        if (!file || !matchesSession(file, session)) continue;
+        const item = items.find(it => it.id === session.id);
+        if (item) await resumeUpload(item, file);
+      }
+    })();
+  }, [cacheUser, resumeUpload]);
+
+  // ── Downloads ─────────────────────────────────────────────────────────────
+
+  /**
+   * Pull a file through the app so the transfer is visible.
+   *
+   * The bytes are read by the app rather than handed to the browser, which is
+   * the only way to know how far along it is. Where the browser can stream to
+   * disk it does; otherwise very large files go back to a plain browser download
+   * and the row says so instead of inventing a percentage.
+   */
+  const startDownload = useCallback(async (file: { id: string; originalName: string; size: number }) => {
+    const id = `dl-${file.id}-${Date.now()}`;
+    const controller = new AbortController();
+    downloadControllers.current.set(id, controller);
+    const samples: Array<{ t: number; loaded: number }> = [];
+
+    setDownloads(list => [
+      ...list,
+      {
+        id,
+        fileId: file.id,
+        name: file.originalName,
+        size: file.size,
+        loaded: 0,
+        percent: 0,
+        speed: null,
+        eta: null,
+        status: "downloading"
+      }
+    ]);
+    setTrayOpen(true);
+
+    try {
+      const outcome = await downloadWithProgress({
+        url: `/api/download/${file.id}`,
+        filename: file.originalName,
+        sizeHint: file.size,
+        signal: controller.signal,
+        onProgress: ({ loaded, total }) => {
+          const rate = sampleRate(samples, loaded, total || file.size);
+          setDownloads(list => list.map(d => (d.id === id ? { ...d, ...rate, size: total || d.size } : d)));
+        }
+      });
+
+      if (outcome === "cancelled") {
+        setDownloads(list => list.filter(d => d.id !== id));
+        return;
+      }
+      if (outcome === "handed-to-browser") {
+        setDownloads(list => list.filter(d => d.id !== id));
+        toast.info(`"${file.originalName}" is too large to track here — your browser is downloading it.`);
+        return;
+      }
+      setDownloads(list =>
+        list.map(d => (d.id === id ? { ...d, loaded: d.size, percent: 100, speed: null, eta: null, status: "done" } : d))
+      );
+      window.setTimeout(() => setDownloads(list => list.filter(d => d.id !== id)), 4000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Download failed.";
+      setDownloads(list => list.map(d => (d.id === id ? { ...d, status: "error", error: message } : d)));
+      toast.error(message);
+    } finally {
+      downloadControllers.current.delete(id);
+    }
+  }, []);
+
+  /**
+   * Download a selection of folders and/or files as one archive.
+   *
+   * The server streams it and reports the exact size up front, so this behaves
+   * like any other download in the panel — percentage, speed and ETA included.
+   */
+  const startZipDownload = useCallback(
+    async (selection: { folderIds?: string[]; fileIds?: string[]; label: string }) => {
+      const id = `zip-${Date.now()}`;
+      const controller = new AbortController();
+      downloadControllers.current.set(id, controller);
+      const samples: Array<{ t: number; loaded: number }> = [];
+
+      setDownloads(list => [
+        ...list,
+        { id, fileId: id, name: `${selection.label}.zip`, size: 0, loaded: 0, percent: 0, speed: null, eta: null, status: "downloading" }
+      ]);
+      setTrayOpen(true);
+
+      try {
+        const outcome = await downloadWithProgress({
+          url: "/api/download/zip",
+          filename: `${selection.label}.zip`,
+          init: {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ folderIds: selection.folderIds, fileIds: selection.fileIds, name: selection.label })
+          },
+          signal: controller.signal,
+          onProgress: ({ loaded, total }) => {
+            const rate = sampleRate(samples, loaded, total);
+            setDownloads(list => list.map(d => (d.id === id ? { ...d, ...rate, size: total || d.size } : d)));
+          }
+        });
+        if (outcome === "cancelled") {
+          setDownloads(list => list.filter(d => d.id !== id));
+          return;
+        }
+        setDownloads(list =>
+          list.map(d => (d.id === id ? { ...d, loaded: d.size, percent: 100, speed: null, eta: null, status: "done" } : d))
+        );
+        window.setTimeout(() => setDownloads(list => list.filter(d => d.id !== id)), 4000);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not build the archive.";
+        setDownloads(list => list.map(d => (d.id === id ? { ...d, status: "error", error: message } : d)));
+        toast.error(message);
+      } finally {
+        downloadControllers.current.delete(id);
+      }
+    },
+    []
+  );
+
+  const cancelDownload = useCallback((id: string) => {
+    downloadControllers.current.get(id)?.abort();
+    downloadControllers.current.delete(id);
+    setDownloads(list => list.filter(d => d.id !== id));
+  }, []);
+
+  /** Uploads and downloads in one list, newest activity last. */
+  const transfers = useMemo<TransferItem[]>(
+    () => [
+      ...uploadQueue.map(item => ({ kind: "upload" as const, ...item })),
+      ...downloads.map(item => ({ kind: "download" as const, ...item }))
+    ],
+    [uploadQueue, downloads]
+  );
 
   // ── Window-level drag and drop ────────────────────────────────────────────
 
@@ -619,6 +957,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       setDragDepth(0);
       // Entries must be read before awaiting — the DataTransfer is neutered
       // once the event handler returns.
+      const items = Array.from(e.dataTransfer.items ?? []);
+      void rememberDroppedHandles(items, file => resumeKeyFor(file, folderId));
       filesFromDataTransfer(e.dataTransfer).then(picked => {
         if (picked.length) startUploads(picked);
       });
@@ -633,11 +973,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       window.removeEventListener("dragover", onOver);
       window.removeEventListener("drop", onDrop);
     };
-  }, [startUploads]);
+  }, [startUploads, folderId]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
-  const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setSelectedFolders(new Set());
+  }, []);
+
+  const toggleFolderSelect = useCallback((id: string) => {
+    setSelectedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const toggleSelect = useCallback((id: string) => {
     setSelected(prev => {
       const next = new Set(prev);
@@ -1008,8 +1360,68 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const browsing = BROWSE_VIEWS.includes(appView);
 
+  /**
+   * Drag the sidebar's edge.
+   *
+   * Pointer events (not mouse) so a stylus or touch drag works, and capture so
+   * the drag survives the pointer leaving the 6 px handle — without that,
+   * moving faster than React re-renders drops the grab. The width is written to
+   * storage once, on release, rather than on every frame.
+   */
+  const startResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    // Capture keeps the pointer bound to a 6 px strip while the cursor races
+    // ahead of it, but it is an enhancement, not the mechanism: the listeners
+    // live on the window so the drag still works if capture is unavailable.
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      /* no capture — window listeners below carry the drag */
+    }
+    setResizing(true);
+
+    const move = (e: PointerEvent) => {
+      setSidebarWidth(Math.min(Math.max(e.clientX, SIDEBAR_MIN), SIDEBAR_MAX));
+    };
+    const end = (e: PointerEvent) => {
+      try {
+        handle.releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* it was never captured */
+      }
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      setResizing(false);
+      setSidebarWidth(width => {
+        try {
+          window.localStorage.setItem(SIDEBAR_KEY, String(width));
+        } catch {
+          /* best-effort */
+        }
+        return width;
+      });
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }, []);
+
+  /** Back to the root of My Files, from wherever the app currently is. */
+  const goHome = useCallback(() => {
+    setAppView("files");
+    setFolderId(null);
+    setFolderTrail([]);
+    setSidebarOpen(false);
+    window.history.pushState(null, "", "?");
+  }, []);
+
   return (
-    <div className="app-bg relative min-h-[100dvh]">
+    // The sidebar width is one variable, read by the sidebar, the main column
+    // and the bulk bar, so a drag moves all three together.
+    <div className="app-bg relative min-h-[100dvh]" style={{ ["--sidebar-w" as string]: `${sidebarWidth}px` }}>
       {/* Hidden pickers */}
       <input
         ref={fileInputRef}
@@ -1059,19 +1471,31 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       {/* ── Sidebar ── */}
       <aside
         className={cn(
-          "frost fixed inset-y-0 left-0 z-50 flex w-[82vw] max-w-[268px] flex-col px-4 py-5 transition-transform duration-300 lg:w-[268px] lg:translate-x-0",
+          "frost fixed inset-y-0 left-0 z-50 flex w-[82vw] flex-col px-4 py-5 lg:translate-x-0",
+          // The transition is dropped mid-drag: animating width while the
+          // pointer sets it makes the edge lag behind the cursor.
+          !resizing && "transition-transform duration-300",
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
-        style={{ borderRight: "1px solid var(--border-dim)", willChange: "transform" }}
+        style={{
+          borderRight: "1px solid var(--border-dim)",
+          willChange: "transform",
+          maxWidth: "var(--sidebar-w)"
+        }}
       >
         <div className="flex items-center justify-between">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <button
+            onClick={goHome}
+            className="flex min-w-0 items-center gap-2.5 rounded-lg text-left transition hover:opacity-80"
+            aria-label="Go to My Files"
+            title="My Files"
+          >
             <Logo size={30} />
             <div className="min-w-0">
               <p className="display truncate text-[15px] leading-none">TeleDrive</p>
               <p className="eyebrow mt-1">Personal cloud</p>
             </div>
-          </div>
+          </button>
           <button className="icon-btn lg:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close menu">
             <X className="h-4 w-4" />
           </button>
@@ -1087,15 +1511,19 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           </button>
         </div>
 
-        <UploadTray
-          items={uploadQueue}
-          uploading={uploading}
+        <TransferPanel
+          transfers={transfers}
           open={trayOpen}
           onToggle={() => setTrayOpen(o => !o)}
-          onCancel={cancelUpload}
+          onCancelUpload={cancelUpload}
           onCancelAll={cancelAll}
-          onRetry={retryUpload}
-          onDismiss={id => setUploadQueue(q => q.filter(it => it.id !== id))}
+          onRetryUpload={retryUpload}
+          onResumeUpload={repickAndResume}
+          onCancelDownload={cancelDownload}
+          onDismiss={id => {
+            setUploadQueue(q => q.filter(it => it.id !== id));
+            setDownloads(list => list.filter(d => d.id !== id));
+          }}
         />
 
         <nav className="mt-4 flex-1 space-y-0.5 overflow-y-auto pb-3">
@@ -1117,13 +1545,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
         <div className="rounded-xl p-3.5" style={{ background: "var(--surface)", border: "1px solid var(--border-dim)" }}>
           <div className="flex items-center gap-2.5">
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[13px] font-bold" style={{ background: "var(--accent-grad)", color: "#04070c" }}>
-              {user.name.charAt(0).toUpperCase()}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="t-sm truncate font-semibold" style={{ color: "var(--text-1)" }}>{user.name}</p>
-              <p className="mono truncate" style={{ color: "var(--text-3)" }}>{user.username ? `@${user.username}` : "Telegram"}</p>
-            </div>
+            <button
+              onClick={() => selectView("insights")}
+              className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg text-left transition hover:opacity-80"
+              aria-label="Your storage and account stats"
+              title="Storage and account stats"
+            >
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[13px] font-bold" style={{ background: "var(--accent-grad)", color: "#04070c" }}>
+                {user.name.charAt(0).toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="t-sm block truncate font-semibold" style={{ color: "var(--text-1)" }}>{user.name}</span>
+                <span className="mono block truncate" style={{ color: "var(--text-3)" }}>{user.username ? `@${user.username}` : "Telegram"}</span>
+              </span>
+            </button>
             <button onClick={logout} className="icon-btn icon-btn-danger" style={{ height: 32, width: 32 }} aria-label="Sign out">
               <LogOut className="h-3.5 w-3.5" />
             </button>
@@ -1136,10 +1571,48 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             <span className="chip">{formatBytes(insights?.totalSize ?? 0)}</span>
           </div>
         </div>
+
+        {/* Resize handle — desktop only, where the sidebar is a fixed column.
+            Focusable and arrow-key operable so it is not mouse-only. */}
+        <div
+          onPointerDown={startResize}
+          onDoubleClick={() => {
+            setSidebarWidth(SIDEBAR_DEFAULT);
+            try {
+              window.localStorage.setItem(SIDEBAR_KEY, String(SIDEBAR_DEFAULT));
+            } catch {
+              /* best-effort */
+            }
+          }}
+          onKeyDown={e => {
+            const step = e.shiftKey ? 32 : 8;
+            const delta = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+            if (!delta) return;
+            e.preventDefault();
+            setSidebarWidth(width => {
+              const next = Math.min(Math.max(width + delta, SIDEBAR_MIN), SIDEBAR_MAX);
+              try {
+                window.localStorage.setItem(SIDEBAR_KEY, String(next));
+              } catch {
+                /* best-effort */
+              }
+              return next;
+            });
+          }}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          aria-valuenow={sidebarWidth}
+          aria-valuemin={SIDEBAR_MIN}
+          aria-valuemax={SIDEBAR_MAX}
+          tabIndex={0}
+          className="absolute inset-y-0 right-0 hidden w-1.5 cursor-col-resize lg:block"
+          style={{ background: resizing ? "var(--accent)" : "transparent", touchAction: "none" }}
+        />
       </aside>
 
       {/* ── Main ── */}
-      <div className="lg:pl-[268px]">
+      <div className="lg:pl-[var(--sidebar-w)]">
         <header className="frost sticky top-0 z-30" style={{ borderBottom: "1px solid var(--border-dim)" }}>
           <div className="flex h-14 items-center gap-2 px-3 sm:px-5">
             <button className="icon-btn lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
@@ -1295,10 +1768,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               ) : appView === "insights" ? (
                 <InsightsPanel
                   insights={insights}
+                  user={user}
                   onOpenFile={id => {
                     const file = files.find(f => f.id === id);
                     if (file) setPreviewFile(file);
-                    else window.location.href = `/api/download/${id}`;
+                    // Insights lists the largest files across the whole drive,
+                    // most of which are not in the current folder's page.
+                    else browserDownload(`/api/download/${id}`);
                   }}
                 />
               ) : (
@@ -1344,15 +1820,39 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                         >
                           <button
                             className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                            onClick={() => enterFolder(folder)}
+                            onClick={() => (selectedFolders.size || selected.size ? toggleFolderSelect(folder.id) : enterFolder(folder))}
                             // Warm the listing before the click lands, so the
                             // folder opens against a populated cache.
                             onMouseEnter={() => prefetchFolder(folder.id)}
                             onFocus={() => prefetchFolder(folder.id)}
                             onTouchStart={() => prefetchFolder(folder.id)}
                           >
-                            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg" style={{ background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.24)" }}>
-                              <FolderIcon className="h-4 w-4" style={{ color: "var(--accent-2)" }} />
+                            <span
+                              onClick={e => {
+                                e.stopPropagation();
+                                toggleFolderSelect(folder.id);
+                              }}
+                              role="checkbox"
+                              aria-checked={selectedFolders.has(folder.id)}
+                              aria-label={`Select ${folder.name}`}
+                              tabIndex={0}
+                              onKeyDown={e => {
+                                if (e.key !== " " && e.key !== "Enter") return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                toggleFolderSelect(folder.id);
+                              }}
+                              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg transition"
+                              style={{
+                                background: selectedFolders.has(folder.id) ? "var(--accent)" : "rgba(129,140,248,0.12)",
+                                border: `1px solid ${selectedFolders.has(folder.id) ? "var(--accent)" : "rgba(129,140,248,0.24)"}`
+                              }}
+                            >
+                              {selectedFolders.has(folder.id) ? (
+                                <Check className="h-4 w-4" style={{ color: "#04070c" }} />
+                              ) : (
+                                <FolderIcon className="h-4 w-4" style={{ color: "var(--accent-2)" }} />
+                              )}
                             </span>
                             <span className="min-w-0">
                               <span className="t-sm block truncate font-semibold" style={{ color: "var(--text-1)" }}>{folder.name}</span>
@@ -1374,6 +1874,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => setFolderModal({ mode: "rename", id: folder.id, value: folder.name })} className="menu-item">
                                   <Pencil className="h-4 w-4" style={{ color: "var(--accent)" }} /> Rename
+                                </DropdownMenu.Item>
+                                <DropdownMenu.Item
+                                  onSelect={() =>
+                                    void startZipDownload({ folderIds: [folder.id], label: folder.name })
+                                  }
+                                  className="menu-item"
+                                >
+                                  <Download className="h-4 w-4" style={{ color: "var(--accent)" }} /> Download as zip
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => copyFolder(folder)} className="menu-item">
                                   <Copy className="h-4 w-4" style={{ color: "var(--accent)" }} /> Make a copy
@@ -1406,13 +1914,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                             grid={view === "grid"}
                             inTrash={appView === "trash"}
                             selected={selected.has(file.id)}
-                            selectionActive={selected.size > 0}
+                            selectionActive={selected.size + selectedFolders.size > 0}
                             mtprotoUserId={link?.telegramUserId ?? null}
                             actions={{
                               onPreview: () => setPreviewFile(file),
-                              onDownload: () => {
-                                window.location.href = `/api/download/${file.id}`;
-                              },
+                              onDownload: () => void startDownload(file),
                               onShare: () => setShareTarget({ fileId: file.id, name: file.originalName }),
                               onDelete: () => confirmTrash([file.id]),
                               onFavorite: () => toggleFavorite(file.id),
@@ -1463,19 +1969,21 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       {/* ── Bulk action bar ──
           Horizontally scrollable so it can never overflow a narrow screen. */}
       <AnimatePresence>
-        {selected.size ? (
+        {selected.size + selectedFolders.size ? (
           <motion.div
-            initial={{ y: 70, opacity: 0 }}
+            initial={reduceMotion ? { opacity: 0 } : { y: 70, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 70, opacity: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { y: 70, opacity: 0 }}
             transition={{ type: "spring", stiffness: 420, damping: 34 }}
-            className="safe-bottom fixed inset-x-0 bottom-0 z-[60] px-3 pb-3 lg:left-[268px]"
+            className="safe-bottom fixed inset-x-0 bottom-0 z-[60] px-3 pb-3 lg:left-[var(--sidebar-w)]"
           >
             <div
               className="no-scrollbar mx-auto flex max-w-fit items-center gap-1.5 overflow-x-auto rounded-2xl px-2.5 py-2"
               style={{ background: "var(--bg-2)", border: "1px solid var(--border-med)", boxShadow: "var(--shadow-lg)" }}
             >
-              <span className="t-sm shrink-0 px-1.5 font-bold" style={{ color: "var(--accent)" }}>{selected.size}</span>
+              <span className="t-sm shrink-0 px-1.5 font-bold" style={{ color: "var(--accent)" }}>
+                {selected.size + selectedFolders.size}
+              </span>
               {selected.size < files.length ? (
                 <button onClick={selectAll} className="btn btn-ghost shrink-0">
                   <Check className="h-4 w-4" />
@@ -1484,44 +1992,52 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               ) : null}
               <button
                 onClick={() => {
-                  [...selected].forEach((id, i) =>
-                    window.setTimeout(() => {
-                      const a = document.createElement("a");
-                      a.href = `/api/download/${id}`;
-                      a.download = "";
-                      document.body.appendChild(a);
-                      a.click();
-                      a.remove();
-                    }, i * 400)
-                  );
-                  toast.info(`Downloading ${selected.size} file${selected.size > 1 ? "s" : ""}…`);
+                  // One file on its own arrives as itself; anything more — and
+                  // any folder at all — comes back as a single archive, which is
+                  // the point of being able to pick several.
+                  if (selected.size === 1 && !selectedFolders.size) {
+                    const only = files.find(f => f.id === [...selected][0]);
+                    if (only) {
+                      void startDownload(only);
+                      clearSelection();
+                      return;
+                    }
+                  }
+                  const label =
+                    selectedFolders.size === 1 && !selected.size
+                      ? folderTree.find(f => f.id === [...selectedFolders][0])?.name || "teledrive"
+                      : `teledrive-${selected.size + selectedFolders.size}-items`;
+                  void startZipDownload({ folderIds: [...selectedFolders], fileIds: [...selected], label });
+                  clearSelection();
                 }}
                 className="btn btn-ghost shrink-0"
               >
                 <Download className="h-4 w-4" />
                 <span className="hidden sm:inline">Download</span>
               </button>
-              {appView !== "trash" ? (
+              {appView !== "trash" && selected.size ? (
                 <button onClick={() => setMoveModal({ ids: [...selected] })} className="btn btn-ghost shrink-0">
                   <FolderInput className="h-4 w-4" />
                   <span className="hidden sm:inline">Move</span>
                 </button>
-              ) : (
+              ) : selected.size ? (
                 <button onClick={() => bulkAction("restore", [...selected])} className="btn btn-ghost shrink-0" style={{ color: "var(--emerald)" }}>
                   <RotateCw className="h-4 w-4" />
                   <span className="hidden sm:inline">Restore</span>
                 </button>
-              )}
-              {appView !== "trash" ? (
+              ) : null}
+              {appView !== "trash" && selected.size ? (
                 <button onClick={() => bulkAction("favorite", [...selected])} className="btn btn-ghost shrink-0" style={{ color: "var(--amber)" }}>
                   <Star className="h-4 w-4" />
                   <span className="hidden sm:inline">Favourite</span>
                 </button>
               ) : null}
-              <button onClick={() => confirmTrash([...selected])} className="btn btn-danger shrink-0">
-                <Trash2 className="h-4 w-4" />
-                <span className="hidden sm:inline">Delete</span>
-              </button>
+              {selected.size ? (
+                <button onClick={() => confirmTrash([...selected])} className="btn btn-danger shrink-0">
+                  <Trash2 className="h-4 w-4" />
+                  <span className="hidden sm:inline">Delete</span>
+                </button>
+              ) : null}
               <button onClick={clearSelection} className="icon-btn shrink-0" aria-label="Clear selection">
                 <X className="h-4 w-4" />
               </button>
@@ -1551,7 +2067,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
       {/* ── Overlays ── */}
       <AnimatePresence>
-        {previewFile ? <Lightbox file={previewFile} allFiles={files} onClose={() => setPreviewFile(null)} onNavigate={setPreviewFile} /> : null}
+        {previewFile ? (
+          <Lightbox
+            file={previewFile}
+            allFiles={files}
+            onClose={() => setPreviewFile(null)}
+            onNavigate={setPreviewFile}
+            onDownload={target => void startDownload(target)}
+          />
+        ) : null}
       </AnimatePresence>
       <AnimatePresence>
         {folderModal ? (
@@ -1601,117 +2125,6 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         {shareTarget ? <ShareModal targetName={shareTarget.name} onCreate={createShare} onClose={() => setShareTarget(null)} /> : null}
       </AnimatePresence>
     </div>
-  );
-}
-
-// ── Upload tray ─────────────────────────────────────────────────────────────
-
-function UploadTray({
-  items,
-  uploading,
-  open,
-  onToggle,
-  onCancel,
-  onCancelAll,
-  onRetry,
-  onDismiss
-}: {
-  items: UploadItem[];
-  uploading: boolean;
-  open: boolean;
-  onToggle: () => void;
-  onCancel: (id: string) => void;
-  onCancelAll: () => void;
-  onRetry: (item: UploadItem) => void;
-  onDismiss: (id: string) => void;
-}) {
-  if (!items.length) return null;
-  const done = items.filter(i => i.status === "done").length;
-  const failed = items.filter(i => i.status === "error").length;
-
-  // Queue totals: bytes moved across every file, and a combined rate/ETA taken
-  // from whatever is actually in flight.
-  const totalBytes = items.reduce((sum, i) => sum + i.size, 0);
-  const loadedBytes = items.reduce((sum, i) => sum + (i.status === "done" ? i.size : i.loaded), 0);
-  const activeSpeed = items.reduce((sum, i) => sum + (i.status === "uploading" ? (i.speed ?? 0) : 0), 0);
-  const queueEta = activeSpeed > 0 ? (totalBytes - loadedBytes) / activeSpeed : null;
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, height: 0 }}
-      animate={{ opacity: 1, height: "auto" }}
-      exit={{ opacity: 0, height: 0 }}
-      className="mt-3 overflow-hidden rounded-xl"
-      style={{ border: "1px solid var(--border-dim)", background: "var(--surface)" }}
-    >
-      <div className="px-3 py-2" style={{ borderBottom: open ? "1px solid var(--border-dim)" : "none" }}>
-        <div className="flex items-center justify-between gap-2">
-          <button onClick={onToggle} className="t-xs flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-2)" }}>
-            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
-            <span className="truncate">
-              {done}/{items.length} done{failed ? ` · ${failed} failed` : ""}
-            </span>
-          </button>
-          {uploading ? (
-            <button onClick={onCancelAll} className="t-xs shrink-0 font-semibold" style={{ color: "var(--danger)" }}>
-              Cancel all
-            </button>
-          ) : null}
-        </div>
-        <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>
-          {formatBytes(loadedBytes)} / {formatBytes(totalBytes)}
-          {uploading ? ` · ${formatSpeed(activeSpeed || null)} · ${formatEta(queueEta)} left` : ""}
-        </p>
-      </div>
-
-      {open ? (
-        <div className="max-h-44 space-y-1.5 overflow-y-auto p-2">
-          {items.map(item => (
-            <div key={item.id} className="rounded-lg p-2" style={{ background: "var(--bg-1)" }}>
-              <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="t-xs truncate font-medium" style={{ color: "var(--text-1)" }} title={item.path || item.name}>
-                  {item.name}
-                </span>
-                <span className="flex shrink-0 items-center gap-1.5">
-                  {item.status === "pending" ? <span className="mono" style={{ color: "var(--text-3)" }}>wait</span> : null}
-                  {item.status === "uploading" ? <span className="mono" style={{ color: "var(--accent)" }}>{item.percent}%</span> : null}
-                  {item.status === "done" ? <Check className="h-3.5 w-3.5" style={{ color: "var(--emerald)" }} /> : null}
-                  {item.status === "error" ? (
-                    <button onClick={() => onRetry(item)} aria-label="Retry upload">
-                      <RotateCw className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} />
-                    </button>
-                  ) : null}
-                  <button
-                    onClick={() => (item.status === "uploading" || item.status === "pending" ? onCancel(item.id) : onDismiss(item.id))}
-                    aria-label="Remove from queue"
-                  >
-                    <X className="h-3.5 w-3.5" style={{ color: "var(--text-3)" }} />
-                  </button>
-                </span>
-              </div>
-              <div className="h-1 overflow-hidden rounded-full" style={{ background: "var(--surface-hi)" }}>
-                <div
-                  className={cn("h-full rounded-full transition-[width] duration-300", item.status === "uploading" && "progress-bar")}
-                  style={{
-                    width: `${item.status === "done" ? 100 : item.percent}%`,
-                    background:
-                      item.status === "error" ? "var(--danger)" : item.status === "done" ? "var(--emerald)" : undefined
-                  }}
-                />
-              </div>
-              {item.status === "error" ? (
-                <p className="t-xs mt-1 truncate" style={{ color: "var(--danger)" }} title={item.error}>{item.error}</p>
-              ) : (
-                <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>
-                  {formatBytes(item.status === "done" ? item.size : item.loaded)} / {formatBytes(item.size)}
-                  {item.status === "uploading" && item.speed ? ` · ${formatSpeed(item.speed)} · ${formatEta(item.eta)}` : ""}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </motion.div>
   );
 }
 
