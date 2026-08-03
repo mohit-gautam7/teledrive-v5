@@ -77,14 +77,24 @@ function parseOverrides(raw: unknown): Record<string, TaskOverride> {
   return out;
 }
 
-export async function readPreferences(userId: string): Promise<AiPreferences> {
-  const row = await prisma.aiPreference.findUnique({ where: { userId } });
+/**
+ * Narrow a stored row into preferences.
+ *
+ * Split out from `readPreferences` so a caller that already has the row — the
+ * settings overview reads it inside one batched transaction — does not have to
+ * spend a second round-trip fetching it again.
+ */
+export function parsePreferences(row: { mode: string; strategy: string; taskOverrides: unknown } | null): AiPreferences {
   if (!row) return DEFAULT_PREFERENCES;
   return {
     mode: isAiMode(row.mode) ? row.mode : DEFAULT_PREFERENCES.mode,
     strategy: asStrategy(row.strategy, DEFAULT_PREFERENCES.strategy),
     taskOverrides: parseOverrides(row.taskOverrides)
   };
+}
+
+export async function readPreferences(userId: string): Promise<AiPreferences> {
+  return parsePreferences(await prisma.aiPreference.findUnique({ where: { userId } }));
 }
 
 export async function writePreferences(userId: string, next: AiPreferences) {

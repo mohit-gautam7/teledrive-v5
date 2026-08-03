@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   AlertCircle,
@@ -16,6 +16,7 @@ import {
   Moon,
   Plus,
   Power,
+  RefreshCw,
   Smartphone,
   Sun,
   Trash2,
@@ -394,9 +395,29 @@ export type AiOverview = {
 
 let aiOverviewPromise: Promise<AiOverview> | null = null;
 
+/**
+ * A busy database is not an answer, so ask again before believing it.
+ *
+ * The server marks "the pooler had nothing to give" as 503, which is precisely
+ * the failure that used to make this section disappear behind a toast. Two quick
+ * retries turn it into a slightly longer skeleton. A 404 (the feature is off)
+ * and a 401 are final and returned immediately.
+ */
+async function fetchAiOverview(attempts = 3): Promise<AiOverview> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await apiFetch<AiOverview>("/api/ai/overview");
+    } catch (err) {
+      const retryable = err instanceof ApiError && err.status >= 500;
+      if (!retryable || attempt >= attempts) throw err;
+      await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+    }
+  }
+}
+
 function loadAiOverview(): Promise<AiOverview> {
   if (!aiOverviewPromise) {
-    aiOverviewPromise = apiFetch<AiOverview>("/api/ai/overview").catch(err => {
+    aiOverviewPromise = fetchAiOverview().catch(err => {
       // A failed attempt must not be cached, or every card retries nothing.
       aiOverviewPromise = null;
       throw err;
@@ -883,10 +904,16 @@ function AiUsageCard({ overview }: { overview: AiOverview }) {
  * another. One request answers for all of them: while it is in flight the
  * section is a skeleton, a 404 (the feature switched off on this server) removes
  * it entirely, and the cards mount already holding their data.
+ *
+ * A genuine failure is the fourth state, and it is not a toast. "Could not load
+ * AI settings" beside an empty page said nothing about whether AI was off or
+ * broken, and offered no way to try again; it now says what went wrong where the
+ * section would have been, with a button.
  */
 function AiSection() {
   const [overview, setOverview] = useState<AiOverview | null>(null);
-  const [state, setState] = useState<"loading" | "on" | "off">("loading");
+  const [state, setState] = useState<"loading" | "on" | "off" | "failed">("loading");
+  const [failure, setFailure] = useState("");
 
   const refresh = useCallback(
     () =>
@@ -899,26 +926,58 @@ function AiSection() {
     []
   );
 
+  const cancelled = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    loadAiOverview()
+    cancelled.current = false;
+    return () => {
+      cancelled.current = true;
+    };
+  }, []);
+
+  const load = useCallback((fresh = false) => {
+    setState("loading");
+    return (fresh ? reloadAiOverview() : loadAiOverview())
       .then(d => {
-        if (cancelled) return;
+        if (cancelled.current) return;
         setOverview(d);
         setState("on");
       })
       .catch(err => {
-        if (cancelled) return;
-        setState("off");
-        // 404 is the flag being off, which is not a failure worth a toast.
-        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load AI settings.");
+        if (cancelled.current) return;
+        // 404 is the flag being off on this server: the section does not exist,
+        // rather than having failed. Anything else is a real failure and gets
+        // said in place — a toast plus a vanishing section left no way to tell
+        // "AI is off here" from "AI is broken here", and no way to try again.
+        if (err instanceof ApiError && err.status === 404) {
+          setState("off");
+          return;
+        }
+        setFailure(err instanceof Error ? err.message : "Could not load AI settings.");
+        setState("failed");
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
+  // The skeleton stays up for the whole attempt, retries included, so the
+  // section never flashes an error on its way to succeeding.
+  useEffect(() => {
+    void load();
+  }, [load]);
+
   if (state === "off") return null;
+
+  if (state === "failed") {
+    return (
+      <section className="panel p-5 lg:col-span-2">
+        <h2 className="display t-h2">AI</h2>
+        <p className="t-sm mt-3" style={{ color: "var(--text-3)" }}>{failure}</p>
+        <button onClick={() => void load(true)} className="btn btn-ghost mt-4" style={{ minHeight: 40 }}>
+          <RefreshCw className="h-4 w-4" />
+          Try again
+        </button>
+      </section>
+    );
+  }
+
   if (state === "loading" || !overview) {
     return (
       <section className="panel p-5 lg:col-span-2" aria-busy="true" aria-label="Loading AI settings">
