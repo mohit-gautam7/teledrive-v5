@@ -4,6 +4,7 @@ import { fetchBotFile } from "@/lib/telegram-bot";
 import { downloadChunkFromTelegram, legacySessionAvailable } from "@/lib/telegram";
 import { downloadRange } from "@/lib/telegram-user";
 import { decryptSecret } from "@/lib/crypto";
+import { BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
 
 /**
  * One streaming path for every download/preview/share route.
@@ -34,6 +35,7 @@ export type StreamableFile = {
 /** How much of an MTProto file we pull per read. Big enough to amortise the
  *  round trip, small enough that a 2 GB file never sits in function memory. */
 const MTPROTO_WINDOW = 4 * 1024 * 1024;
+
 
 /**
  * How much is served for a range that names no end.
@@ -176,12 +178,50 @@ export async function readEntireFile(file: StreamableFile): Promise<Buffer | nul
   return null;
 }
 
+/**
+ * Why this file's bytes cannot be fetched at all, or null when they can.
+ *
+ * Checked *before* a streaming response is committed to. A stream that fails on
+ * its first pull has already sent `200`/`206` and a Content-Length, so the only
+ * thing left to do is destroy the connection mid-body — which Next reports as
+ * "failed to pipe response", a proxy turns into a 5xx, and the browser shows as
+ * a dead request with no explanation. Answering up front turns an unservable
+ * file into one honest, cheap, explainable response instead.
+ */
+export function unreachableReason(file: StreamableFile): string | null {
+  const totalSize = Number(file.size);
+
+  if (file.isChunked) {
+    // Every chunk is fetched by file_id, so any single chunk over the ceiling is
+    // unreachable even though the file as a whole is chunked.
+    const oversized = file.chunks.find(c => c.telegramFileId && c.chunkSize > BOT_DOWNLOAD_LIMIT);
+    if (oversized) {
+      return `This file was stored in ${Math.round(oversized.chunkSize / (1024 * 1024))} MB pieces, and Telegram will not let a bot download a piece larger than 20 MB. Re-upload it to store it in smaller pieces.`;
+    }
+    return null;
+  }
+
+  if (file.backend !== "mtproto" && file.storageMode === StorageMode.BOT && totalSize > BOT_DOWNLOAD_LIMIT) {
+    return `Telegram will not let a bot download a file larger than 20 MB, and this one was stored as a single ${(totalSize / (1024 * 1024)).toFixed(1)} MB document by an earlier version of TeleDrive. Re-upload it — uploads are now split into pieces that download fine.`;
+  }
+
+  return null;
+}
+
 export function streamFileResponse(
   file: StreamableFile,
   rangeHeader: string | null,
   disposition: "inline" | "attachment"
 ): NextResponse {
   const totalSize = Number(file.size);
+
+  // 409, not 500: nothing is broken server-side, the bytes are simply out of
+  // the bot's reach. `Cache-Control: no-store` because re-uploading fixes it.
+  const unreachable = unreachableReason(file);
+  if (unreachable) {
+    return NextResponse.json({ error: unreachable }, { status: 409, headers: { "Cache-Control": "no-store" } });
+  }
+
   const userSession = decryptSecret(file.user?.storageConfig?.telegramSession);
   const mtprotoSession = decryptSecret(file.user?.storageConfig?.mtprotoSession);
   const userBotToken = file.user?.storageConfig?.botToken || null;

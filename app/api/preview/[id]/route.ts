@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { streamFileResponse, streamInclude, readEntireFile } from "@/lib/file-stream";
+import { streamFileResponse, streamInclude, readEntireFile, unreachableReason } from "@/lib/file-stream";
 import { sendDocumentToChat, fetchBotFile } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
 
@@ -22,6 +22,15 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
     const wantThumb = new URL(request.url).searchParams.get("thumb") === "1";
     const isImage = (file.mimeType || "").startsWith("image/");
+
+    // A tile renders this for every image in the folder. When the bytes are out
+    // of the bot's reach the thumbnail can never be built, so say so once and
+    // cheaply instead of spending a failing Telegram round-trip per render — the
+    // tile falls back to its icon on any non-2xx.
+    const unreachable = unreachableReason(file);
+    if (unreachable) {
+      return NextResponse.json({ error: unreachable }, { status: 409, headers: { "Cache-Control": "no-store" } });
+    }
 
     // ── Small thumbnail for grid tiles ────────────────────────────────────────
     if (wantThumb && isImage) {

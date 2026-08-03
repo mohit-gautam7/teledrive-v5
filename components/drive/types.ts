@@ -11,6 +11,9 @@ export type DriveFile = {
   folderId: string | null;
   isFavorite: boolean;
   createdAt: string;
+  /** Stored in a way Telegram will not serve back (single bot document > 20 MB).
+   *  Re-uploading is the only fix, so the tile says so instead of failing mutely. */
+  unreachable?: boolean;
 };
 
 export type DriveFolder = {

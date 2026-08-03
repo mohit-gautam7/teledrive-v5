@@ -36,6 +36,16 @@ function resolveChunkSize() {
  */
 export const CHUNK_SIZE = resolveChunkSize();
 
+/**
+ * Telegram refuses `getFile` above this, whatever the bot managed to *send*.
+ *
+ * The asymmetry is the trap: a bot may upload a 50 MB document but may only
+ * download 20 MB of one. An early version stored anything under 50 MB as a
+ * single document, so files between these two numbers went up fine and can
+ * never come back down. Chunking exists precisely to stay under it.
+ */
+export const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
+
 /** Telegram's per-file ceiling on a normal user account. */
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
 /** Telegram Premium raises the per-file ceiling to 4 GB. */

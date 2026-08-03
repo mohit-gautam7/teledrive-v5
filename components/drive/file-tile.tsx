@@ -135,7 +135,7 @@ function FileTileBase({
         style={{ background: "var(--surface)", cursor: selectionActive ? "pointer" : "zoom-in" }}
         onClick={() => (selectionActive ? actions.onToggleSelect() : actions.onPreview())}
       >
-        {image ? (
+        {image && !file.unreachable ? (
           <>
             {!loaded ? <span className="skeleton absolute inset-0" /> : null}
             <img
@@ -155,7 +155,17 @@ function FileTileBase({
           <Icon className={grid ? "h-8 w-8" : "h-5 w-5"} style={{ color: "var(--text-3)" }} />
         )}
 
-        {video ? <span className="chip absolute bottom-1.5 right-1.5">VIDEO</span> : null}
+        {file.unreachable ? (
+          <span
+            className="chip absolute bottom-1.5 left-1.5"
+            style={{ color: "var(--amber)", borderColor: "var(--amber)" }}
+            title="Telegram will not serve this file back to a bot — it was stored as a single document over 20 MB. Re-upload it to fix."
+          >
+            RE-UPLOAD
+          </span>
+        ) : video ? (
+          <span className="chip absolute bottom-1.5 right-1.5">VIDEO</span>
+        ) : null}
 
         {/* Selection toggle — always visible once a selection exists */}
         <button

@@ -3,12 +3,23 @@ import { ZodError } from "zod";
 import { mapMtprotoError } from "@/lib/mtproto-errors";
 import { BotApiError } from "@/lib/telegram-bot";
 
+/**
+ * Next's own probe during `next build`, not a fault.
+ *
+ * It reaches every dynamic route handler, so without this exclusion each build
+ * printed a handful of `ref=` lines with a full stack — indistinguishable in the
+ * host's log from a real 500, and the first thing anyone grepping for a
+ * reference would find.
+ */
+function isBuildTimeProbe(error: unknown) {
+  return error instanceof Error && error.message.includes("Dynamic server usage");
+}
+
 export function jsonError(error: unknown, fallback = "Something went wrong.") {
   if (error instanceof Response) return error;
   // Without this, server-side failures reach the user as a bare message with no
-  // stack anywhere — nothing to debug from in production logs. Next's own
-  // "Dynamic server usage" probe during `next build` is expected, not a fault.
-  if (error instanceof Error && !error.message.includes("Dynamic server usage")) {
+  // stack anywhere — nothing to debug from in production logs.
+  if (error instanceof Error && !isBuildTimeProbe(error)) {
     console.error("[api]", error.stack || error.message);
   }
   if (error instanceof ZodError) {
@@ -47,6 +58,17 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
     // produced a slow storm of identical failures and an opaque error.
     // 4xx here is permanent for this chat, so it is reported as such.
     if (error instanceof BotApiError) {
+      // Telegram lets a bot *send* a 50 MB document but only *fetch* a 20 MB
+      // one, so this is a permanent property of the stored file, not a fault.
+      if (/file is too big|20 MB bot download limit/i.test(message)) {
+        return NextResponse.json(
+          {
+            error:
+              "Telegram will not let a bot download a file this large. It was stored as a single document by an earlier version of TeleDrive — re-upload it and it will download fine."
+          },
+          { status: 409 }
+        );
+      }
       if (error.code === 401) {
         return NextResponse.json(
           { error: "Telegram rejected this server's bot token. The site owner needs to check BOT_TOKEN." },
@@ -91,6 +113,10 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
  */
 function serverFailure(error: unknown, fallback: string) {
   const ref = Math.random().toString(16).slice(2, 10);
-  console.error(`[api] ref=${ref}`, error instanceof Error ? error.stack || error.message : error);
+  // The build-time probe is not a failure and must not mint a reference: a log
+  // full of build refs is exactly what makes a real one hard to find.
+  if (!isBuildTimeProbe(error)) {
+    console.error(`[api] ref=${ref}`, error instanceof Error ? error.stack || error.message : error);
+  }
   return NextResponse.json({ error: fallback, ref }, { status: 500 });
 }
