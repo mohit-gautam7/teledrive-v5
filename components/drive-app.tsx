@@ -99,6 +99,10 @@ const SIDEBAR_MAX = 460;
 const SIDEBAR_DEFAULT = 268;
 const SIDEBAR_KEY = "teledrive-sidebar-width";
 
+/** Long enough that a typed word is one request, short enough that the results
+ *  feel like they are keeping up. */
+const SEARCH_DEBOUNCE_MS = 300;
+
 /** `useLayoutEffect`, minus the warning React prints when it is rendered on the
  *  server. Nothing here runs during SSR, so falling back to useEffect is safe. */
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -151,6 +155,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const downloadControllers = useRef<Map<string, AbortController>>(new Map());
   const progressSamples = useRef<Map<string, Array<{ t: number; loaded: number }>>>(new Map());
   const batchController = useRef<AbortController | null>(null);
+  /** The in-flight listing, so a newer one can cancel it. */
+  const listController = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dirInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -263,10 +269,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     if (!hasCache) setLoading(true);
     setRevalidating(true);
 
+    // A superseded listing is dead weight: it still occupies a database
+    // connection, and its response would overwrite the newer one if it landed
+    // late. Typing in the search box is where that mattered most — each debounced
+    // query replaced the last, and without this the requests stacked up.
+    listController.current?.abort();
+    const controller = new AbortController();
+    listController.current = controller;
+
     try {
       const fileData = await apiFetch<{ files: DriveFile[]; hasMore: boolean }>(
         `/api/files?${listParams({ skip: "0" })}`,
-        { cache: "no-store" }
+        { cache: "no-store", signal: controller.signal }
       );
       setFiles(fileData.files);
       setHasMore(Boolean(fileData.hasMore));
@@ -277,10 +291,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         /* storage full — the cache is best-effort */
       }
     } catch (error) {
+      // Cancelling our own request is the normal path, not a failure to report.
+      if (controller.signal.aborted) return;
       if (!hasCache) toast.error(error instanceof Error ? error.message : "Could not load files.");
     } finally {
-      setLoading(false);
-      setRevalidating(false);
+      if (listController.current === controller) {
+        listController.current = null;
+        setLoading(false);
+        setRevalidating(false);
+      }
     }
   }, [folderId, appView, listParams, filesCacheKey]);
 
@@ -404,8 +423,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }, [files, cacheKey]);
 
+  /**
+   * One request after typing stops, not one per keystroke.
+   *
+   * Clearing the box is exempt: returning to the full listing is a cancellation,
+   * the answer is already in the local cache, and making it wait out a delay
+   * reads as lag rather than as care.
+   */
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 220);
+    const next = query.trim();
+    if (!next) {
+      setDebouncedQuery("");
+      return;
+    }
+    const timer = window.setTimeout(() => setDebouncedQuery(next), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [query]);
 
@@ -1388,11 +1419,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
-  // Children of the current folder, straight from the in-memory tree.
-  const folders = useMemo(
-    () => folderTree.filter(f => (f.parentId ?? null) === (folderId ?? null)).sort((a, b) => a.name.localeCompare(b.name)),
-    [folderTree, folderId]
-  );
+  // Children of the current folder, straight from the in-memory tree — or, while
+  // searching, every folder whose name matches, wherever it sits. The whole tree
+  // is already in memory, so matching folders costs nothing and stops a search
+  // for a folder's own name from coming back empty.
+  const folders = useMemo(() => {
+    const matches = debouncedQuery
+      ? folderTree.filter(f => f.name.toLowerCase().includes(debouncedQuery.toLowerCase()))
+      : folderTree.filter(f => (f.parentId ?? null) === (folderId ?? null));
+    return matches.sort((a, b) => a.name.localeCompare(b.name));
+  }, [folderTree, folderId, debouncedQuery]);
 
   // Weighted by bytes, not a mean of per-file percentages — otherwise one tiny
   // finished file next to a 4 GB one would read 50%.
@@ -1403,8 +1439,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return Math.round((loaded / total) * 100);
   }, [uploadQueue]);
 
-  const heading =
-    appView === "files"
+  // A search reaches across every folder, so the heading has to say so —
+  // otherwise the breadcrumb still reads "Invoices" while the results plainly
+  // are not from it.
+  const heading = debouncedQuery
+    ? `Results for “${debouncedQuery}”`
+    : appView === "files"
       ? folderTrail.length
         ? folderTrail[folderTrail.length - 1].name
         : "My Files"
@@ -1713,7 +1753,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           {/* Title row */}
           <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
-              {browsing && appView === "files" ? (
+              {browsing && appView === "files" && !debouncedQuery ? (
                 <nav className="mono mb-1.5 flex flex-wrap items-center gap-1" aria-label="Breadcrumb" style={{ color: "var(--text-3)" }}>
                   <button onClick={() => goToTrail(null)} className="link-underline">Home</button>
                   {folderTrail.map(folder => (

@@ -21,6 +21,12 @@ export class ApiError extends Error {
  */
 function friendlyStatus(status: number, serverMessage: string, ref?: string) {
   if (status === 401) return "Your session expired. Please sign in again.";
+  // 503 is the one 5xx the server raises deliberately — "the database is busy",
+  // written for a human. Hiding it behind the generic text would throw away the
+  // only 5xx we can explain.
+  if (status === 503 && serverMessage.trim() && serverMessage.toLowerCase() !== "service unavailable") {
+    return serverMessage.trim();
+  }
   // The 5xx body is an unhandled exception's message and can carry table names
   // or connection strings, so it stays hidden. The reference does not — it is a
   // random tag printed next to the stack in the server log, which turns "the

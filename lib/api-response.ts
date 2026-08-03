@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { mapMtprotoError } from "@/lib/mtproto-errors";
 import { BotApiError } from "@/lib/telegram-bot";
+import { isTransientDbError, prismaErrorCode } from "@/lib/db-errors";
 
 /**
  * Next's own probe during `next build`, not a fault.
@@ -24,6 +25,13 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
   }
   if (error instanceof ZodError) {
     return NextResponse.json({ error: error.issues[0]?.message || "Invalid request." }, { status: 400 });
+  }
+  if (isTransientDbError(error)) {
+    console.error(`[api] database unavailable (${prismaErrorCode(error)})`);
+    return NextResponse.json(
+      { error: "The database is busy right now. Please try again in a moment.", code: prismaErrorCode(error) },
+      { status: 503 }
+    );
   }
   // Telegram RPC failures carry an actionable meaning; map them before the
   // generic handling turns them into a bare 500.
@@ -116,7 +124,11 @@ function serverFailure(error: unknown, fallback: string) {
   // The build-time probe is not a failure and must not mint a reference: a log
   // full of build refs is exactly what makes a real one hard to find.
   if (!isBuildTimeProbe(error)) {
-    console.error(`[api] ref=${ref}`, error instanceof Error ? error.stack || error.message : error);
+    // The Prisma code, when there is one, is printed on the reference line
+    // itself so `grep ref=` answers "what kind of failure" without reading the
+    // whole stack.
+    const code = prismaErrorCode(error);
+    console.error(`[api] ref=${ref}${code ? ` code=${code}` : ""}`, error instanceof Error ? error.stack || error.message : error);
   }
   return NextResponse.json({ error: fallback, ref }, { status: 500 });
 }

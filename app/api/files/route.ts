@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, readWithRetry } from "@/lib/prisma";
 import { toPublicFile } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
 import { STORED_ONLY } from "@/lib/upload-config";
@@ -32,7 +32,12 @@ export async function GET(request: NextRequest) {
     // Trash, Favourites and Recent are cross-folder collections; only the
     // regular file browser is scoped to one folder. Without this, anything
     // trashed or starred while inside a folder is invisible in those views.
-    const spansFolders = view === "trash" || view === "favorites" || view === "recent";
+    //
+    // A search is cross-folder for the same reason. The top search box reads as
+    // "search my drive", but scoping it to the open folder meant typing a
+    // filename you could see in the sidebar returned nothing, with no hint that
+    // the folder you happened to be standing in was the reason.
+    const spansFolders = view === "trash" || view === "favorites" || view === "recent" || Boolean(q);
 
     const where = {
       userId: user.id,
@@ -58,12 +63,14 @@ export async function GET(request: NextRequest) {
     };
 
     // take + 1 so we know whether another page exists without a COUNT query.
-    const rows = await prisma.file.findMany({
-      where,
-      orderBy,
-      skip,
-      take: take + 1
-    });
+    const rows = await readWithRetry(() =>
+      prisma.file.findMany({
+        where,
+        orderBy,
+        skip,
+        take: take + 1
+      })
+    );
 
     const hasMore = rows.length > take;
     const files = (hasMore ? rows.slice(0, take) : rows).map(toPublicFile);
