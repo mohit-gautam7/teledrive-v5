@@ -21,7 +21,6 @@ import {
 } from "@/lib/mtproto-session";
 import { mapMtprotoError, isDeadSession } from "@/lib/mtproto-errors";
 import { tgLog } from "@/lib/telegram-user";
-import { MAX_FILE_SIZE, MAX_FILE_SIZE_PREMIUM } from "@/lib/upload-config";
 import { describeLink } from "@/lib/telegram-link";
 
 export const runtime = "nodejs";

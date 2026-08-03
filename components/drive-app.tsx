@@ -42,7 +42,6 @@ import {
   matchesSession,
   readPersisted,
   recallHandle,
-  rememberHandle,
   writePersisted,
   type PersistedUpload
 } from "@/lib/upload-store";
@@ -57,7 +56,7 @@ import { Lightbox } from "@/components/drive/lightbox";
 import { ConfirmModal, MoveModal, NameModal, PropertiesModal, ShareModal } from "@/components/drive/modals";
 import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
 import { TransferPanel, sampleRate } from "@/components/drive/transfers";
-import { browserDownload, downloadWithProgress } from "@/lib/download-manager";
+import { MEMORY_DOWNLOAD_LIMIT, browserDownload, canStreamToDisk, downloadWithProgress } from "@/lib/download-manager";
 import {
   type AppView,
   type DownloadItem,
@@ -625,6 +624,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         eta: null,
         status: "pending",
         file,
+        lastModified: file.lastModified,
         folderId: destination,
         resumeKey: resumeKeyFor(file, destination),
         path
@@ -731,7 +731,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         fileId: null,
         name: it.name,
         size: it.size,
-        lastModified: it.file?.lastModified ?? 0,
+        // From the item, not from `it.file`: a session restored after a reload
+        // has no File, and writing 0 back would erase the timestamp the resume
+        // key is built from — stranding the very session this is preserving.
+        lastModified: it.lastModified ?? it.file?.lastModified ?? 0,
         folderId: it.folderId ?? null,
         resumeKey: it.resumeKey as string,
         path: it.path,
@@ -779,12 +782,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       input.onchange = () => {
         const picked = input.files?.[0];
         if (!picked) return;
-        const session = { name: item.name, size: item.size, lastModified: item.file?.lastModified ?? 0 };
-        // The resume key is derived from name+size+lastModified, so a different
-        // file would resume against chunks that are not its own.
-        if (picked.name !== session.name || picked.size !== session.size) {
+        // Name and size must match, or this is a different file and its chunks
+        // are not the ones the server is holding. The timestamp is part of the
+        // resume key too, but a mismatch there is harmless: the key simply does
+        // not match, so the server starts a fresh session instead of resuming.
+        if (picked.name !== item.name || picked.size !== item.size) {
           toast.error(`That is not the same file — pick "${item.name}" to carry on where it stopped.`);
           return;
+        }
+        if (item.lastModified && picked.lastModified !== item.lastModified) {
+          toast.info(`"${picked.name}" has changed since the upload started, so it will be sent from the beginning.`);
         }
         void resumeUpload(item, picked);
       };
@@ -819,6 +826,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       eta: null,
       status: "paused",
       file: null,
+      lastModified: session.lastModified,
       folderId: session.folderId,
       resumeKey: session.resumeKey,
       path: session.path
@@ -911,7 +919,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    * like any other download in the panel — percentage, speed and ETA included.
    */
   const startZipDownload = useCallback(
-    async (selection: { folderIds?: string[]; fileIds?: string[]; label: string }) => {
+    async (selection: { folderIds?: string[]; fileIds?: string[]; label: string; estimatedBytes?: number }) => {
+      // A browser that cannot stream to disk has to assemble the archive in
+      // memory, and a multi-gigabyte one would take the tab down with it. The
+      // exact size is only known once the response arrives, so the selection's
+      // own total stands in — it is within a few hundred bytes per file.
+      if (!canStreamToDisk() && (selection.estimatedBytes ?? 0) > MEMORY_DOWNLOAD_LIMIT) {
+        toast.error(
+          `That is about ${formatBytes(selection.estimatedBytes ?? 0)} — too large for this browser to build an archive in memory. Select fewer items, or use a Chromium browser, which writes the archive straight to disk.`
+        );
+        return;
+      }
       const id = `zip-${Date.now()}`;
       const controller = new AbortController();
       downloadControllers.current.set(id, controller);
@@ -1552,6 +1570,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           onRetryUpload={retryUpload}
           onResumeUpload={repickAndResume}
           onCancelDownload={cancelDownload}
+          onRetryDownload={item => {
+            setDownloads(list => list.filter(d => d.id !== item.id));
+            // A zip is rebuilt from its own row: the selection that produced it
+            // is long gone, so the file id is the only handle left.
+            if (item.id.startsWith("zip-")) {
+              toast.info("Select the folders again to rebuild that archive.");
+              return;
+            }
+            void startDownload({ id: item.fileId, originalName: item.name, size: item.size });
+          }}
           onDismiss={id => {
             setUploadQueue(q => q.filter(it => it.id !== id));
             setDownloads(list => list.filter(d => d.id !== id));
@@ -1908,7 +1936,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Item
                                   onSelect={() =>
-                                    void startZipDownload({ folderIds: [folder.id], label: folder.name })
+                                    void startZipDownload({
+                                      folderIds: [folder.id],
+                                      label: folder.name,
+                                      estimatedBytes: folder.size ?? 0
+                                    })
                                   }
                                   className="menu-item"
                                 >
@@ -2035,7 +2067,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     selectedFolders.size === 1 && !selected.size
                       ? folderTree.find(f => f.id === [...selectedFolders][0])?.name || "teledrive"
                       : `teledrive-${selected.size + selectedFolders.size}-items`;
-                  void startZipDownload({ folderIds: [...selectedFolders], fileIds: [...selected], label });
+                  const estimatedBytes =
+                    [...selectedFolders].reduce((sum, id) => sum + (folderTree.find(f => f.id === id)?.size ?? 0), 0) +
+                    [...selected].reduce((sum, id) => sum + (files.find(f => f.id === id)?.size ?? 0), 0);
+                  void startZipDownload({
+                    folderIds: [...selectedFolders],
+                    fileIds: [...selected],
+                    label,
+                    estimatedBytes
+                  });
                   clearSelection();
                 }}
                 className="btn btn-ghost shrink-0"

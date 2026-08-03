@@ -80,8 +80,9 @@ export async function downloadWithProgress({
       return "cancelled";
     }
   } else if ((sizeHint ?? 0) > MEMORY_DOWNLOAD_LIMIT && !init) {
-    // A POST cannot be handed to the browser as a link, so a large archive is
-    // buffered rather than abandoned — the caller warns before it gets here.
+    // A POST cannot be handed to the browser as a link, so an archive never
+    // takes this path; the caller checks the selection against the same limit
+    // before starting one.
     browserDownload(url);
     return "handed-to-browser";
   }

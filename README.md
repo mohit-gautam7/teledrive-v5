@@ -7,7 +7,9 @@ A private, self-hostable cloud drive that stores your files in **your own Telegr
 - **Several ways in** — Telegram bot code, the one-tap Telegram Login Widget, Google sign-in (linked once to your Telegram account), or an owner key.
 - **Your storage** — files are stored in each user's own Telegram chat with the bot. Bot tokens never reach the browser; every byte is proxied.
 - **Big files** — 2 GB per file via chunked upload, or 4 GB by linking your own Telegram account (see below).
-- **Resumable uploads** — a dropped connection costs the in-flight chunks, not the whole file. Re-sending a chunk that already landed is deduplicated.
+- **Resumable uploads** — a dropped connection costs the in-flight chunks, not the whole file. Re-sending a chunk that already landed is deduplicated. Closing the tab does not end an upload either: the session is kept for a day and picked up again on the next visit, sending only what is still missing.
+- **Transfer panel** — uploads and downloads in one place, each with a percentage, live speed and ETA taken from byte deltas.
+- **Folder download** — a folder, or several at once, streamed as a single zip with its nesting intact. The archive is built as it is sent, so a 20 GB folder costs no more memory than a small one.
 - **Drag and drop** — drop files anywhere to upload, or drop them onto a folder card to file them there. Drag existing files onto a folder to move them.
 - **Folder upload** — pick a directory and the folder tree is recreated as it uploads.
 - **Share management** — list, disable, revoke, password-protect and expire every link from one place.
@@ -16,7 +18,7 @@ A private, self-hostable cloud drive that stores your files in **your own Telegr
 - **Open in Telegram** — jump straight to the chat holding a file.
 - **Folders** — nested, with recursive size and item counts.
 - **Files** — rename, move, favourite, share, download, preview, properties.
-- **Bulk actions** — multi-select to download, move, favourite, or delete.
+- **Bulk actions** — multi-select files *and* folders to download as one archive, or move, favourite and delete.
 - **Sort & filter** — by date / name / size; filter by images / videos / documents.
 - **Trash** — soft-delete with restore, and one-click empty trash.
 - **Keyboard shortcuts** — `/` focus search, `Esc` clear selection, `Ctrl/⌘+A` select all, `Del` trash.
@@ -35,6 +37,13 @@ object. Linking your own account (Settings → Your Telegram account) uses MTPro
 instead, which stores a large file as a single message. Files at or above 64 MB
 then use it automatically; `File.backend` records which one holds each file, so
 existing files keep working either way.
+
+> **A note on files stored before chunking.** A bot may *send* a 50 MB document
+> but may only *fetch* 20 MB of one, so anything an early version stored as a
+> single document above 20 MB went up fine and cannot come back down. Those files
+> are marked **RE-UPLOAD** in the drive and answer downloads with an explanation
+> rather than failing silently. Re-uploading them stores them in chunks, after
+> which they work normally.
 
 ## Tech
 

@@ -49,6 +49,9 @@ export type UploadItem = {
   error?: string;
   /** Null only for a restored session whose file this tab cannot read yet. */
   file: File | null;
+  /** Kept separately from `file`, which a restored session does not have: it is
+   *  part of the resume key, so losing it would strand the session. */
+  lastModified?: number;
   /** Destination folder, kept so a restored session resumes into the right place. */
   folderId?: string | null;
   /** Server-side session fingerprint; the resume key is what makes this durable. */

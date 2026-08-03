@@ -26,6 +26,7 @@ export function TransferPanel({
   onRetryUpload,
   onResumeUpload,
   onCancelDownload,
+  onRetryDownload,
   onDismiss
 }: {
   transfers: TransferItem[];
@@ -36,6 +37,7 @@ export function TransferPanel({
   onRetryUpload: (item: UploadItem) => void;
   onResumeUpload: (item: UploadItem) => void;
   onCancelDownload: (id: string) => void;
+  onRetryDownload: (item: DownloadItem) => void;
   onDismiss: (id: string) => void;
 }) {
   const reduceMotion = useReducedMotion();
@@ -98,7 +100,16 @@ export function TransferPanel({
                 <TransferRow
                   item={item}
                   onCancel={() => (item.kind === "upload" ? onCancelUpload(item.id) : onCancelDownload(item.id))}
-                  onRetry={() => item.kind === "upload" && (item.file ? onRetryUpload(item) : onResumeUpload(item))}
+                  onRetry={() => {
+                    if (item.kind === "download") {
+                      onRetryDownload(item);
+                      return;
+                    }
+                    // A restored session has no bytes to retry with, so retrying
+                    // it means asking for the file back first.
+                    if (item.file) onRetryUpload(item);
+                    else onResumeUpload(item);
+                  }}
                   onResume={() => item.kind === "upload" && onResumeUpload(item)}
                   onDismiss={() => onDismiss(item.id)}
                 />
