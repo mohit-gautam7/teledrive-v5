@@ -1503,10 +1503,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return Math.round((loaded / total) * 100);
   }, [uploadQueue]);
 
-  // A search reaches across every folder, so the heading has to say so —
-  // otherwise the breadcrumb still reads "Invoices" while the results plainly
-  // are not from it.
-  const heading = aiSearch && aiAvailable && aiSearchedFor
+  const browsing = BROWSE_VIEWS.includes(appView);
+
+  /**
+   * A search reaches across every folder, so the heading has to say so —
+   * otherwise the breadcrumb still reads "Invoices" while the results plainly
+   * are not from it.
+   *
+   * Only the browser views are searchable, so only they may be titled by the
+   * search: otherwise switching to Settings with text still in the box left the
+   * page headed "Results for …" above something that was not results.
+   */
+  const heading = !browsing
+    ? NAV.find(n => n.view === appView)?.label ?? "My Files"
+    : aiSearch && aiAvailable && aiSearchedFor
     ? `Meaning of “${aiSearchedFor}”`
     : debouncedQuery && !aiSearch
     ? `Results for “${debouncedQuery}”`
@@ -1515,8 +1525,6 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         ? folderTrail[folderTrail.length - 1].name
         : "My Files"
       : NAV.find(n => n.view === appView)?.label ?? "My Files";
-
-  const browsing = BROWSE_VIEWS.includes(appView);
 
   /**
    * Drag the sidebar's edge.

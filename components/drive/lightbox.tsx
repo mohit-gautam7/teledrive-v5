@@ -63,26 +63,43 @@ function Unsupported({
  *
  * So a network failure is treated as what it usually is: a stall. The position
  * is remembered, the element is reloaded and seeked straight back to it, and the
- * overlay says it is reconnecting. Only a failure that cannot be recovered
- * several times over — or one the browser reports as an unplayable format —
- * becomes the failure card. Buffering gets the same overlay rather than a frozen
- * frame, so "still working" never looks like "broken".
+ * overlay says it is reconnecting. Buffering gets the same overlay rather than a
+ * frozen frame, so "still working" never looks like "broken".
+ *
+ * Only a format the browser reports as unplayable becomes the failure card.
+ * Running out of retries does not: that card unmounts the player, and unmounting
+ * the player is precisely how someone ends up back at 0:00. The stage stays,
+ * still holding the position, and offers to try again or download.
  */
 const MAX_STREAM_RECOVERIES = 6;
+
+/**
+ * How long a stall has to last before the overlay stops saying "Buffering…" and
+ * starts saying why.
+ *
+ * Measured against the real path: 16 MiB of a 975 MB video takes ~12 s to come
+ * back out of Telegram, so a high-bitrate film genuinely outruns the pipe. A
+ * spinner that never explains itself reads as a broken player; naming the cause
+ * and offering the download turns it into a choice.
+ */
+const SLOW_AFTER_MS = 12_000;
 
 function VideoStage({
   src,
   fileId,
   onLoaded,
-  onUnrecoverable
+  onUnrecoverable,
+  onDownload
 }: {
   src: string;
   fileId: string;
   onLoaded: () => void;
   onUnrecoverable: () => void;
+  onDownload: () => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
-  const [state, setState] = useState<"idle" | "buffering" | "reconnecting">("buffering");
+  const [state, setState] = useState<"idle" | "buffering" | "reconnecting" | "stalled">("buffering");
+  const [slow, setSlow] = useState(false);
   const recoveries = useRef(0);
   const resumeAt = useRef(0);
 
@@ -91,8 +108,36 @@ function VideoStage({
   useEffect(() => {
     recoveries.current = 0;
     resumeAt.current = 0;
+    setSlow(false);
     setState("buffering");
   }, [fileId]);
+
+  // "Buffering" that has gone on this long is not a blip, it is the bandwidth.
+  useEffect(() => {
+    if (state === "idle" || state === "stalled") {
+      setSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlow(true), SLOW_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
+  /** Reload and seek straight back to where the viewer was. */
+  const resume = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    setState("reconnecting");
+    const wasPlaying = !el.paused;
+    el.load();
+    const seekBack = () => {
+      // The whole point: `load()` puts the element back at 0, and this is what
+      // stops that from being what the viewer sees.
+      if (resumeAt.current > 0) el.currentTime = resumeAt.current;
+      if (wasPlaying) void el.play().catch(() => {});
+      el.removeEventListener("loadedmetadata", seekBack);
+    };
+    el.addEventListener("loadedmetadata", seekBack);
+  }, []);
 
   const handleError = useCallback(() => {
     const el = ref.current;
@@ -102,28 +147,27 @@ function VideoStage({
     const recoverable =
       code === MediaError.MEDIA_ERR_NETWORK || code === MediaError.MEDIA_ERR_DECODE || code === undefined;
 
-    if (!el || !recoverable || recoveries.current >= MAX_STREAM_RECOVERIES) {
+    // Not playable here at all — that is the one case worth replacing the player
+    // with the "download instead" card.
+    if (!el || !recoverable) {
       onUnrecoverable();
       return;
     }
 
+    // Out of automatic retries. The player stays exactly where it is, holding
+    // the remembered position, and the viewer decides whether to try again —
+    // rather than being dropped back to 0:00 by a card that unmounts it.
+    if (recoveries.current >= MAX_STREAM_RECOVERIES) {
+      setState("stalled");
+      return;
+    }
+
     recoveries.current += 1;
-    setState("reconnecting");
-    const wasPlaying = !el.paused;
     // Back off a little: hammering a link that just dropped a window rarely
     // helps, and the delay is invisible next to the stall the viewer already saw.
-    window.setTimeout(() => {
-      const current = ref.current;
-      if (!current) return;
-      current.load();
-      const seekBack = () => {
-        if (resumeAt.current > 0) current.currentTime = resumeAt.current;
-        if (wasPlaying) void current.play().catch(() => {});
-        current.removeEventListener("loadedmetadata", seekBack);
-      };
-      current.addEventListener("loadedmetadata", seekBack);
-    }, 400 * recoveries.current);
-  }, [onUnrecoverable]);
+    setState("reconnecting");
+    window.setTimeout(resume, 400 * recoveries.current);
+  }, [onUnrecoverable, resume]);
 
   return (
     <div className="relative flex max-h-full max-w-full items-center justify-center">
@@ -145,8 +189,8 @@ function VideoStage({
           const time = (event.currentTarget as HTMLVideoElement).currentTime;
           if (time > 0) resumeAt.current = time;
         }}
-        onWaiting={() => setState(s => (s === "reconnecting" ? s : "buffering"))}
-        onStalled={() => setState(s => (s === "reconnecting" ? s : "buffering"))}
+        onWaiting={() => setState(s => (s === "reconnecting" || s === "stalled" ? s : "buffering"))}
+        onStalled={() => setState(s => (s === "reconnecting" || s === "stalled" ? s : "buffering"))}
         onPlaying={() => {
           setState("idle");
           // Playback resumed, so whatever went wrong is behind us and the next
@@ -159,16 +203,49 @@ function VideoStage({
         style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", background: "#000" }}
       />
 
-      {state !== "idle" ? (
-        <span
-          className="pointer-events-none absolute inset-x-0 top-3 mx-auto flex w-fit items-center gap-2 rounded-full px-3 py-1.5"
+      {state === "stalled" ? (
+        <div
+          className="absolute inset-x-0 top-3 mx-auto flex w-fit max-w-[92%] flex-col items-center gap-2 rounded-xl px-4 py-3 text-center"
+          style={{ background: "rgba(4,6,12,0.88)", border: "1px solid var(--border-med)" }}
+        >
+          <span className="t-sm" style={{ color: "var(--text-2)" }}>
+            The stream keeps dropping. Your place is kept — try again, or download it to watch offline.
+          </span>
+          <span className="flex gap-1.5">
+            <button
+              onClick={() => {
+                recoveries.current = 0;
+                resume();
+              }}
+              className="btn btn-accent"
+              style={{ minHeight: 34, fontSize: 12 }}
+            >
+              Try again
+            </button>
+            <button onClick={onDownload} className="btn btn-ghost" style={{ minHeight: 34, fontSize: 12 }}>
+              <Download className="h-3.5 w-3.5" /> Download
+            </button>
+          </span>
+        </div>
+      ) : state !== "idle" ? (
+        <div
+          className="absolute inset-x-0 top-3 mx-auto flex w-fit max-w-[92%] flex-col items-center gap-2 rounded-xl px-3 py-2 text-center"
           style={{ background: "rgba(4,6,12,0.78)", border: "1px solid var(--border-med)" }}
         >
-          <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: "var(--accent)" }} />
-          <span className="mono" style={{ color: "var(--text-2)" }}>
-            {state === "reconnecting" ? "Reconnecting…" : "Buffering…"}
+          <span className="flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: "var(--accent)" }} />
+            <span className="mono" style={{ color: "var(--text-2)" }}>
+              {state === "reconnecting" ? "Reconnecting…" : "Buffering…"}
+            </span>
           </span>
-        </span>
+          {/* Still buffering, deliberately — the wait is explained rather than
+              cut short, because cancelling would cost the viewer their place. */}
+          {slow ? (
+            <span className="t-xs" style={{ color: "var(--text-3)" }}>
+              Telegram is feeding this slowly. Playback will continue — or download it to watch without the wait.
+            </span>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -355,6 +432,7 @@ export function Lightbox({
             fileId={file.id}
             onLoaded={() => setLoaded(true)}
             onUnrecoverable={() => setFailed(true)}
+            onDownload={() => onDownload(file)}
           />
         ) : audio ? (
           <div className="w-full max-w-lg text-center">
