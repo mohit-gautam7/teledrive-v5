@@ -19,9 +19,17 @@ export class ApiError extends Error {
  * message, which can carry table names, file paths or connection strings, and
  * none of it helps the person reading the toast.
  */
-function friendlyStatus(status: number, serverMessage: string) {
+function friendlyStatus(status: number, serverMessage: string, ref?: string) {
   if (status === 401) return "Your session expired. Please sign in again.";
-  if (status >= 500) return "The server had a problem. Please try again.";
+  // The 5xx body is an unhandled exception's message and can carry table names
+  // or connection strings, so it stays hidden. The reference does not — it is a
+  // random tag printed next to the stack in the server log, which turns "the
+  // server had a problem" into something reportable.
+  if (status >= 500) {
+    return ref
+      ? `The server had a problem (ref ${ref}). Please try again.`
+      : "The server had a problem. Please try again.";
+  }
 
   const message = serverMessage.trim();
   if (message && message.toLowerCase() !== "internal server error") return message;
@@ -39,7 +47,8 @@ export async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = isJson ? await response.json().catch(() => null) : await response.text().catch(() => "");
     const message = typeof body === "object" && body && "error" in body ? String(body.error) : String(body || response.statusText);
-    throw new ApiError(friendlyStatus(response.status, message), response.status);
+    const ref = typeof body === "object" && body && "ref" in body ? String((body as { ref?: unknown }).ref) : undefined;
+    throw new ApiError(friendlyStatus(response.status, message, ref), response.status);
   }
 
   if (!isJson) {

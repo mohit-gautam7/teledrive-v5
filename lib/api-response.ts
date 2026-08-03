@@ -75,7 +75,22 @@ export function jsonError(error: unknown, fallback = "Something went wrong.") {
     // An unhandled exception's message is for the logs, not the user — it can
     // carry table names, paths or connection details. The caller's fallback is
     // written for humans; the real message was logged above.
-    return NextResponse.json({ error: fallback }, { status: 500 });
+    return serverFailure(error, fallback);
   }
-  return NextResponse.json({ error: fallback }, { status: 500 });
+  return serverFailure(error, fallback);
+}
+
+/**
+ * A 500 the user can actually report.
+ *
+ * "The server had a problem" is untraceable: the real cause is in the host's
+ * log, but nothing connects the two. Every 500 now carries a short reference
+ * that is printed beside the stack, so a screenshot of the toast is enough to
+ * find the exact failure in Render's logs. The reference is random and carries
+ * no information by itself, so it leaks nothing.
+ */
+function serverFailure(error: unknown, fallback: string) {
+  const ref = Math.random().toString(16).slice(2, 10);
+  console.error(`[api] ref=${ref}`, error instanceof Error ? error.stack || error.message : error);
+  return NextResponse.json({ error: fallback, ref }, { status: 500 });
 }
