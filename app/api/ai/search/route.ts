@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { jsonError } from "@/lib/api-response";
 import { aiEnabled } from "@/lib/feature-flags";
 import { rateLimit } from "@/lib/rate-limit";
-import { semanticSearch } from "@/lib/ai/search";
+import { semanticSearchWithFiles } from "@/lib/ai/search";
 import { NoKeyAvailableError } from "@/lib/ai/router";
 import { ProviderError } from "@/lib/ai/client";
 import { enqueue } from "@/lib/jobs/queue";
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ job });
     }
 
-    const hits = await semanticSearch(user.id, input.q, input.limit ?? 10);
+    const hits = await semanticSearchWithFiles(user.id, input.q, input.limit ?? 10);
     return NextResponse.json({ hits });
   } catch (error) {
     if (error instanceof NoKeyAvailableError) {

@@ -3,6 +3,7 @@ import { runEmbed } from "@/lib/ai/router";
 import { resolvePlan } from "@/lib/ai/modes";
 import { extractIndexableText } from "@/lib/ai/file-tasks";
 import { streamInclude } from "@/lib/file-stream";
+import { toPublicFile } from "@/lib/file-router";
 
 /**
  * Semantic search over the text of a user's files.
@@ -92,6 +93,33 @@ export type SearchHit = {
   score: number;
   excerpt: string;
 };
+
+/**
+ * A hit, plus the file record the drive needs to draw it.
+ *
+ * Semantic results used to be a list of names in Settings, where a name was
+ * enough. On the main page they are files: they open, download, share and carry
+ * a menu like any other tile, so the listing shape travels with the hit rather
+ * than costing the browser a second lookup per result.
+ */
+export type SearchResult = SearchHit & { file: PublicFile };
+
+type PublicFile = ReturnType<typeof toPublicFile>;
+
+export async function semanticSearchWithFiles(userId: string, query: string, limit = 10): Promise<SearchResult[]> {
+  const hits = await semanticSearch(userId, query, limit);
+  if (!hits.length) return [];
+
+  const files = await prisma.file.findMany({ where: { id: { in: hits.map(h => h.fileId) }, userId } });
+  const byId = new Map(files.map(f => [f.id, toPublicFile(f)]));
+
+  // A hit whose file has vanished between the scan and this read is dropped
+  // rather than rendered as a tile with nothing behind it.
+  return hits.flatMap(hit => {
+    const file = byId.get(hit.fileId);
+    return file ? [{ ...hit, file }] : [];
+  });
+}
 
 export async function semanticSearch(userId: string, query: string, limit = 10): Promise<SearchHit[]> {
   const rows = await prisma.fileEmbedding.findMany({

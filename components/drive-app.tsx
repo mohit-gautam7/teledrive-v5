@@ -55,9 +55,11 @@ import { filesFromDataTransfer, filesFromInput, rememberDroppedHandles, type Pic
 import { Lightbox } from "@/components/drive/lightbox";
 import { ConfirmModal, MoveModal, NameModal, PropertiesModal, ShareModal } from "@/components/drive/modals";
 import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
+import { AiSearchResults, AiSearchToggle, AskAiPanel, type AiAction } from "@/components/drive/ai";
 import { TransferPanel, sampleRate } from "@/components/drive/transfers";
 import { MEMORY_DOWNLOAD_LIMIT, browserDownload, canStreamToDisk, downloadWithProgress } from "@/lib/download-manager";
 import {
+  type AiSearchHit,
   type AppView,
   type DownloadItem,
   type DriveFile,
@@ -132,6 +134,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+
+  // ── AI, only if the server says it exists ─────────────────────────────────
+  // `aiAvailable` starts false so nothing AI-shaped can flash on a server where
+  // the flag is off; /api/overview answers it with the rest of the page load.
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const [aiSearch, setAiSearch] = useState(false);
+  const [aiHits, setAiHits] = useState<AiSearchHit[] | null>(null);
+  const [aiSearching, setAiSearching] = useState(false);
+  const [aiSearchedFor, setAiSearchedFor] = useState("");
+  const [askAi, setAskAi] = useState<{ file: DriveFile; action?: AiAction } | null>(null);
+  const aiController = useRef<AbortController | null>(null);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [appView, setAppView] = useState<AppView>("files");
   const [sortField, setSortField] = useState<SortField>("date");
@@ -303,6 +316,55 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }, [folderId, appView, listParams, filesCacheKey]);
 
+  /**
+   * Semantic search, run on Enter rather than as you type.
+   *
+   * Deliberately not debounced into firing by itself: each run embeds the query
+   * through the user's own provider key and scans every indexed slice, so a
+   * request per pause would spend their credits on half-typed words. Filename
+   * search stays instant; meaning search waits to be asked.
+   */
+  const runAiSearch = useCallback(async () => {
+    const q = query.trim();
+    if (!q) return;
+
+    aiController.current?.abort();
+    const controller = new AbortController();
+    aiController.current = controller;
+
+    setAiSearching(true);
+    setAiSearchedFor(q);
+    try {
+      const data = await apiFetch<{ hits: AiSearchHit[] }>("/api/ai/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ q, limit: 20 }),
+        signal: controller.signal
+      });
+      if (controller.signal.aborted) return;
+      setAiHits(data.hits ?? []);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setAiHits([]);
+      toast.error(error instanceof Error ? error.message : "Semantic search failed.");
+    } finally {
+      if (aiController.current === controller) {
+        aiController.current = null;
+        setAiSearching(false);
+      }
+    }
+  }, [query]);
+
+  /** Leaving AI mode, or emptying the box, drops the previous answer so the
+   *  filename listing is not sitting behind a stale set of semantic hits. */
+  useEffect(() => {
+    if (!aiSearch || !query.trim()) {
+      aiController.current?.abort();
+      setAiHits(null);
+      setAiSearching(false);
+    }
+  }, [aiSearch, query]);
+
   /** Warm a folder's listing so clicking it paints instantly. */
   const prefetchFolder = useCallback(
     async (targetFolderId: string) => {
@@ -384,6 +446,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       folders: DriveFolder[];
       stats: { totalSize: number; count: number };
       link: TelegramLink;
+      ai?: boolean;
     }>("/api/overview", { cache: "no-store" })
       .then(data => {
         if (cancelled) return;
@@ -391,6 +454,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         setTreeLoaded(true);
         setInsights(prev => ({ ...(prev ?? ({} as Insights)), ...data.stats }));
         setLink(data.link);
+        setAiAvailable(Boolean(data.ai));
         setAuthStatus(data.user ? "connected" : "failed");
         try {
           window.localStorage.setItem(`td:${cacheUser}:tree`, JSON.stringify(data.folders));
@@ -1442,7 +1506,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   // A search reaches across every folder, so the heading has to say so —
   // otherwise the breadcrumb still reads "Invoices" while the results plainly
   // are not from it.
-  const heading = debouncedQuery
+  const heading = aiSearch && aiAvailable && aiSearchedFor
+    ? `Meaning of “${aiSearchedFor}”`
+    : debouncedQuery && !aiSearch
     ? `Results for “${debouncedQuery}”`
     : appView === "files"
       ? folderTrail.length
@@ -1725,11 +1791,28 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                 id="drive-search"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                placeholder="Search files…"
-                aria-label="Search files"
-                className="field pl-9"
-                style={{ height: 38 }}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && aiSearch && aiAvailable) {
+                    e.preventDefault();
+                    void runAiSearch();
+                  }
+                }}
+                placeholder={aiSearch && aiAvailable ? "Describe it — press Enter" : "Search files…"}
+                aria-label={aiSearch && aiAvailable ? "Search by meaning" : "Search files"}
+                className={cn("field pl-9", aiAvailable && "pr-16")}
+                style={{ height: 38, ...(aiSearch && aiAvailable ? { borderColor: "var(--accent)" } : {}) }}
               />
+              {aiAvailable ? (
+                <AiSearchToggle
+                  on={aiSearch}
+                  onToggle={() => {
+                    setAiSearch(on => !on);
+                    // Focus stays in the box: the toggle is a change of mode for
+                    // what is already typed, not a separate destination.
+                    (document.getElementById("drive-search") as HTMLInputElement | null)?.focus();
+                  }}
+                />
+              ) : null}
             </div>
 
             {uploading ? (
@@ -1872,6 +1955,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     // most of which are not in the current folder's page.
                     else browserDownload(`/api/download/${id}`);
                   }}
+                />
+              ) : aiSearch && aiAvailable ? (
+                /* Semantic results take the place of the grid rather than
+                   sitting beside it: they are a different answer to the same
+                   question, and showing both invites reading one as the other. */
+                <AiSearchResults
+                  hits={aiHits}
+                  searching={aiSearching}
+                  query={aiSearchedFor}
+                  onOpen={file => setPreviewFile(file)}
+                  onAsk={file => setAskAi({ file })}
                 />
               ) : (
                 <>
@@ -2029,7 +2123,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                               onRename: () => setRenameFile({ id: file.id, value: file.originalName }),
                               onMove: () => setMoveModal({ ids: selected.has(file.id) ? [...selected] : [file.id] }),
                               onProperties: () => setPropsTarget({ kind: "file", file }),
-                              onToggleSelect: () => toggleSelect(file.id)
+                              onToggleSelect: () => toggleSelect(file.id),
+                              // Undefined when AI is off, which is what removes
+                              // the submenu rather than greying it out.
+                              onAskAi: aiAvailable ? action => setAskAi({ file, action }) : undefined
                             }}
                           />
                         ))}
@@ -2172,6 +2269,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       </AnimatePresence>
 
       {/* ── Overlays ── */}
+      <AnimatePresence>
+        {askAi && aiAvailable ? (
+          <AskAiPanel file={askAi.file} initialAction={askAi.action} onClose={() => setAskAi(null)} />
+        ) : null}
+      </AnimatePresence>
       <AnimatePresence>
         {previewFile ? (
           <Lightbox

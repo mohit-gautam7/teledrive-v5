@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Check,
+  ChevronRight,
   Download,
   ExternalLink,
   File as FileIcon,
@@ -15,12 +16,14 @@ import {
   MoreVertical,
   Pencil,
   RotateCw,
+  Sparkles,
   Star,
   Trash2,
   Video as VideoIcon
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { popIn, stagger } from "@/lib/motion";
+import { aiActionsFor, type AiAction } from "./ai";
 import { type DriveFile, telegramDeepLink } from "./types";
 
 export type TileActions = {
@@ -34,6 +37,9 @@ export type TileActions = {
   onMove: () => void;
   onProperties: () => void;
   onToggleSelect: () => void;
+  /** Only supplied when AI exists on this server; absent hides the whole
+   *  submenu, so a build with AI_ENABLED unset never shows it. */
+  onAskAi?: (action?: AiAction) => void;
 };
 
 function FileTileBase({
@@ -57,10 +63,17 @@ function FileTileBase({
 }) {
   const reduceMotion = useReducedMotion();
   const [loaded, setLoaded] = useState(false);
+  // Controlled so a right-click can open the same menu the ⋮ button opens.
+  // Radix anchors it to the trigger rather than the pointer, which is a small
+  // price for not shipping a second menu implementation that would drift.
+  const [menuOpen, setMenuOpen] = useState(false);
   const image = file.mimeType.startsWith("image/");
   const video = file.mimeType.startsWith("video/");
   const Icon = image ? ImageIcon : video ? VideoIcon : FileIcon;
   const deepLink = telegramDeepLink(file, mtprotoUserId);
+  // A trashed file is not processed: the AI actions read the bytes back out of
+  // Telegram, and restoring first is the honest order of operations.
+  const aiActions = actions.onAskAi && !inTrash ? aiActionsFor(file) : [];
 
   const menu = (
     <DropdownMenu.Portal>
@@ -96,6 +109,25 @@ function FileTileBase({
                 <ExternalLink className="h-4 w-4" style={{ color: "var(--accent)" }} /> Open in Telegram
               </DropdownMenu.Item>
             ) : null}
+            {aiActions.length ? (
+              <DropdownMenu.Sub>
+                <DropdownMenu.SubTrigger className="menu-item justify-between">
+                  <span className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4" style={{ color: "var(--accent)" }} /> Ask AI
+                  </span>
+                  <ChevronRight className="h-3.5 w-3.5" style={{ color: "var(--text-3)" }} />
+                </DropdownMenu.SubTrigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.SubContent sideOffset={4} className="menu">
+                    {aiActions.map(a => (
+                      <DropdownMenu.Item key={a.id} onSelect={() => actions.onAskAi?.(a.id)} className="menu-item">
+                        <a.icon className="h-4 w-4" style={{ color: "var(--accent)" }} /> {a.label}
+                      </DropdownMenu.Item>
+                    ))}
+                  </DropdownMenu.SubContent>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Sub>
+            ) : null}
             <DropdownMenu.Item onSelect={actions.onProperties} className="menu-item">
               <Info className="h-4 w-4" style={{ color: "var(--accent)" }} /> Properties
             </DropdownMenu.Item>
@@ -123,6 +155,10 @@ function FileTileBase({
         // Payload read by folder cards to move files by drag-and-drop.
         dataTransfer.setData("application/x-teledrive-files", JSON.stringify(selected ? "selection" : [file.id]));
         dataTransfer.effectAllowed = "move";
+      }}
+      onContextMenu={event => {
+        event.preventDefault();
+        setMenuOpen(true);
       }}
       className={cn("card group relative overflow-hidden p-3", !grid && "flex items-center gap-3")}
       style={{
@@ -235,7 +271,7 @@ function FileTileBase({
             )}
           </>
         ) : null}
-        <DropdownMenu.Root>
+        <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenu.Trigger asChild>
             <button className="icon-btn" aria-label="More actions">
               <MoreVertical className="h-4 w-4" />

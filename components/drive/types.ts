@@ -186,6 +186,21 @@ export type AiKeyRow = {
   createdAt: string;
 };
 
+/**
+ * One semantic-search result: the file, plus why it matched.
+ *
+ * `excerpt` is the indexed slice the query landed closest to, which is the only
+ * part of a meaning-based result that explains itself — without it a hit is a
+ * filename that looks unrelated to what was typed.
+ */
+export type AiSearchHit = {
+  fileId: string;
+  fileName: string;
+  score: number;
+  excerpt: string;
+  file: DriveFile;
+};
+
 /** Where this file actually lives in Telegram, for the "open in Telegram" action. */
 export function telegramDeepLink(file: DriveFile, mtprotoUserId: string | null): string | null {
   if (file.backend === "mtproto" && file.telegramMessageId && mtprotoUserId) {

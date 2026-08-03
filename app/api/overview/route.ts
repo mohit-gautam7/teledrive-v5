@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, readWithRetry } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
+import { aiEnabled } from "@/lib/feature-flags";
 import { STORED_ONLY } from "@/lib/upload-config";
 import { describeLink } from "@/lib/telegram-link";
 import { rollUpFolders } from "@/lib/folder-tree";
@@ -26,20 +27,22 @@ export async function GET() {
     const user = await requireUser();
     const live = { userId: user.id, isDeleted: false, ...STORED_ONLY };
 
-    const [folders, grouped, totals, config] = await Promise.all([
-      prisma.folder.findMany({
-        where: { userId: user.id },
-        select: { id: true, name: true, parentId: true, createdAt: true }
-      }),
-      prisma.file.groupBy({
-        by: ["folderId"],
-        where: { userId: user.id, isDeleted: false, folderId: { not: null } },
-        _sum: { size: true },
-        _count: { _all: true }
-      }),
-      prisma.file.aggregate({ where: live, _sum: { size: true }, _count: true }),
-      prisma.storageConfig.findUnique({ where: { userId: user.id } })
-    ]);
+    const [folders, grouped, totals, config] = await readWithRetry(() =>
+      prisma.$transaction([
+        prisma.folder.findMany({
+          where: { userId: user.id },
+          select: { id: true, name: true, parentId: true, createdAt: true }
+        }),
+        prisma.file.groupBy({
+          by: ["folderId"],
+          where: { userId: user.id, isDeleted: false, folderId: { not: null } },
+          _sum: { size: true },
+          _count: { _all: true }
+        }),
+        prisma.file.aggregate({ where: live, _sum: { size: true }, _count: true }),
+        prisma.storageConfig.findUnique({ where: { userId: user.id } })
+      ])
+    );
 
     return NextResponse.json({
       user: {
@@ -50,7 +53,13 @@ export async function GET() {
       },
       folders: rollUpFolders(folders, grouped),
       stats: { totalSize: Number(totals._sum.size ?? 0), count: totals._count },
-      link: describeLink(config)
+      link: describeLink(config),
+      // Whether the drive should offer anything AI at all. Answered here rather
+      // than through a NEXT_PUBLIC_* constant because those are baked into the
+      // browser bundle at build time, and the flag has to be flippable with a
+      // restart. It rides along with a request the page already makes, so
+      // knowing costs nothing.
+      ai: aiEnabled()
     });
   } catch (error) {
     return jsonError(error, "Could not load your drive.");
