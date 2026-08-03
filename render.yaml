@@ -40,6 +40,15 @@ services:
         sync: false
       - key: DATABASE_URL          # use the Supabase transaction pooler URL (:6543)
         sync: false
+      # Pool sizing is applied in lib/prisma, not here — whatever
+      # `connection_limit` the URL above carries is overwritten, because the
+      # right value depends on the app sharing one client (it now does) rather
+      # than on what was typed into the dashboard. These two only exist to
+      # override that default without a rebuild; leave them unset unless the
+      # pooler starts refusing connections (raise nothing, lower the limit) or
+      # requests start failing with P2024 (raise the timeout).
+      # - key: DB_CONNECTION_LIMIT   # default 5
+      # - key: DB_POOL_TIMEOUT       # seconds, default 20
       - key: JWT_SECRET
         sync: false
       - key: WEBHOOK_SECRET
