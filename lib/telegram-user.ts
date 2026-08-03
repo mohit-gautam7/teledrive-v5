@@ -599,7 +599,41 @@ export async function finalizeBigFile(params: {
 
 type DocumentRef = { id: bigInt.BigInteger; accessHash: bigInt.BigInteger; fileReference: Buffer; dcId: number };
 
-async function resolveDocument(client: TelegramClient, msgId: number): Promise<DocumentRef> {
+/**
+ * Resolved documents, keyed by session + message.
+ *
+ * Streaming a 975 MB file asks for it in 4 MB windows, and each window used to
+ * re-run messages.getMessages first — around 240 extra round-trips for one play,
+ * every one of them latency the player experiences as stalling. The reference is
+ * stable for far longer than a playback session, so it is cached briefly and
+ * dropped the moment Telegram says it has expired.
+ */
+const documentCache = new Map<string, { ref: DocumentRef; at: number }>();
+const DOCUMENT_TTL_MS = 15 * 60_000;
+
+export function forgetDocument(session: string, msgId: number) {
+  documentCache.delete(`${session}:${msgId}`);
+}
+
+async function resolveDocument(client: TelegramClient, msgId: number, cacheKey?: string): Promise<DocumentRef> {
+  if (cacheKey) {
+    const hit = documentCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < DOCUMENT_TTL_MS) return hit.ref;
+  }
+  const ref = await resolveDocumentUncached(client, msgId);
+  if (cacheKey) {
+    documentCache.set(cacheKey, { ref, at: Date.now() });
+    // The map is per-process and one entry is small, but a long-lived host
+    // should not accumulate them without bound.
+    if (documentCache.size > 500) {
+      const oldest = [...documentCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) documentCache.delete(oldest[0]);
+    }
+  }
+  return ref;
+}
+
+async function resolveDocumentUncached(client: TelegramClient, msgId: number): Promise<DocumentRef> {
   const messages = await client.getMessages("me", { ids: [msgId] });
   const media = messages[0]?.media;
   if (!(media instanceof Api.MessageMediaDocument) || !(media.document instanceof Api.Document)) {
@@ -623,7 +657,27 @@ async function resolveDocument(client: TelegramClient, msgId: number): Promise<D
  */
 export async function downloadRange(session: string, msgId: number, start: number, end: number): Promise<Buffer> {
   const client = await connect(session);
-  const doc = await resolveDocument(client, msgId);
+  const cacheKey = `${session}:${msgId}`;
+  let doc = await resolveDocument(client, msgId, cacheKey);
+  try {
+    return await readDocumentRange(client, doc, start, end);
+  } catch (err) {
+    // A cached reference can go stale mid-playback. Re-resolve once and retry
+    // rather than failing the window, which the player would see as a stall.
+    const message = (err as { errorMessage?: string })?.errorMessage || (err as Error)?.message || "";
+    if (!/FILE_REFERENCE|FILE_ID_INVALID/i.test(message)) throw err;
+    documentCache.delete(cacheKey);
+    doc = await resolveDocument(client, msgId, cacheKey);
+    return readDocumentRange(client, doc, start, end);
+  }
+}
+
+async function readDocumentRange(
+  client: TelegramClient,
+  doc: DocumentRef,
+  start: number,
+  end: number
+): Promise<Buffer> {
 
   const alignedStart = Math.floor(start / MTPROTO_PART_SIZE) * MTPROTO_PART_SIZE;
   const wanted = end - start + 1;

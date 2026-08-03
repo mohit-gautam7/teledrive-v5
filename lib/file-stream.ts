@@ -35,12 +35,30 @@ export type StreamableFile = {
  *  round trip, small enough that a 2 GB file never sits in function memory. */
 const MTPROTO_WINDOW = 4 * 1024 * 1024;
 
-export function parseRange(rangeHeader: string | null, totalSize: number): { start: number; end: number; partial: boolean } {
+/**
+ * How much is served for a range that names no end.
+ *
+ * A player opening a video sends `Range: bytes=0-`, which literally asks for the
+ * rest of the file — for a 975 MB video that is one response the browser must
+ * hold open for the entire film, and any hiccup restarts it. Answering with a
+ * bounded slice is explicitly allowed (a server may return less than was asked
+ * for) and is what makes seeking responsive: each request is short, finishes
+ * cleanly, and the player simply asks for the next piece.
+ */
+const OPEN_RANGE_WINDOW = 16 * 1024 * 1024;
+
+export function parseRange(
+  rangeHeader: string | null,
+  totalSize: number
+): { start: number; end: number; partial: boolean } {
   if (!rangeHeader) return { start: 0, end: totalSize - 1, partial: false };
   const m = rangeHeader.match(/bytes=(\d*)-(\d*)/);
   if (!m || (!m[1] && !m[2])) return { start: 0, end: totalSize - 1, partial: false };
   const start = m[1] ? Math.max(0, parseInt(m[1], 10)) : Math.max(0, totalSize - parseInt(m[2], 10));
-  const end = m[1] && m[2] ? Math.min(parseInt(m[2], 10), totalSize - 1) : totalSize - 1;
+  const end = m[1] && m[2]
+    ? Math.min(parseInt(m[2], 10), totalSize - 1)
+    : // Open-ended: cap the slice rather than committing to the whole tail.
+      Math.min(start + OPEN_RANGE_WINDOW - 1, totalSize - 1);
   return { start, end, partial: true };
 }
 
@@ -104,7 +122,16 @@ function buildRangeStream(
       const end = Math.min(cursor + MTPROTO_WINDOW - 1, rangeEnd);
       try {
         const buf = await read(cursor, end);
-        cursor = end + 1;
+        // Advance by what actually arrived, not by what was asked for. A short
+        // read — Telegram returning a partial window near a part boundary — used
+        // to skip the missing bytes *and* leave the body shorter than the
+        // Content-Length already promised in the headers. The browser sees a
+        // truncated 206, throws the whole response away and restarts from zero,
+        // which is the reload loop.
+        if (!buf.length) {
+          throw new Error(`Upstream returned no data at byte ${cursor}.`);
+        }
+        cursor += buf.length;
         controller.enqueue(new Uint8Array(buf));
       } catch (err) {
         controller.error(err);
@@ -162,7 +189,12 @@ export function streamFileResponse(
   const baseHeaders: Record<string, string> = {
     "Content-Type": file.mimeType || "application/octet-stream",
     "Accept-Ranges": "bytes",
-    "Cache-Control": "private, no-store",
+    // `no-store` meant the browser could keep nothing, so every seek in a video
+    // re-fetched bytes it had already been given — on a 975 MB file that is the
+    // difference between scrubbing and re-buffering. The URL is authenticated
+    // per user and the bytes are immutable once stored, so a private cache is
+    // safe; `private` keeps it out of any shared proxy or CDN.
+    "Cache-Control": disposition === "inline" ? "private, max-age=3600" : "private, no-store",
     "Content-Disposition": `${disposition}; filename="${encodeURIComponent(file.originalName)}"`
   };
 
