@@ -49,6 +49,7 @@ import {
 import { CHUNK_SIZE, MAX_FILE_SIZE } from "@/lib/upload-config";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import { cn, formatBytes } from "@/lib/utils";
+import { SPRING, fadeIn, fadeUp, riseFromBottom, transition } from "@/lib/motion";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
 import { filesFromDataTransfer, filesFromInput, rememberDroppedHandles, type PickedFile } from "@/components/drive/dnd";
@@ -120,6 +121,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [folderId, setFolderId] = useState<string | null>(() =>
     typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("folder") : null
   );
+  // Distinguishes "no folders" from "not loaded yet" — an empty tree and a tree
+  // still in flight look identical otherwise, and one of them wants skeletons.
+  const [treeLoaded, setTreeLoaded] = useState(false);
   const [folderTrail, setFolderTrail] = useState<DriveFolder[]>([]);
   const trailsByFolder = useRef<Map<string | null, DriveFolder[]>>(new Map([[null, []]]));
 
@@ -215,13 +219,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     const key = `td:${cacheUser}:tree`;
     try {
       const cached = window.localStorage.getItem(key);
-      if (cached) setFolderTree(JSON.parse(cached) as DriveFolder[]);
+      if (cached) {
+        setFolderTree(JSON.parse(cached) as DriveFolder[]);
+        setTreeLoaded(true);
+      }
     } catch {
       /* corrupt cache — the network call below repairs it */
     }
     try {
       const { folders } = await apiFetch<{ folders: DriveFolder[] }>("/api/folders?flat=1", { cache: "no-store" });
       setFolderTree(folders);
+      setTreeLoaded(true);
       try {
         window.localStorage.setItem(key, JSON.stringify(folders));
       } catch {
@@ -342,11 +350,43 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  /**
+   * Everything else the page needs, in one request.
+   *
+   * The folder tree, storage totals, Telegram link and session check used to be
+   * four calls that queued behind the pooler's single connection, so the page
+   * settled at the sum of their latencies. They are answered together now; the
+   * individual endpoints remain for the targeted refreshes after a mutation.
+   */
   useEffect(() => {
-    // refreshStats also pulls the folder tree.
-    refreshStats();
-    refreshLink();
-  }, [refreshStats, refreshLink]);
+    let cancelled = false;
+    apiFetch<{
+      user: { name: string } | null;
+      folders: DriveFolder[];
+      stats: { totalSize: number; count: number };
+      link: TelegramLink;
+    }>("/api/overview", { cache: "no-store" })
+      .then(data => {
+        if (cancelled) return;
+        setFolderTree(data.folders);
+        setTreeLoaded(true);
+        setInsights(prev => ({ ...(prev ?? ({} as Insights)), ...data.stats }));
+        setLink(data.link);
+        setAuthStatus(data.user ? "connected" : "failed");
+        try {
+          window.localStorage.setItem(`td:${cacheUser}:tree`, JSON.stringify(data.folders));
+        } catch {
+          /* best-effort */
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAuthStatus("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheUser]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -390,12 +430,6 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [theme]);
-
-  useEffect(() => {
-    apiFetch<{ user: unknown }>("/api/auth/me")
-      .then(d => setAuthStatus(d.user ? "connected" : "failed"))
-      .catch(() => setAuthStatus("failed"));
-  }, []);
 
   useEffect(() => {
     if (!uploading) return;
@@ -1457,9 +1491,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>
         {sidebarOpen ? (
           <motion.button
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            {...fadeIn(reduceMotion)}
             className="fixed inset-0 z-40 lg:hidden"
             style={{ background: "rgba(3,5,10,0.6)" }}
             aria-label="Close menu"
@@ -1534,7 +1566,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                   layoutId="nav-rail"
                   className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full"
                   style={{ background: "var(--accent-grad)" }}
-                  transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                  transition={SPRING}
                 />
               ) : null}
               <Icon className="h-4 w-4 shrink-0" style={{ color: appView === navView ? "var(--accent)" : undefined }} />
@@ -1754,11 +1786,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               old view stays on screen forever. Re-keying gives the same
               transition feel with none of that risk. */}
           <div key={`${appView}-${folderId ?? "root"}`}>
-            <motion.div
-              initial={reduceMotion ? false : { opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-            >
+            <motion.div initial={fadeUp(reduceMotion).initial} animate={{ opacity: 1, y: 0 }} transition={transition}>
               {appView === "settings" ? (
                 <SettingsPanel theme={theme} setTheme={setTheme} link={link} onLinkChanged={refreshLink} />
               ) : appView === "about" ? (
@@ -1782,6 +1810,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                   {/* Folders — only in the browsable root view. Favourites and
                       Trash list files across folders, and the folder state may
                       still hold the previous view's rows while it refetches. */}
+                  {appView === "files" && !treeLoaded && !folders.length ? (
+                    <SkeletonFolders />
+                  ) : null}
                   {appView === "files" && folders.length ? (
                     // Full width on phones: two-up truncates the size line.
                     <div className="mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -1971,10 +2002,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>
         {selected.size + selectedFolders.size ? (
           <motion.div
-            initial={reduceMotion ? { opacity: 0 } : { y: 70, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { y: 70, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 420, damping: 34 }}
+            {...riseFromBottom(reduceMotion)}
             className="safe-bottom fixed inset-x-0 bottom-0 z-[60] px-3 pb-3 lg:left-[var(--sidebar-w)]"
           >
             <div
@@ -2050,9 +2078,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>
         {dragDepth > 0 ? (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            {...fadeIn(reduceMotion)}
             className="pointer-events-none fixed inset-0 z-[65] flex items-center justify-center p-6"
             style={{ background: "rgba(3,5,10,0.72)" }}
           >
@@ -2124,6 +2150,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>
         {shareTarget ? <ShareModal targetName={shareTarget.name} onCreate={createShare} onClose={() => setShareTarget(null)} /> : null}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/** Placeholder folder cards, sized like the real ones so nothing shifts. */
+function SkeletonFolders() {
+  return (
+    <div className="mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="card flex items-center gap-2.5 p-3">
+          <div className="skeleton h-9 w-9 shrink-0 rounded-lg" />
+          <div className="flex-1 space-y-2">
+            <div className="skeleton h-3.5 w-1/2" />
+            <div className="skeleton h-3 w-1/3" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

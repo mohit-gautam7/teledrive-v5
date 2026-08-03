@@ -22,6 +22,7 @@ import {
 import { mapMtprotoError, isDeadSession } from "@/lib/mtproto-errors";
 import { tgLog } from "@/lib/telegram-user";
 import { MAX_FILE_SIZE, MAX_FILE_SIZE_PREMIUM } from "@/lib/upload-config";
+import { describeLink } from "@/lib/telegram-link";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -50,21 +51,7 @@ export async function GET() {
       where: { userId: user.id },
       select: { mtprotoSession: true, mtprotoUserId: true, mtprotoPremium: true }
     });
-    const linked = Boolean(config?.mtprotoSession);
-    // Name the exact variables that are missing. "Unavailable" with no reason is
-    // indistinguishable from a bug when the same build works on another host.
-    const missing = (["API_ID", "API_HASH", "SESSION_ENCRYPTION_KEY"] as const).filter(k => !process.env[k]);
-    return NextResponse.json({
-      available: mtprotoConfigured(),
-      // SESSION_ENCRYPTION_KEY is not needed to *start* a login, but without it
-      // lib/crypto stores the Telegram session in clear text, so linking is
-      // blocked rather than silently downgraded.
-      missingEnv: missing,
-      linked,
-      telegramUserId: config?.mtprotoUserId ?? null,
-      premium: config?.mtprotoPremium ?? false,
-      maxBytes: linked && config?.mtprotoPremium ? MAX_FILE_SIZE_PREMIUM : MAX_FILE_SIZE
-    });
+    return NextResponse.json(describeLink(config));
   } catch (error) {
     return jsonError(error, "Could not read Telegram link status.");
   }

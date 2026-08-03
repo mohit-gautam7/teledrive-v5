@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Check,
@@ -20,6 +20,7 @@ import {
   Video as VideoIcon
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
+import { popIn, stagger } from "@/lib/motion";
 import { type DriveFile, telegramDeepLink } from "./types";
 
 export type TileActions = {
@@ -54,6 +55,7 @@ function FileTileBase({
   mtprotoUserId: string | null;
   actions: TileActions;
 }) {
+  const reduceMotion = useReducedMotion();
   const [loaded, setLoaded] = useState(false);
   const image = file.mimeType.startsWith("image/");
   const video = file.mimeType.startsWith("video/");
@@ -108,11 +110,10 @@ function FileTileBase({
 
   return (
     <motion.article
-      layout="position"
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.97 }}
-      transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1], delay: Math.min(index * 0.018, 0.16) }}
+      // Position only: a full layout animation would animate width and height
+      // too, which is a reflow of the whole grid on every frame.
+      layout={reduceMotion ? false : "position"}
+      {...popIn(reduceMotion, stagger(index))}
       draggable={!inTrash}
       // framer-motion types onDragStart as its own gesture event; this is the
       // native HTML5 one, hence the cast.

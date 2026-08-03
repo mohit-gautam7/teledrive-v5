@@ -49,12 +49,16 @@
   --r-lg: 16px;
   --r-xl: 22px;
 
-  /* Motion — one easing for entrances, one spring feel for interaction. */
+  /* Motion — one easing for entrances, one spring feel for interaction.
+     These are the CSS half of the system in lib/motion.ts and must stay in step
+     with it: a CSS entrance and a Framer entrance side by side at different
+     durations is exactly the mismatch that made the app feel assembled from
+     parts. EASE/DURATION there mirror the four values below. */
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --dur-fast: 160ms;
-  --dur: 260ms;
-  --dur-slow: 520ms;
+  --dur: 240ms;
+  --dur-slow: 320ms;
 
   /* Elevation */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);

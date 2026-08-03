@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { Folder as FolderIcon, Home, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
+import { DURATION, EASE, SPRING, fadeIn } from "@/lib/motion";
 import type { DriveFolder, PropsTarget } from "./types";
 
 /** Shared modal chrome: dimmed backdrop, escape-to-close, click-outside-to-close.
  *  Uses dvh so the sheet is never clipped by mobile browser chrome. */
 function Shell({ onClose, children, wide }: { onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  const reduceMotion = useReducedMotion();
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -27,10 +29,7 @@ function Shell({ onClose, children, wide }: { onClose: () => void; children: Rea
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.15 }}
+      {...fadeIn(reduceMotion)}
       className="fixed inset-0 z-[70] flex items-end justify-center p-0 sm:items-center sm:p-4"
       style={{ background: "rgba(3,5,10,0.7)" }}
       onClick={onClose}
@@ -38,10 +37,10 @@ function Shell({ onClose, children, wide }: { onClose: () => void; children: Rea
       aria-modal="true"
     >
       <motion.div
-        initial={{ opacity: 0, y: 24, scale: 0.98 }}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 24, scale: 0.98 }}
-        transition={{ type: "spring", stiffness: 380, damping: 32 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.98 }}
+        transition={reduceMotion ? { duration: DURATION.fast, ease: EASE } : SPRING}
         className="panel safe-bottom w-full overflow-hidden rounded-b-none sm:rounded-2xl"
         style={{
           maxWidth: wide ? 560 : 440,
