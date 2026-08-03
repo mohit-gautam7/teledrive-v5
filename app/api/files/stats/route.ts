@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ totalSize: Number(agg._sum.size ?? 0), count: agg._count });
     }
 
-    const [agg, trash, byBackend, byType, largest] = await Promise.all([
+    const [agg, trash, byBackend, byType, largest, folderCount] = await Promise.all([
       prisma.file.aggregate({ where: live, _sum: { size: true }, _count: true }),
       prisma.file.aggregate({ where: { userId: user.id, isDeleted: true }, _sum: { size: true }, _count: true }),
       prisma.file.groupBy({ by: ["backend"], where: live, _sum: { size: true }, _count: { _all: true } }),
@@ -46,9 +46,10 @@ export async function GET(request: NextRequest) {
       prisma.file.findMany({
         where: live,
         orderBy: { size: "desc" },
-        take: 5,
+        take: 8,
         select: { id: true, originalName: true, mimeType: true, size: true }
-      })
+      }),
+      prisma.folder.count({ where: { userId: user.id } })
     ]);
 
     return NextResponse.json({
@@ -56,6 +57,7 @@ export async function GET(request: NextRequest) {
       count: agg._count,
       trashSize: Number(trash._sum.size ?? 0),
       trashCount: trash._count,
+      folderCount,
       byBackend: byBackend.map(b => ({
         backend: b.backend,
         bytes: Number(b._sum.size ?? 0),
