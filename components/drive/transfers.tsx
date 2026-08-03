@@ -3,6 +3,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, RotateCw, X } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
+import { DURATION, EASE } from "@/lib/motion";
 import { formatEta, formatSpeed, type DownloadItem, type TransferItem, type UploadItem } from "./types";
 
 /**
@@ -58,7 +59,7 @@ export function TransferPanel({
       initial={reduceMotion ? false : { opacity: 0, height: 0 }}
       animate={{ opacity: 1, height: "auto" }}
       exit={{ opacity: 0, height: 0 }}
-      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: reduceMotion ? DURATION.fast : DURATION.base, ease: EASE }}
       className="mt-3 overflow-hidden rounded-xl"
       style={{ border: "1px solid var(--border-dim)", background: "var(--surface)" }}
     >
@@ -93,7 +94,7 @@ export function TransferPanel({
                 initial={reduceMotion ? false : { opacity: 0, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8 }}
-                transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                transition={{ duration: reduceMotion ? DURATION.fast : DURATION.base, ease: EASE }}
                 className="rounded-lg p-2"
                 style={{ background: "var(--bg-1)" }}
               >

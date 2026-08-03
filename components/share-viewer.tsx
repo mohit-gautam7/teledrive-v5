@@ -24,8 +24,12 @@ export default function ShareViewer({ token }: { token: string }) {
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
   const [error, setError] = useState("");
+  // Distinct from `error`: the two used to share one line of text, so a share
+  // that was about to fail was indistinguishable from one still arriving.
+  const [loading, setLoading] = useState(true);
 
   async function load(pass?: string) {
+    setLoading(true);
     try {
       const data = await apiFetch<{ file?: SharedFile; folder?: SharedFolder; files?: SharedFile[] }>(`/api/share/${token}`, {
         method: "POST",
@@ -43,6 +47,8 @@ export default function ShareViewer({ token }: { token: string }) {
         return;
       }
       setError(error instanceof Error ? error.message : "Share link unavailable");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -110,8 +116,17 @@ export default function ShareViewer({ token }: { token: string }) {
             />
             <Button className="mt-4 w-full">Open share</Button>
           </form>
+        ) : loading ? (
+          /* The same shape the file card will take, so nothing jumps when it
+             arrives — the icon, the title line and the meta line, in place. */
+          <div aria-busy="true" aria-label="Opening share">
+            <div className="mb-6 h-12 w-12 animate-pulse rounded-md bg-slate-200" />
+            <div className="h-6 w-2/3 animate-pulse rounded bg-slate-200" />
+            <div className="mt-3 h-4 w-1/3 animate-pulse rounded bg-slate-200" />
+            <div className="mt-6 h-10 w-full animate-pulse rounded-md bg-slate-200" />
+          </div>
         ) : (
-          <p className="text-sm text-slate-600">{error || "Loading share..."}</p>
+          <p className="text-sm text-slate-600">{error || "This share link is no longer available."}</p>
         )}
       </section>
     </main>

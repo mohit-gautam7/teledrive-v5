@@ -2333,7 +2333,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       </AnimatePresence>
       <AnimatePresence>
         {moveModal ? (
-          <MoveModal count={moveModal.ids.length} currentFolderId={folderId} onMove={target => moveFilesTo(moveModal.ids, target)} onClose={() => setMoveModal(null)} />
+          <MoveModal
+            count={moveModal.ids.length}
+            currentFolderId={folderId}
+            folders={folderTree}
+            onMove={target => moveFilesTo(moveModal.ids, target)}
+            onClose={() => setMoveModal(null)}
+          />
         ) : null}
       </AnimatePresence>
       <AnimatePresence>{propsTarget ? <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} /> : null}</AnimatePresence>
@@ -2361,15 +2367,32 @@ function SkeletonFolders() {
   );
 }
 
+/**
+ * The listing's placeholder, built to the tile's exact height.
+ *
+ * Including the action row matters: a real grid tile ends with a 36px row of
+ * buttons under a 12px margin, and a skeleton without it was 48px shorter per
+ * row. Every tile then jumped downwards the moment the files arrived, which is
+ * the layout shift a skeleton exists to prevent.
+ */
 function SkeletonGrid({ view }: { view: "grid" | "list" }) {
   return (
     <div className={view === "grid" ? "grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" : "space-y-2"}>
       {Array.from({ length: view === "grid" ? 10 : 6 }).map((_, i) => (
         <div key={i} className={cn("card p-3", view === "list" && "flex items-center gap-3")}>
           <div className={cn("skeleton", view === "grid" ? "mb-3 aspect-[4/3] w-full" : "h-11 w-11 shrink-0")} />
-          <div className="flex-1 space-y-2">
+          <div className="min-w-0 flex-1 space-y-2">
             <div className="skeleton h-3.5 w-3/5" />
             <div className="skeleton h-3 w-2/5" />
+          </div>
+          <div className={cn("flex items-center gap-1.5", view === "grid" ? "mt-3" : "ml-auto")}>
+            {view === "grid" ? (
+              <>
+                <div className="skeleton h-9 flex-1 rounded-lg" />
+                <div className="skeleton h-9 flex-1 rounded-lg" />
+              </>
+            ) : null}
+            <div className="skeleton h-9 w-9 shrink-0 rounded-lg" />
           </div>
         </div>
       ))}

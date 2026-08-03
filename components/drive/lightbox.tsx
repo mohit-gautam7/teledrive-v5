@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   ChevronLeft,
   ChevronRight,
@@ -16,6 +16,7 @@ import {
   X
 } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
+import { fadeIn } from "@/lib/motion";
 import type { DriveFile } from "./types";
 
 const isImage = (f: DriveFile) =>
@@ -269,6 +270,7 @@ export function Lightbox({
   /** Routed through the app so the transfer joins the panel with the rest. */
   onDownload: (file: DriveFile) => void;
 }) {
+  const reduceMotion = useReducedMotion();
   const containerRef = useRef<HTMLDivElement>(null);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -336,10 +338,7 @@ export function Lightbox({
   return (
     <motion.div
       ref={containerRef}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.16 }}
+      {...fadeIn(reduceMotion)}
       className="fixed inset-0 z-[80] flex flex-col"
       style={{ background: "rgba(4,5,9,0.96)" }}
       onClick={onClose}

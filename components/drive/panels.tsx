@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   AlertCircle,
   Check,
@@ -26,11 +26,13 @@ import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
 import { MAX_FILE_SIZE } from "@/lib/upload-config";
+import { DURATION, EASE, fadeUp, stagger } from "@/lib/motion";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
 
 export function SharesPanel() {
+  const reduceMotion = useReducedMotion();
   const [shares, setShares] = useState<ShareRow[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -88,13 +90,7 @@ export function SharesPanel() {
   return (
     <div className="space-y-2.5">
       {shares.map((share, i) => (
-        <motion.div
-          key={share.id}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: Math.min(i * 0.03, 0.2), ease: [0.22, 1, 0.36, 1] }}
-          className="card p-4"
-        >
+        <motion.div key={share.id} {...fadeUp(reduceMotion, 10, stagger(i))} className="card p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-start gap-3">
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg" style={{ background: "var(--surface)" }}>
@@ -211,6 +207,9 @@ export function InsightsPanel({
   user?: { name: string; username?: string | null };
   onOpenFile: (id: string) => void;
 }) {
+  // Before the early return — a hook cannot sit behind a conditional.
+  const reduceMotion = useReducedMotion();
+
   // The sidebar's cheap stats call only fills totalSize/count; wait for the
   // full breakdown before drawing the charts.
   if (!insights?.byType || !insights.byBackend || !insights.largest) return <PanelSkeleton rows={2} />;
@@ -249,14 +248,22 @@ export function InsightsPanel({
 
         {total > 0 ? (
           <>
+            {/* Each segment is laid out at its final width and grows in with
+                scaleX. Animating `width` instead — which is what this did — put
+                every sibling through layout on every frame of a 0.7 s animation,
+                for a bar that is on screen the moment the panel opens. */}
             <div className="mt-5 flex h-2.5 w-full overflow-hidden rounded-full" style={{ background: "var(--surface)" }}>
               {insights.byType.map(t => (
                 <motion.span
                   key={t.bucket}
-                  initial={{ width: 0 }}
-                  animate={{ width: `${(t.bytes / total) * 100}%` }}
-                  transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-                  style={{ background: TYPE_COLORS[t.bucket] || "var(--text-3)" }}
+                  initial={reduceMotion ? { opacity: 0 } : { scaleX: 0 }}
+                  animate={reduceMotion ? { opacity: 1 } : { scaleX: 1 }}
+                  transition={{ duration: reduceMotion ? DURATION.fast : DURATION.slow, ease: EASE }}
+                  style={{
+                    width: `${(t.bytes / total) * 100}%`,
+                    transformOrigin: "left center",
+                    background: TYPE_COLORS[t.bucket] || "var(--text-3)"
+                  }}
                   title={`${t.bucket}: ${formatBytes(t.bytes)}`}
                 />
               ))}

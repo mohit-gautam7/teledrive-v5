@@ -5,6 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, Check, Infinity as InfinityIcon, KeyRound, Loader2, Lock, MessageCircle, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { Logo } from "@/components/logo";
+import { DURATION, EASE, SPRING } from "@/lib/motion";
 
 declare global {
   interface Window {
@@ -170,7 +171,7 @@ export default function Login() {
 
   const fade = reduceMotion
     ? {}
-    : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] as const } };
+    : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, ease: EASE } };
 
   return (
     <main className="app-bg grid-overlay relative min-h-[100dvh] w-full overflow-x-hidden">
@@ -178,7 +179,7 @@ export default function Login() {
         {/* ── Masthead ── */}
         <motion.header
           className="flex items-center justify-between gap-4"
-          {...(reduceMotion ? {} : { initial: { opacity: 0, y: -12 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const } })}
+          {...(reduceMotion ? {} : { initial: { opacity: 0, y: -12 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5, ease: EASE } })}
         >
           <div className="flex items-center gap-2.5">
             <Logo size={30} />
@@ -201,7 +202,7 @@ export default function Login() {
 
             <motion.h1
               className="display t-hero mt-5 max-w-[15ch] text-balance"
-              {...(reduceMotion ? {} : { initial: { opacity: 0, y: 26 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.7, delay: 0.06, ease: [0.22, 1, 0.36, 1] as const } })}
+              {...(reduceMotion ? {} : { initial: { opacity: 0, y: 26 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.7, delay: 0.06, ease: EASE } })}
             >
               Your drive,
               <br />
@@ -213,7 +214,7 @@ export default function Login() {
             <motion.p
               className="t-body mt-5 max-w-[46ch] leading-relaxed"
               style={{ color: "var(--text-2)" }}
-              {...(reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, delay: 0.14, ease: [0.22, 1, 0.36, 1] as const } })}
+              {...(reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, delay: 0.14, ease: EASE } })}
             >
               Upload, browse, preview and share from anywhere. Every file is chunked and stored in your
               private chat with the bot — so the storage is yours, and so is the account holding it.
@@ -230,7 +231,7 @@ export default function Login() {
                     : {
                         initial: { opacity: 0, y: 20 },
                         animate: { opacity: 1, y: 0 },
-                        transition: { duration: 0.55, delay: 0.24 + i * 0.08, ease: [0.22, 1, 0.36, 1] as const }
+                        transition: { duration: 0.55, delay: 0.24 + i * 0.08, ease: EASE }
                       })}
                 >
                   <Icon className="h-4 w-4" style={{ color: "var(--accent)" }} />
@@ -246,7 +247,7 @@ export default function Login() {
             className="w-full min-w-0"
             {...(reduceMotion
               ? {}
-              : { initial: { opacity: 0, y: 26, scale: 0.985 }, animate: { opacity: 1, y: 0, scale: 1 }, transition: { duration: 0.65, delay: 0.1, ease: [0.22, 1, 0.36, 1] as const } })}
+              : { initial: { opacity: 0, y: 26, scale: 0.985 }, animate: { opacity: 1, y: 0, scale: 1 }, transition: { duration: 0.65, delay: 0.1, ease: EASE } })}
           >
             <div className="panel overflow-hidden" style={{ boxShadow: "var(--shadow-lg)" }}>
               <div className="p-5 sm:p-7">
@@ -293,7 +294,7 @@ export default function Login() {
                             layoutId="auth-tab"
                             className="absolute inset-0 rounded-lg"
                             style={{ background: "var(--surface-hi)" }}
-                            transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                            transition={SPRING}
                           />
                         ) : null}
                         <span className="relative">{label}</span>
@@ -309,7 +310,7 @@ export default function Login() {
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.18 }}
+                      transition={{ duration: DURATION.base, ease: EASE }}
                     >
                       <ol className="mb-5 space-y-2.5">
                         {[
@@ -362,7 +363,7 @@ export default function Login() {
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.18 }}
+                      transition={{ duration: DURATION.base, ease: EASE }}
                     >
                       <p className="t-sm mb-4 leading-relaxed" style={{ color: "var(--text-2)" }}>
                         Authorise with the official Telegram button — confirm on your phone and you&apos;re in.

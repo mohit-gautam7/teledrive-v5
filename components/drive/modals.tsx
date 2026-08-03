@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Folder as FolderIcon, Home, Info, Loader2 } from "lucide-react";
-import { toast } from "sonner";
-import { apiFetch } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
 import { DURATION, EASE, SPRING, fadeIn } from "@/lib/motion";
 import type { DriveFolder, PropsTarget } from "./types";
@@ -130,27 +128,27 @@ export function ConfirmModal({
   );
 }
 
+/**
+ * Pick a destination folder.
+ *
+ * The tree arrives as a prop rather than being fetched here. The drive has held
+ * the whole thing in memory since it loaded, so refetching it meant every Move
+ * opened on "Loading folders…" and spent a request — and a connection — on data
+ * that was already on the page.
+ */
 export function MoveModal({
   count,
   currentFolderId,
+  folders,
   onMove,
   onClose
 }: {
   count: number;
   currentFolderId: string | null;
+  folders: DriveFolder[];
   onMove: (folderId: string | null) => void;
   onClose: () => void;
 }) {
-  const [folders, setFolders] = useState<DriveFolder[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    apiFetch<{ folders: DriveFolder[] }>("/api/folders?flat=1")
-      .then(d => setFolders(d.folders))
-      .catch(() => toast.error("Could not load folders."))
-      .finally(() => setLoading(false));
-  }, []);
-
   const nameById = new Map(folders.map(f => [f.id, f]));
   const pathOf = (folder: DriveFolder) => {
     const parts = [folder.name];
@@ -177,9 +175,7 @@ export function MoveModal({
           >
             <Home className="h-4 w-4" style={{ color: "var(--accent)" }} /> My Files (root)
           </button>
-          {loading ? (
-            <p className="t-sm py-6 text-center" style={{ color: "var(--text-3)" }}>Loading folders…</p>
-          ) : folders.length === 0 ? (
+          {folders.length === 0 ? (
             <p className="t-sm py-6 text-center" style={{ color: "var(--text-3)" }}>No folders yet — create one first.</p>
           ) : (
             folders.map(folder => (
