@@ -14,6 +14,7 @@ import {
   Mail,
   Monitor,
   Moon,
+  Plus,
   Power,
   Smartphone,
   Sun,
@@ -344,13 +345,7 @@ export function SettingsPanel({
 
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
 
-      <AiKeysCard />
-
-      <AiModeCard />
-
-      <AiToolsCard />
-
-      <AiUsageCard />
+      <AiSection />
 
       <section className="panel p-5 lg:col-span-2">
         <h2 className="display t-h2">Limits</h2>
@@ -381,8 +376,9 @@ export function SettingsPanel({
  *
  * The four cards below are independent components but must not each fetch: four
  * concurrent calls serialise behind the pooler's single connection, and the card
- * that lost the race rendered blank. They share one in-flight promise instead —
- * whoever asks first triggers the request, everyone else awaits the same one.
+ * that lost the race rendered blank. `AiSection` makes the one call and hands
+ * each card what it needs, so they mount already populated instead of each
+ * flickering through its own empty state.
  *
  * `reloadAiOverview()` after a mutation drops the cached promise so the next
  * read is fresh.
@@ -425,9 +421,8 @@ type AutomationRow = {
 };
 
 /** Semantic search, and the rules that run automatically on upload. */
-function AiToolsCard() {
-  const [available, setAvailable] = useState<boolean | null>(null);
-  const [rules, setRules] = useState<AutomationRow[]>([]);
+function AiToolsCard({ overview, refresh }: { overview: AiOverview; refresh: () => Promise<AiOverview | null> }) {
+  const rules = overview.automations;
   const [busy, setBusy] = useState(false);
 
   const [query, setQuery] = useState("");
@@ -438,18 +433,6 @@ function AiToolsCard() {
   const [mimePrefix, setMimePrefix] = useState("image/");
   const [stepType, setStepType] = useState("ocr");
 
-  const load = useCallback(() => {
-    loadAiOverview()
-      .then(d => {
-        setRules(d.automations);
-        setAvailable(true);
-      })
-      .catch(err => {
-        setAvailable(false);
-        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load automations.");
-      });
-  }, []);
-  useEffect(load, [load]);
 
   const search = async () => {
     if (!query.trim()) return;
@@ -486,7 +469,7 @@ function AiToolsCard() {
       });
       setName("");
       toast.success("Rule created.");
-      reloadAiOverview().then(d => setRules(d.automations)).catch(() => {});
+      await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not create the rule.");
     } finally {
@@ -502,7 +485,7 @@ function AiToolsCard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
       });
-      reloadAiOverview().then(d => setRules(d.automations)).catch(() => {});
+      await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not update the rule.");
     } finally {
@@ -515,15 +498,13 @@ function AiToolsCard() {
     try {
       await apiFetch(`/api/ai/automations/${row.id}`, { method: "DELETE" });
       toast.success("Rule removed.");
-      reloadAiOverview().then(d => setRules(d.automations)).catch(() => {});
+      await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not remove the rule.");
     } finally {
       setBusy(false);
     }
   };
-
-  if (available !== true) return null;
 
   return (
     <section className="panel p-5 lg:col-span-2">
@@ -634,34 +615,12 @@ const MODE_BLURB: Record<string, string> = {
 };
 
 /** Account-wide AI mode, with per-task overrides. */
-function AiModeCard() {
-  const [available, setAvailable] = useState<boolean | null>(null);
-  const [modes, setModes] = useState<string[]>([]);
-  const [mode, setMode] = useState("hybrid");
-  const [strategy, setStrategy] = useState("priority");
-  const [overrides, setOverrides] = useState<Record<string, { mode?: string }>>({});
+function AiModeCard({ overview }: { overview: AiOverview }) {
+  const modes = overview.modes;
+  const [mode, setMode] = useState(overview.preferences.mode);
+  const [strategy, setStrategy] = useState(overview.preferences.strategy);
+  const [overrides, setOverrides] = useState<Record<string, { mode?: string }>>(overview.preferences.taskOverrides || {});
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    loadAiOverview()
-      .then(d => {
-        if (cancelled) return;
-        setMode(d.preferences.mode);
-        setStrategy(d.preferences.strategy);
-        setOverrides(d.preferences.taskOverrides || {});
-        setModes(d.modes);
-        setAvailable(true);
-      })
-      .catch(err => {
-        if (cancelled) return;
-        setAvailable(false);
-        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load AI settings.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const save = async (next: { mode?: string; strategy?: string; taskOverrides?: Record<string, { mode?: string }> }) => {
     const body = { mode, strategy, taskOverrides: overrides, ...next };
@@ -682,8 +641,6 @@ function AiModeCard() {
       setSaving(false);
     }
   };
-
-  if (available !== true) return null;
 
   return (
     <section className="panel p-5 lg:col-span-2">
@@ -775,30 +732,29 @@ function formatTokens(n: number) {
  * so the card reports how many calls were priced rather than presenting a total
  * that silently ignores the rest.
  */
-function AiUsageCard() {
-  const [data, setData] = useState<AiUsage | null>(null);
-  const [available, setAvailable] = useState<boolean | null>(null);
+function AiUsageCard({ overview }: { overview: AiOverview }) {
+  // The 30-day window came with the overview; any other range is its own call.
+  const [data, setData] = useState<AiUsage>(overview.usage);
   const [days, setDays] = useState(30);
 
   useEffect(() => {
+    if (days === 30) {
+      setData(overview.usage);
+      return;
+    }
     let cancelled = false;
-    (days === 30 ? loadAiOverview().then(d => d.usage) : apiFetch<AiUsage>(`/api/ai/usage?days=${days}`))
+    apiFetch<AiUsage>(`/api/ai/usage?days=${days}`)
       .then(d => {
-        if (cancelled) return;
-        setData(d);
-        setAvailable(true);
+        if (!cancelled) setData(d);
       })
       .catch(err => {
         if (cancelled) return;
-        setAvailable(false);
         if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load AI usage.");
       });
     return () => {
       cancelled = true;
     };
-  }, [days]);
-
-  if (available !== true || !data) return null;
+  }, [days, overview.usage]);
 
   const peak = Math.max(1, ...data.byDay.map(d => d.calls));
   const unpriced = data.calls - data.pricedCalls;
@@ -919,71 +875,134 @@ function AiUsageCard() {
  * and means switching the flag needs a restart, not a rebuild — which matters
  * because NEXT_PUBLIC_* values are baked into the bundle at build time.
  */
-function AiKeysCard() {
-  const [available, setAvailable] = useState<boolean | null>(null);
-  const [providers, setProviders] = useState<AiProvider[]>([]);
-  const [keys, setKeys] = useState<AiKeyRow[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+/**
+ * The AI cards, once — or not at all.
+ *
+ * Every card used to decide for itself whether the feature existed, which meant
+ * four independent "loading, then maybe nothing" states popping in one after
+ * another. One request answers for all of them: while it is in flight the
+ * section is a skeleton, a 404 (the feature switched off on this server) removes
+ * it entirely, and the cards mount already holding their data.
+ */
+function AiSection() {
+  const [overview, setOverview] = useState<AiOverview | null>(null);
+  const [state, setState] = useState<"loading" | "on" | "off">("loading");
 
-  const [provider, setProvider] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const refresh = useCallback(
+    () =>
+      reloadAiOverview()
+        .then(d => {
+          setOverview(d);
+          return d;
+        })
+        .catch(() => null),
+    []
+  );
 
-  const load = useCallback(() => {
+  useEffect(() => {
+    let cancelled = false;
     loadAiOverview()
       .then(d => {
-        setProviders(d.providers);
-        setKeys(d.keys);
-        setAvailable(true);
-        setProvider(p => p || d.providers[0]?.id || "");
+        if (cancelled) return;
+        setOverview(d);
+        setState("on");
       })
       .catch(err => {
-        // 404 is the feature being switched off, not a failure worth reporting.
-        if (err instanceof ApiError && err.status === 404) setAvailable(false);
-        else {
-          setAvailable(false);
-          toast.error("Could not load AI keys.");
-        }
+        if (cancelled) return;
+        setState("off");
+        // 404 is the flag being off, which is not a failure worth a toast.
+        if (!(err instanceof ApiError && err.status === 404)) toast.error("Could not load AI settings.");
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useEffect(load, [load]);
+  if (state === "off") return null;
+  if (state === "loading" || !overview) {
+    return (
+      <section className="panel p-5 lg:col-span-2" aria-busy="true" aria-label="Loading AI settings">
+        <div className="skeleton h-6 w-32 rounded-lg" />
+        <div className="mt-4">
+          <PanelSkeleton rows={2} />
+        </div>
+      </section>
+    );
+  }
 
-  const spec = providers.find(p => p.id === provider) || null;
+  return (
+    <>
+      <AiKeysCard overview={overview} refresh={refresh} />
+      <AiModeCard overview={overview} />
+      <AiToolsCard overview={overview} refresh={refresh} />
+      <AiUsageCard overview={overview} />
+    </>
+  );
+}
 
+type DraftKey = { rowId: string; provider: string; apiKey: string; model: string; baseUrl: string; nickname: string };
+
+let draftSeq = 0;
+function blankDraft(provider: string): DraftKey {
+  return { rowId: `draft-${++draftSeq}`, provider, apiKey: "", model: "", baseUrl: "", nickname: "" };
+}
+
+function AiKeysCard({ overview, refresh }: { overview: AiOverview; refresh: () => Promise<AiOverview | null> }) {
+  const providers = overview.providers;
+  const keys = overview.keys;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  // Several at once: the whole point of the vault is a fallback chain, and
+  // adding four keys used to mean four rounds of the same form.
+  const [drafts, setDrafts] = useState<DraftKey[]>(() => [blankDraft(providers[0]?.id || "")]);
+
+  const specFor = (id: string) => providers.find(p => p.id === id) || null;
+  const editDraft = (rowId: string, patchDraft: Partial<DraftKey>) =>
+    setDrafts(rows => rows.map(row => (row.rowId === rowId ? { ...row, ...patchDraft } : row)));
+
+  /**
+   * Save every filled row.
+   *
+   * Sequential rather than parallel: each row is a separate insert whose
+   * generated name depends on what is already stored, and a row that fails
+   * should not take the others down with it — so failures are collected and
+   * reported per row while the rest go through.
+   */
   const submit = async () => {
-    if (!apiKey.trim() || !model.trim()) {
-      toast.error("A key and a model are both required.");
+    const filled = drafts.filter(row => row.apiKey.trim());
+    if (!filled.length) {
+      toast.error("Paste at least one API key.");
       return;
     }
     setAdding(true);
-    try {
-      await apiFetch("/api/ai/keys", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          provider,
-          nickname: nickname.trim(),
-          apiKey: apiKey.trim(),
-          model: model.trim(),
-          baseUrl: baseUrl.trim() || null
-        })
-      });
-      // Clear the secret from component state the moment it is stored.
-      setApiKey("");
-      setNickname("");
-      setModel("");
-      setBaseUrl("");
-      toast.success("Key saved.");
-      reloadAiOverview().then(d => { setProviders(d.providers); setKeys(d.keys); }).catch(() => {});
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not save the key.");
-    } finally {
-      setAdding(false);
+    const failed: DraftKey[] = [];
+    let saved = 0;
+    for (const row of filled) {
+      try {
+        await apiFetch("/api/ai/keys", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider: row.provider,
+            nickname: row.nickname.trim(),
+            apiKey: row.apiKey.trim(),
+            // Omitted, not empty: the server fills in the provider's default.
+            model: row.model.trim() || undefined,
+            baseUrl: row.baseUrl.trim() || null
+          })
+        });
+        saved++;
+      } catch (err) {
+        failed.push(row);
+        toast.error(`${specFor(row.provider)?.label || row.provider}: ${err instanceof Error ? err.message : "could not be saved."}`);
+      }
     }
+    // Secrets leave component state the moment they are stored; only rows that
+    // still need attention are kept.
+    setDrafts(failed.length ? failed : [blankDraft(providers[0]?.id || "")]);
+    if (saved) toast.success(saved > 1 ? `${saved} keys saved.` : "Key saved.");
+    await refresh();
+    setAdding(false);
   };
 
   const patch = async (row: AiKeyRow, body: Record<string, unknown>) => {
@@ -994,7 +1013,7 @@ function AiKeysCard() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
       });
-      reloadAiOverview().then(d => setKeys(d.keys)).catch(() => {});
+      await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not update the key.");
     } finally {
@@ -1009,16 +1028,13 @@ function AiKeysCard() {
     try {
       await apiFetch(`/api/ai/keys/${row.id}`, { method: "DELETE" });
       toast.success("Key removed.");
-      reloadAiOverview().then(d => setKeys(d.keys)).catch(() => {});
+      await refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not remove the key.");
     } finally {
       setBusy(null);
     }
   };
-
-  // Hidden entirely until the server says the feature exists.
-  if (available !== true) return null;
 
   return (
     <section className="panel p-5 lg:col-span-2">
@@ -1107,64 +1123,102 @@ function AiKeysCard() {
         </ul>
       )}
 
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-        <label className="grid gap-1">
-          <span className="eyebrow">Provider</span>
-          <select value={provider} onChange={e => setProvider(e.target.value)} className="field" style={{ minHeight: 44 }}>
-            {providers.map(p => (
-              <option key={p.id} value={p.id}>{p.label}</option>
-            ))}
-          </select>
-        </label>
+      <div className="mt-4 grid gap-3">
+        {drafts.map((row, index) => {
+          const spec = specFor(row.provider);
+          return (
+            <div key={row.rowId} className="grid gap-2 rounded-xl p-3 sm:grid-cols-2" style={{ background: "var(--surface)" }}>
+              <label className="grid gap-1">
+                <span className="eyebrow">Provider</span>
+                {/* A dropdown, never a text field: a mistyped provider is a key
+                    that can never be routed anywhere. */}
+                <select
+                  value={row.provider}
+                  onChange={e => editDraft(row.rowId, { provider: e.target.value })}
+                  className="field"
+                  style={{ minHeight: 44 }}
+                >
+                  {providers.map(p => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+              </label>
 
-        <label className="grid gap-1">
-          <span className="eyebrow">Name</span>
-          <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder={spec?.label || "My key"} className="field" style={{ minHeight: 44 }} />
-        </label>
+              <label className="grid gap-1">
+                <span className="eyebrow">API key</span>
+                <input
+                  type="password"
+                  value={row.apiKey}
+                  onChange={e => editDraft(row.rowId, { apiKey: e.target.value })}
+                  placeholder={spec?.local ? "any value your runtime accepts" : "sk-…"}
+                  autoComplete="off"
+                  className="field"
+                  style={{ minHeight: 44 }}
+                />
+              </label>
 
-        <label className="grid gap-1">
-          <span className="eyebrow">API key</span>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={e => setApiKey(e.target.value)}
-            placeholder={spec?.local ? "any value your runtime accepts" : "sk-…"}
-            autoComplete="off"
-            className="field"
-            style={{ minHeight: 44 }}
-          />
-        </label>
+              <label className="grid gap-1">
+                <span className="eyebrow">Model (optional)</span>
+                <input
+                  value={row.model}
+                  onChange={e => editDraft(row.rowId, { model: e.target.value })}
+                  placeholder={spec?.defaultModel || "provider default"}
+                  className="field"
+                  style={{ minHeight: 44 }}
+                />
+              </label>
 
-        <label className="grid gap-1">
-          <span className="eyebrow">Model</span>
-          <input value={model} onChange={e => setModel(e.target.value)} placeholder="model name" className="field" style={{ minHeight: 44 }} />
-        </label>
+              <label className="grid gap-1">
+                <span className="eyebrow">
+                  Base URL {spec?.requiresBaseUrl ? "(required)" : "(optional)"}
+                </span>
+                <input
+                  value={row.baseUrl}
+                  onChange={e => editDraft(row.rowId, { baseUrl: e.target.value })}
+                  placeholder={spec?.defaultBaseUrl || "http://localhost:11434/v1"}
+                  className="field"
+                  style={{ minHeight: 44 }}
+                />
+              </label>
 
-        {/* Shown for every provider: a hosted key may also need a proxy URL. */}
-        <label className="grid gap-1 sm:col-span-2">
-          <span className="eyebrow">
-            Base URL {spec?.requiresBaseUrl ? "(required)" : "(optional — overrides the default)"}
-          </span>
-          <input
-            value={baseUrl}
-            onChange={e => setBaseUrl(e.target.value)}
-            placeholder={spec?.defaultBaseUrl || "http://localhost:11434/v1"}
-            className="field"
-            style={{ minHeight: 44 }}
-          />
-        </label>
+              <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
+                {spec?.keysUrl && (
+                  <a href={spec.keysUrl} target="_blank" rel="noreferrer" className="t-xs underline" style={{ color: "var(--text-3)" }}>
+                    Get a {spec.label} key
+                  </a>
+                )}
+                {drafts.length > 1 && (
+                  <button
+                    onClick={() => setDrafts(rows => rows.filter(r => r.rowId !== row.rowId))}
+                    className="t-xs ml-auto"
+                    style={{ color: "var(--danger)" }}
+                    aria-label={`Remove key row ${index + 1}`}
+                  >
+                    Remove row
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <button onClick={submit} disabled={adding} className="btn btn-accent" style={{ minHeight: 44 }}>
           {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
-          Save key
+          {drafts.filter(r => r.apiKey.trim()).length > 1 ? "Save keys" : "Save key"}
         </button>
-        {spec?.keysUrl && (
-          <a href={spec.keysUrl} target="_blank" rel="noreferrer" className="t-sm underline" style={{ color: "var(--text-3)" }}>
-            Get a {spec.label} key
-          </a>
-        )}
+        <button
+          onClick={() => setDrafts(rows => [...rows, blankDraft(rows[rows.length - 1]?.provider || providers[0]?.id || "")])}
+          className="btn btn-ghost"
+          style={{ minHeight: 44 }}
+        >
+          <Plus className="h-4 w-4" />
+          Add another key
+        </button>
+        <span className="t-xs" style={{ color: "var(--text-3)" }}>
+          Several keys make a fallback chain — if one is rate limited or out of credit, the next takes over.
+        </span>
       </div>
     </section>
   );

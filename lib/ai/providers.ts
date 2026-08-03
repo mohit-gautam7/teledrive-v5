@@ -18,6 +18,16 @@ export type ProviderSpec = {
   kind: ProviderKind;
   /** Default endpoint. Null means the user must supply one for every key. */
   baseUrl: string | null;
+  /**
+   * Model used when a key does not name one.
+   *
+   * Every key used to have to carry a model, which made adding one a research
+   * task: the user had to know the provider's exact model string before they
+   * could save anything. A default per provider makes the field an override
+   * instead — a small, current, widely-available model that any account with a
+   * valid key can reach.
+   */
+  defaultModel: string;
   /** Where to get a key — shown in the UI next to the field. */
   keysUrl?: string;
   /** True when the endpoint is the user's own machine, not a hosted service. */
@@ -28,6 +38,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "openrouter",
     label: "OpenRouter",
+    defaultModel: "openai/gpt-4o-mini",
     kind: "openai-compatible",
     baseUrl: "https://openrouter.ai/api/v1",
     keysUrl: "https://openrouter.ai/keys"
@@ -35,6 +46,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "groq",
     label: "Groq",
+    defaultModel: "llama-3.3-70b-versatile",
     kind: "openai-compatible",
     baseUrl: "https://api.groq.com/openai/v1",
     keysUrl: "https://console.groq.com/keys"
@@ -42,6 +54,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "gemini",
     label: "Google Gemini",
+    defaultModel: "gemini-2.0-flash",
     kind: "openai-compatible",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     keysUrl: "https://aistudio.google.com/apikey"
@@ -49,6 +62,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "openai",
     label: "OpenAI",
+    defaultModel: "gpt-4o-mini",
     kind: "openai-compatible",
     baseUrl: "https://api.openai.com/v1",
     keysUrl: "https://platform.openai.com/api-keys"
@@ -56,6 +70,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "anthropic",
     label: "Anthropic",
+    defaultModel: "claude-sonnet-5",
     kind: "anthropic",
     baseUrl: "https://api.anthropic.com/v1",
     keysUrl: "https://console.anthropic.com/settings/keys"
@@ -63,6 +78,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "deepseek",
     label: "DeepSeek",
+    defaultModel: "deepseek-chat",
     kind: "openai-compatible",
     baseUrl: "https://api.deepseek.com",
     keysUrl: "https://platform.deepseek.com/api_keys"
@@ -70,6 +86,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "together",
     label: "Together AI",
+    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     kind: "openai-compatible",
     baseUrl: "https://api.together.xyz/v1",
     keysUrl: "https://api.together.ai/settings/api-keys"
@@ -77,6 +94,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "fireworks",
     label: "Fireworks AI",
+    defaultModel: "accounts/fireworks/models/llama-v3p3-70b-instruct",
     kind: "openai-compatible",
     baseUrl: "https://api.fireworks.ai/inference/v1",
     keysUrl: "https://fireworks.ai/account/api-keys"
@@ -84,6 +102,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "cohere",
     label: "Cohere",
+    defaultModel: "command-r-plus",
     kind: "openai-compatible",
     baseUrl: "https://api.cohere.ai/compatibility/v1",
     keysUrl: "https://dashboard.cohere.com/api-keys"
@@ -91,6 +110,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     id: "huggingface",
     label: "Hugging Face",
+    defaultModel: "meta-llama/Llama-3.3-70B-Instruct",
     kind: "openai-compatible",
     baseUrl: "https://router.huggingface.co/v1",
     keysUrl: "https://huggingface.co/settings/tokens"
@@ -100,6 +120,7 @@ export const PROVIDERS: ProviderSpec[] = [
     // differ only in the URL the user gives — hence one entry, not four.
     id: "local",
     label: "Local (OpenAI-compatible)",
+    defaultModel: "llama3.2",
     kind: "openai-compatible",
     baseUrl: null,
     local: true
@@ -118,9 +139,10 @@ export function isProviderId(id: string): boolean {
 
 /** Safe to send to the browser — contains no secrets. */
 export function publicProviders() {
-  return PROVIDERS.map(({ id, label, baseUrl, keysUrl, local }) => ({
+  return PROVIDERS.map(({ id, label, baseUrl, keysUrl, local, defaultModel }) => ({
     id,
     label,
+    defaultModel,
     defaultBaseUrl: baseUrl,
     keysUrl: keysUrl ?? null,
     local: Boolean(local),

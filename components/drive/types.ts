@@ -152,6 +152,8 @@ export type AiUsage = {
 export type AiProvider = {
   id: string;
   label: string;
+  /** Used when a key names no model, so the Model field is always optional. */
+  defaultModel: string;
   defaultBaseUrl: string | null;
   keysUrl: string | null;
   local: boolean;

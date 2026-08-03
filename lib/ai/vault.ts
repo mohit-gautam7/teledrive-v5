@@ -80,18 +80,31 @@ export async function addKey(userId: string, input: NewKeyInput) {
     throw new VaultError("The base URL must start with http:// or https://");
   }
 
-  // Model is required rather than defaulted: which models a key can reach
-  // depends on the account behind it, and a guessed default fails confusingly.
-  const model = input.model?.trim() || null;
-  if (!model) throw new VaultError("Choose a model for this key.");
+  // The provider's default stands in when no model is named. Requiring one made
+  // adding a key a research task — the exact model string had to be known before
+  // anything could be saved — and the router refuses to use a key without one,
+  // so "no model" was a key that silently never ran.
+  const model = input.model?.trim() || spec.defaultModel;
 
-  const nickname = input.nickname.trim() || spec.label;
+  const chosen = input.nickname.trim();
+  const taken = new Set(
+    (
+      await prisma.aiKey.findMany({
+        where: { userId, provider: input.provider },
+        select: { nickname: true }
+      })
+    ).map(k => k.nickname)
+  );
 
-  const existing = await prisma.aiKey.findFirst({
-    where: { userId, provider: input.provider, nickname },
-    select: { id: true }
-  });
-  if (existing) throw new VaultError(`You already have a ${spec.label} key called "${nickname}".`, 409);
+  // A name the user typed is theirs — a clash is worth reporting. An
+  // auto-generated one is not: adding a second fallback key for the same
+  // provider is the normal case, and failing it over a name nobody chose would
+  // be pointless.
+  if (chosen && taken.has(chosen)) {
+    throw new VaultError(`You already have a ${spec.label} key called "${chosen}".`, 409);
+  }
+  let nickname = chosen || spec.label;
+  for (let n = 2; taken.has(nickname); n++) nickname = `${spec.label} ${n}`;
 
   return prisma.aiKey.create({
     data: {
