@@ -3,7 +3,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Pause, Play, RotateCw, X } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
-import { DURATION, EASE, useReducedMotion } from "@/lib/motion";
+import { DURATION, EASE, listRow, useReducedMotion } from "@/lib/motion";
 import { formatEta, formatSpeed, type DownloadItem, type TransferItem } from "./types";
 
 /**
@@ -127,10 +127,7 @@ export function TransferPanel({
               <motion.div
                 key={item.id}
                 layout={reduceMotion ? false : "position"}
-                initial={reduceMotion ? false : { opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 8 }}
-                transition={{ duration: reduceMotion ? DURATION.fast : DURATION.base, ease: EASE }}
+                {...listRow(reduceMotion)}
                 className="rounded-lg p-2"
                 style={{ background: "var(--bg-1)" }}
               >
@@ -217,7 +214,7 @@ function TransferRow({
         </span>
       </div>
 
-      <div className="h-1 overflow-hidden rounded-full" style={{ background: "var(--surface-hi)" }}>
+      <div className="progress-track h-1 overflow-hidden rounded-full" style={{ background: "var(--surface-hi)" }}>
         <div
           className={cn("h-full rounded-full transition-[width] duration-300", inFlight && item.percent > 0 && "progress-bar")}
           style={{

@@ -192,6 +192,14 @@ export function usePreferences() {
  * ACCENTS, because it has to run before any module loads. That copy is the one
  * duplication here, and the alternative is a visible repaint on every visit.
  */
+export function applyReducedMotion(reduce: boolean) {
+  // An attribute rather than a class, so the CSS rule answering it reads as a
+  // switch and cannot be mistaken for a style hook.
+  const root = document.documentElement;
+  if (reduce) root.setAttribute("data-reduce-motion", "1");
+  else root.removeAttribute("data-reduce-motion");
+}
+
 export function applyAccent(accent: AccentName, dark: boolean) {
   const pair = ACCENTS[accent] ?? ACCENTS.cyan;
   const [one, two] = dark ? pair.dark : pair.light;

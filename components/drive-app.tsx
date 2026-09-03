@@ -43,6 +43,7 @@ import {
   SIDEBAR_MIN,
   SIDEBAR_DEFAULT,
   applyAccent,
+  applyReducedMotion,
   setPreference,
   usePreferences
 } from "@/lib/preferences";
@@ -517,6 +518,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [theme, prefs.accent]);
+
+  // CSS transitions and the two infinite keyframe loops answer to the document,
+  // not to framer-motion, so the Settings toggle has to reach them here.
+  useEffect(() => {
+    applyReducedMotion(prefs.reduceMotion);
+  }, [prefs.reduceMotion]);
 
   useEffect(() => {
     if (!uploading) return;
@@ -1504,7 +1511,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
             {uploading ? (
               <div className="hidden items-center gap-2 sm:flex">
-                <div className="h-1.5 w-16 overflow-hidden rounded-full" style={{ background: "var(--surface)" }}>
+                <div className="progress-track h-1.5 w-16 overflow-hidden rounded-full" style={{ background: "var(--surface)" }}>
                   <div className="progress-bar h-full rounded-full transition-[width] duration-300" style={{ width: `${overallPercent}%` }} />
                 </div>
                 <span className="mono" style={{ color: "var(--accent)" }}>{overallPercent}%</span>

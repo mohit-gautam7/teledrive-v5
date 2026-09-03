@@ -18,7 +18,7 @@ import {
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
-import { DURATION, EASE, SPRING, fadeIn, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
+import { DURATION, EASE, fadeIn, fadeUp, slideInRight, stagger, useReducedMotion } from "@/lib/motion";
 import type { AiSearchHit, DriveFile } from "./types";
 
 /**
@@ -339,10 +339,7 @@ export function AskAiPanel({
       aria-label={`Ask AI about ${file.originalName}`}
     >
       <motion.aside
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 32 }}
-        animate={{ opacity: 1, x: 0 }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 32 }}
-        transition={reduceMotion ? { duration: DURATION.fast, ease: EASE } : SPRING}
+        {...slideInRight(reduceMotion)}
         onClick={e => e.stopPropagation()}
         className="safe-bottom flex h-full w-full flex-col sm:max-w-[520px]"
         style={{ background: "var(--bg-1)", borderLeft: "1px solid var(--border-dim)", boxShadow: "var(--shadow-lg)" }}

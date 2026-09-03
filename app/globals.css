@@ -460,34 +460,36 @@ button:not(:disabled),
   animation-delay: calc(var(--i, 0) * 45ms);
 }
 
-@keyframes sweep {
-  0% {
-    background-position: 200% center;
-  }
+/* Both of the loops below used to animate `background-position`, which the
+   compositor cannot touch: every frame repainted the element on the main
+   thread, forever, once per skeleton and once per progress bar. A grid of
+   forty loading tiles was forty repaints per frame for as long as it took to
+   load. Opacity is the one property that gets the same "still working" read
+   for free on the GPU. */
+@keyframes breathe {
+  0%,
   100% {
-    background-position: -200% center;
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
   }
 }
 
 .progress-bar {
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 50%, var(--accent) 100%);
-  background-size: 200% 100%;
-  animation: sweep 1.6s linear infinite;
+  background: var(--accent-grad);
+  animation: breathe 1.8s ease-in-out infinite;
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
+/* The fill's width is what moves, so the *track* is contained: a width change
+   inside it cannot reach the layout of anything around it. */
+.progress-track {
+  contain: layout paint;
 }
 
 .skeleton {
-  background: linear-gradient(90deg, var(--surface) 0%, var(--surface-hi) 50%, var(--surface) 100%);
-  background-size: 200% 100%;
-  animation: shimmer 1.8s ease-in-out infinite;
+  background: var(--surface-hi);
+  animation: breathe 1.6s ease-in-out infinite;
   border-radius: var(--r-sm);
 }
 
@@ -642,6 +644,9 @@ button:not(:disabled),
    duration means anything relying on a transitionend/animationend event still
    fires, so nothing gets stuck waiting for an animation that never runs.
    Framer Motion reads the same preference via useReducedMotion(). */
+/* The OS setting and the Settings toggle, answered identically. The attribute
+   is set by lib/preferences; without it the toggle would quiet framer-motion
+   and leave every CSS transition and the two infinite loops above running. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -651,4 +656,13 @@ button:not(:disabled),
     transition-duration: 1ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+:root[data-reduce-motion="1"] *,
+:root[data-reduce-motion="1"] *::before,
+:root[data-reduce-motion="1"] *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+  scroll-behavior: auto !important;
 }

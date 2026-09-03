@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Folder as FolderIcon, Home, Info, Loader2 } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
-import { DURATION, EASE, SPRING, fadeIn, useReducedMotion } from "@/lib/motion";
+import { fadeIn, sheet, useReducedMotion } from "@/lib/motion";
 import type { DriveFolder, PropsTarget } from "./types";
 
 /** Shared modal chrome: dimmed backdrop, escape-to-close, click-outside-to-close.
@@ -35,10 +35,7 @@ function Shell({ onClose, children, wide }: { onClose: () => void; children: Rea
       aria-modal="true"
     >
       <motion.div
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.98 }}
-        transition={reduceMotion ? { duration: DURATION.fast, ease: EASE } : SPRING}
+        {...sheet(reduceMotion)}
         className="panel safe-bottom w-full overflow-hidden rounded-b-none sm:rounded-2xl"
         style={{
           maxWidth: wide ? 560 : 440,

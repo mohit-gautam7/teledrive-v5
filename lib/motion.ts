@@ -75,6 +75,39 @@ export function popIn(reduce: boolean | null, delay = 0) {
   };
 }
 
+/**
+ * A modal card: rises and settles. Every dialog in the app uses this one, so a
+ * new modal cannot quietly arrive with its own timing.
+ */
+export function sheet(reduce: boolean | null) {
+  return {
+    initial: reduce ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.98 },
+    animate: { opacity: 1, y: 0, scale: 1 },
+    exit: reduce ? { opacity: 0 } : { opacity: 0, y: 24, scale: 0.98 },
+    transition: reduce ? { duration: DURATION.fast, ease: EASE } : SPRING
+  };
+}
+
+/** A drawer entering from the right edge — the AI panel, and anything like it. */
+export function slideInRight(reduce: boolean | null, distance = 32) {
+  return {
+    initial: reduce ? { opacity: 0 } : { opacity: 0, x: distance },
+    animate: { opacity: 1, x: 0 },
+    exit: reduce ? { opacity: 0 } : { opacity: 0, x: distance },
+    transition: reduce ? { duration: DURATION.fast, ease: EASE } : SPRING
+  };
+}
+
+/** A row arriving in or leaving a live list — transfers, results. */
+export function listRow(reduce: boolean | null) {
+  return {
+    initial: reduce ? false : ({ opacity: 0, y: -4 } as const),
+    animate: { opacity: 1, y: 0 },
+    exit: reduce ? { opacity: 0 } : { opacity: 0, x: 8 },
+    transition: { duration: reduce ? DURATION.fast : DURATION.base, ease: EASE }
+  };
+}
+
 /** A panel that slides up from the bottom edge — bulk bar, sheets. */
 export function riseFromBottom(reduce: boolean | null) {
   return {
