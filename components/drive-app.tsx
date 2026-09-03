@@ -44,6 +44,7 @@ import {
   SIDEBAR_DEFAULT,
   applyAccent,
   applyReducedMotion,
+  readPreferences,
   setPreference,
   usePreferences
 } from "@/lib/preferences";
@@ -495,14 +496,19 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   // so remembered settings are in place for the first frame the user sees rather
   // than snapping into position afterwards. (The pre-paint script in
   // app/layout.tsx covers theme and accent, which are visible sooner still.)
+  //
+  // Read straight from storage rather than from `prefs`. useSyncExternalStore
+  // hands back the *server* snapshot — the defaults — for the hydration render,
+  // and this effect can run before the client snapshot has replaced it, so
+  // reading the hook here silently applied 268px over a remembered 384.
   useIsomorphicLayoutEffect(() => {
-    setSidebarWidth(prefs.sidebarWidth);
-    setView(prefs.view);
-    setSortField(prefs.sortField);
-    setSortDir(prefs.sortDir);
-    // Preferences load once, from storage, before first paint; re-syncing the
-    // session state on every later change would fight the user's per-visit
-    // choices in the toolbar.
+    const stored = readPreferences();
+    setSidebarWidth(stored.sidebarWidth);
+    setView(stored.view);
+    setSortField(stored.sortField);
+    setSortDir(stored.sortDir);
+    // Once, from storage. Re-syncing on every later change would fight the
+    // per-visit choices the user makes in the toolbar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
