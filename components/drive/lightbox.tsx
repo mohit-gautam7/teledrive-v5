@@ -85,6 +85,22 @@ const MAX_STREAM_RECOVERIES = 6;
  */
 const SLOW_AFTER_MS = 12_000;
 
+/**
+ * Playback speeds, and why there is no quality selector beside them.
+ *
+ * A quality menu needs renditions to choose between, and there is exactly one
+ * file: the bytes the user uploaded. Building a 480p/720p ladder means ffmpeg
+ * and CPU-minutes per file, which the free tier this runs on does not have, and
+ * a "360p" entry that re-streams the same bytes would be a lie the buffering
+ * would expose within seconds.
+ *
+ * Speed is the control that genuinely helps and costs nothing — it is a property
+ * of the element, not of the stream. Slowing a high-bitrate film also hands
+ * Telegram more wall-clock time per second of video, which is often the
+ * difference between watching it and re-buffering through it.
+ */
+const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
 function VideoStage({
   src,
   fileId,
@@ -101,8 +117,16 @@ function VideoStage({
   const ref = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "buffering" | "reconnecting" | "stalled">("buffering");
   const [slow, setSlow] = useState(false);
+  const [speed, setSpeed] = useState(1);
   const recoveries = useRef(0);
   const resumeAt = useRef(0);
+
+  // Re-applied rather than set once: `load()` on a recovery resets playbackRate
+  // to 1, which would silently undo the viewer's choice every time the stream
+  // hiccupped.
+  useEffect(() => {
+    if (ref.current) ref.current.playbackRate = speed;
+  }, [speed, state]);
 
   // A fresh file starts a fresh budget: recoveries spent on the last video must
   // not count against this one.
@@ -171,7 +195,7 @@ function VideoStage({
   }, [onUnrecoverable, resume]);
 
   return (
-    <div className="relative flex max-h-full max-w-full items-center justify-center">
+    <div className="relative flex max-h-full max-w-full flex-col items-center justify-center gap-2">
       <video
         ref={ref}
         src={src}
@@ -203,6 +227,41 @@ function VideoStage({
         className="rounded-xl"
         style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", background: "#000" }}
       />
+
+      {/* Below the frame, never over it — the browser's own controls live along
+          the bottom edge and covering them is worse than any control we add. */}
+      <div className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-1">
+        <label className="flex items-center gap-1.5">
+          <span className="mono" style={{ color: "var(--text-3)" }}>
+            Speed
+          </span>
+          {/* A native select: keyboard- and screen-reader-correct for free, and
+              it opens as the platform's own picker on a phone. */}
+          <select
+            value={speed}
+            onChange={event => setSpeed(Number(event.target.value))}
+            aria-label="Playback speed"
+            className="mono rounded-md px-1.5 py-1"
+            style={{ background: "var(--bg-1)", color: "var(--text-1)", border: "1px solid var(--border-med)" }}
+          >
+            {SPEEDS.map(value => (
+              <option key={value} value={value}>
+                {value}&times;
+              </option>
+            ))}
+          </select>
+        </label>
+        {/* Offered from the start, not only once the stream has already given
+            up: a high-bitrate film over a slow link is a choice worth having
+            before twenty minutes of buffering, not after. */}
+        <button
+          onClick={onDownload}
+          className="t-xs underline-offset-2 hover:underline"
+          style={{ color: "var(--text-3)" }}
+        >
+          Having trouble? Download to play
+        </button>
+      </div>
 
       {state === "stalled" ? (
         <div
