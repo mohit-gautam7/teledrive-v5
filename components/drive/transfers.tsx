@@ -1,10 +1,10 @@
 "use client";
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, RotateCw, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Pause, Play, RotateCw, X } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { DURATION, EASE } from "@/lib/motion";
-import { formatEta, formatSpeed, type DownloadItem, type TransferItem, type UploadItem } from "./types";
+import { formatEta, formatSpeed, type DownloadItem, type TransferItem } from "./types";
 
 /**
  * One panel for everything moving in either direction.
@@ -24,8 +24,11 @@ export function TransferPanel({
   onToggle,
   onCancelUpload,
   onCancelAll,
-  onRetryUpload,
+  onPauseUpload,
   onResumeUpload,
+  onPauseAll,
+  onResumeAll,
+  onRetryUpload,
   onCancelDownload,
   onRetryDownload,
   onDismiss
@@ -35,8 +38,11 @@ export function TransferPanel({
   onToggle: () => void;
   onCancelUpload: (id: string) => void;
   onCancelAll: () => void;
-  onRetryUpload: (item: UploadItem) => void;
-  onResumeUpload: (item: UploadItem) => void;
+  onPauseUpload: (id: string) => void;
+  onResumeUpload: (id: string) => void;
+  onPauseAll: () => void;
+  onResumeAll: () => void;
+  onRetryUpload: (id: string) => void;
   onCancelDownload: (id: string) => void;
   onRetryDownload: (item: DownloadItem) => void;
   onDismiss: (id: string) => void;
@@ -48,6 +54,15 @@ export function TransferPanel({
   const done = transfers.filter(t => t.status === "done").length;
   const failed = transfers.filter(t => t.status === "error").length;
   const paused = transfers.filter(t => t.status === "paused").length;
+  const uploadsPresent = transfers.some(t => t.kind === "upload");
+  // "Pause all" only means something while something is actually moving, and
+  // "Resume all" only while something is stopped but still holds its bytes.
+  const pausableUploads = transfers.some(
+    t => t.kind === "upload" && (t.status === "uploading" || t.status === "pending")
+  );
+  const resumableUploads = transfers.some(
+    t => t.kind === "upload" && (t.status === "paused" || t.status === "error")
+  );
 
   const totalBytes = transfers.reduce((sum, t) => sum + t.size, 0);
   const loadedBytes = transfers.reduce((sum, t) => sum + (t.status === "done" ? t.size : t.loaded), 0);
@@ -72,16 +87,37 @@ export function TransferPanel({
               {paused ? ` · ${paused} paused` : ""}
             </span>
           </button>
-          {active.length ? (
-            <button onClick={onCancelAll} className="t-xs shrink-0 font-semibold" style={{ color: "var(--danger)" }}>
-              Cancel all
-            </button>
-          ) : null}
+          <span className="flex shrink-0 items-center gap-2">
+            {pausableUploads ? (
+              <button onClick={onPauseAll} className="t-xs font-semibold" style={{ color: "var(--text-2)" }}>
+                Pause all
+              </button>
+            ) : null}
+            {resumableUploads ? (
+              <button onClick={onResumeAll} className="t-xs font-semibold" style={{ color: "var(--accent)" }}>
+                Resume all
+              </button>
+            ) : null}
+            {active.length ? (
+              <button onClick={onCancelAll} className="t-xs font-semibold" style={{ color: "var(--danger)" }}>
+                Cancel all
+              </button>
+            ) : null}
+          </span>
         </div>
         <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>
           {formatBytes(loadedBytes)} / {formatBytes(totalBytes)}
           {active.length ? ` · ${formatSpeed(speed || null)} · ${formatEta(eta)} left` : ""}
         </p>
+        {/* Said once, plainly, because the alternative is someone closing the
+            tab expecting the upload to carry on. It cannot: a browser loses the
+            file handle along with the document. Everything short of that does. */}
+        {uploadsPresent ? (
+          <p className="t-xs mt-1 leading-snug" style={{ color: "var(--text-3)" }}>
+            Uploads keep running as you move around the app. Closing the tab pauses them — they carry on from where
+            they stopped when you return.
+          </p>
+        ) : null}
       </div>
 
       {open ? (
@@ -101,17 +137,9 @@ export function TransferPanel({
                 <TransferRow
                   item={item}
                   onCancel={() => (item.kind === "upload" ? onCancelUpload(item.id) : onCancelDownload(item.id))}
-                  onRetry={() => {
-                    if (item.kind === "download") {
-                      onRetryDownload(item);
-                      return;
-                    }
-                    // A restored session has no bytes to retry with, so retrying
-                    // it means asking for the file back first.
-                    if (item.file) onRetryUpload(item);
-                    else onResumeUpload(item);
-                  }}
-                  onResume={() => item.kind === "upload" && onResumeUpload(item)}
+                  onRetry={() => (item.kind === "download" ? onRetryDownload(item) : onRetryUpload(item.id))}
+                  onPause={() => item.kind === "upload" && onPauseUpload(item.id)}
+                  onResume={() => item.kind === "upload" && onResumeUpload(item.id)}
                   onDismiss={() => onDismiss(item.id)}
                 />
               </motion.div>
@@ -127,12 +155,14 @@ function TransferRow({
   item,
   onCancel,
   onRetry,
+  onPause,
   onResume,
   onDismiss
 }: {
   item: TransferItem;
   onCancel: () => void;
   onRetry: () => void;
+  onPause: () => void;
   onResume: () => void;
   onDismiss: () => void;
 }) {
@@ -158,8 +188,21 @@ function TransferRow({
             <span className="mono" style={{ color: "var(--accent)" }}>{item.percent}%</span>
           ) : null}
           {item.status === "done" ? <Check className="h-3.5 w-3.5" style={{ color: "var(--emerald)" }} /> : null}
+          {/* Only uploads pause. A download is one response being consumed, and
+              stopping it mid-body cannot be picked up where it stopped. */}
+          {item.kind === "upload" && (item.status === "uploading" || item.status === "pending") ? (
+            <button onClick={onPause} aria-label={`Pause ${item.name}`} title="Pause">
+              <Pause className="h-3.5 w-3.5" style={{ color: "var(--text-2)" }} />
+            </button>
+          ) : null}
           {item.status === "paused" ? (
-            <button onClick={onResume} className="mono" style={{ color: "var(--accent)" }}>
+            <button
+              onClick={onResume}
+              className="mono flex items-center gap-1"
+              style={{ color: "var(--accent)" }}
+              aria-label={`Resume ${item.name}`}
+            >
+              <Play className="h-3 w-3" />
               Resume
             </button>
           ) : null}
@@ -190,7 +233,8 @@ function TransferRow({
         </p>
       ) : item.status === "paused" ? (
         <p className="t-xs mt-1 truncate" style={{ color: "var(--text-3)" }}>
-          {formatBytes(item.loaded)} of {formatBytes(item.size)} already stored — resume to send the rest.
+          {formatBytes(item.loaded)} of {formatBytes(item.size)} already stored —{" "}
+          {item.kind === "upload" && !item.file ? "resume and pick the file again" : "resume to send the rest"}.
         </p>
       ) : (
         <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>
@@ -201,35 +245,4 @@ function TransferRow({
       )}
     </>
   );
-}
-
-/**
- * Percent, speed and ETA from a series of byte counts.
- *
- * Shared by both directions so an upload and a download cannot disagree about
- * what "12 MB/s" means. The window is deliberately short: long enough to ride
- * out one slow chunk, short enough that the number follows the connection.
- */
-const SPEED_WINDOW_MS = 6000;
-
-export function sampleRate(
-  samples: Array<{ t: number; loaded: number }>,
-  loaded: number,
-  size: number
-): Pick<DownloadItem, "loaded" | "percent" | "speed" | "eta"> {
-  const now = Date.now();
-  samples.push({ t: now, loaded });
-  while (samples.length > 2 && now - samples[0].t > SPEED_WINDOW_MS) samples.shift();
-
-  const first = samples[0];
-  const elapsed = (now - first.t) / 1000;
-  const moved = loaded - first.loaded;
-  const speed = elapsed >= 0.75 && moved > 0 ? moved / elapsed : null;
-
-  return {
-    loaded,
-    percent: size ? Math.min(100, Math.round((loaded / size) * 100)) : 0,
-    speed,
-    eta: speed && speed > 0 && size ? Math.max(0, (size - loaded) / speed) : null
-  };
 }

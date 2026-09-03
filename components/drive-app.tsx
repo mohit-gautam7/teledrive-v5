@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { toast } from "sonner";
@@ -34,19 +34,10 @@ import {
   Upload,
   X
 } from "lucide-react";
-import { apiFetch, uploadFile, UploadAbortedError } from "@/lib/api-client";
-import { uploadFileInChunks, resumeKeyFor } from "@/lib/chunked-upload";
-import {
-  fileFromHandle,
-  forgetHandle,
-  matchesSession,
-  readPersisted,
-  recallHandle,
-  writePersisted,
-  type PersistedUpload
-} from "@/lib/upload-store";
-import { MAX_FILE_SIZE, SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
-import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
+import { apiFetch } from "@/lib/api-client";
+import { uploads } from "@/lib/upload-manager";
+import { resumeKeyFor } from "@/lib/chunked-upload";
+import { MAX_FILE_SIZE } from "@/lib/upload-config";
 import { cn, formatBytes } from "@/lib/utils";
 import { SPRING, fadeIn, fadeUp, riseFromBottom, transition } from "@/lib/motion";
 import { Logo } from "@/components/logo";
@@ -56,7 +47,7 @@ import { Lightbox } from "@/components/drive/lightbox";
 import { ConfirmModal, MoveModal, NameModal, PropertiesModal, ShareModal } from "@/components/drive/modals";
 import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
 import { AiSearchResults, AiSearchToggle, AskAiPanel, type AiAction } from "@/components/drive/ai";
-import { TransferPanel, sampleRate } from "@/components/drive/transfers";
+import { TransferPanel } from "@/components/drive/transfers";
 import { MEMORY_DOWNLOAD_LIMIT, browserDownload, canStreamToDisk, downloadWithProgress } from "@/lib/download-manager";
 import {
   type AiSearchHit,
@@ -72,7 +63,7 @@ import {
   type ThemeMode,
   type TransferItem,
   type TypeFilter,
-  type UploadItem
+  sampleRate
 } from "@/components/drive/types";
 
 const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
@@ -160,14 +151,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  const [uploading, setUploading] = useState(false);
-  const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
+  // The queue lives in a module, not in this component: uploads have to keep
+  // running when this tree unmounts (see lib/upload-manager.ts).
+  const uploadQueue = useSyncExternalStore(uploads.subscribe, uploads.getSnapshot, uploads.getServerSnapshot);
+  const uploading = uploadQueue.some(it => it.status === "uploading" || it.status === "pending");
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [trayOpen, setTrayOpen] = useState(true);
-  const abortControllers = useRef<Map<string, AbortController>>(new Map());
   const downloadControllers = useRef<Map<string, AbortController>>(new Map());
-  const progressSamples = useRef<Map<string, Array<{ t: number; loaded: number }>>>(new Map());
-  const batchController = useRef<AbortController | null>(null);
   /** The in-flight listing, so a newer one can cancel it. */
   const listController = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -529,7 +519,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     if (!uploading) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
-      e.returnValue = "Upload in progress — leaving will pause it.";
+      e.returnValue = "An upload is still running. Leaving pauses it — it resumes from here when you come back.";
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
@@ -595,109 +585,25 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return parentId;
   }, []);
 
-  const uploadThumbnail = useCallback(async (fileId: string, source: File) => {
-    try {
-      const thumb = await makeThumbnail(source);
-      if (!thumb) return;
-      const form = new FormData();
-      form.append("thumb", thumb);
-      // Bounded: a slow thumbnail must never hold up the upload queue. If it
-      // times out the server falls back to generating one on first view.
-      const abort = new AbortController();
-      const timer = window.setTimeout(() => abort.abort(), 15_000);
-      try {
-        await fetch(`/api/upload/thumb/${fileId}`, { method: "POST", body: form, signal: abort.signal });
-      } finally {
-        window.clearTimeout(timer);
-      }
-    } catch {
-      /* the server still generates one on first view */
-    }
-  }, []);
-
   /**
-   * Record bytes stored and derive percent, speed and ETA.
+   * Hand the component's knowledge to the manager, which has none of its own.
    *
-   * Speed comes from a rolling ~6 s window rather than the whole-upload average,
-   * so the number reacts to the connection instead of slowly converging.
+   * Re-registered whenever the callbacks change identity, so a stored file lands
+   * in the folder the user is actually looking at rather than the one they were
+   * in when the upload started.
    */
-  const reportProgress = useCallback((itemId: string, loaded: number, size: number) => {
-    const history = progressSamples.current.get(itemId) ?? [];
-    progressSamples.current.set(itemId, history);
-    const rate = sampleRate(history, loaded, size);
-    setUploadQueue(q => q.map(it => (it.id === itemId ? { ...it, ...rate } : it)));
-  }, []);
+  useEffect(() => {
+    uploads.setHooks({ ensureFolderPath, onStored: addFileToState, onIdle: refreshStats });
+  }, [ensureFolderPath, addFileToState, refreshStats]);
 
-  const uploadOne = useCallback(
-    async (item: UploadItem, targetFolderId: string | null) => {
-      if (!item.file) return;
-      const source = item.file;
-      progressSamples.current.delete(item.id);
-      setUploadQueue(q =>
-        q.map(it =>
-          it.id === item.id
-            ? {
-                ...it,
-                status: "uploading",
-                // Not reset to 0: a resumed session starts from whatever the
-                // server already holds, and zeroing it would make a 90%-done
-                // upload appear to start again.
-                loaded: it.status === "paused" ? it.loaded : 0,
-                percent: it.status === "paused" ? it.percent : 0,
-                error: undefined,
-                folderId: targetFolderId,
-                resumeKey: resumeKeyFor(source, targetFolderId)
-              }
-            : it
-        )
-      );
-      const controller = new AbortController();
-      abortControllers.current.set(item.id, controller);
-      try {
-        let created: DriveFile | null = null;
-        if (source.size > SINGLE_SHOT_LIMIT) {
-          const result = await uploadFileInChunks({
-            file: source,
-            folderId: targetFolderId,
-            onProgress: loaded => reportProgress(item.id, loaded, item.size),
-            signal: controller.signal
-          });
-          created = (result.file as DriveFile) ?? null;
-        } else {
-          const form = new FormData();
-          form.append("file", source);
-          if (targetFolderId) form.append("folderId", targetFolderId);
-          const result = await uploadFile<{ file: DriveFile }>(
-            "/api/upload",
-            form,
-            percent => reportProgress(item.id, Math.round((percent / 100) * item.size), item.size),
-            controller.signal
-          );
-          created = result.data.file ?? null;
-        }
-        // Store the thumbnail *before* the tile mounts. The tile immediately
-        // requests /api/preview?thumb=1, and if no thumbnail exists yet the
-        // server takes the slow path — re-downloading the original from
-        // Telegram and resizing it — which is precisely what generating one at
-        // upload time is meant to avoid.
-        if (created && canThumbnail(source)) await uploadThumbnail(created.id, source);
-        addFileToState(created);
-        progressSamples.current.delete(item.id);
-        setUploadQueue(q =>
-          q.map(it => (it.id === item.id ? { ...it, loaded: it.size, percent: 100, speed: null, eta: null, status: "done" } : it))
-        );
-        // The session is finished, so the handle kept for resuming it is dead
-        // weight. Cheap to drop, and it keeps the store from growing forever.
-        void forgetHandle(resumeKeyFor(source, targetFolderId));
-      } finally {
-        abortControllers.current.delete(item.id);
-      }
-    },
-    [addFileToState, reportProgress]
-  );
+  // Sessions left behind by a previous visit. Runs once per user, inside the
+  // manager, so a remount does not re-read them.
+  useEffect(() => {
+    uploads.hydrate(cacheUser);
+  }, [cacheUser]);
 
   const startUploads = useCallback(
-    async (incoming: PickedFile[], destination: string | null = folderId) => {
+    (incoming: PickedFile[], destination: string | null = folderId) => {
       const usable = incoming.filter(p => p.file.size > 0);
       const tooLarge = usable.find(p => p.file.size > maxBytes);
       if (tooLarge) {
@@ -708,238 +614,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         if (incoming.length) toast.error("Those files are empty, so there was nothing to upload.");
         return;
       }
-
-      const items: UploadItem[] = usable.map(({ file, path }) => ({
-        id: Math.random().toString(36).slice(2),
-        name: file.name,
-        size: file.size,
-        loaded: 0,
-        percent: 0,
-        speed: null,
-        eta: null,
-        status: "pending",
-        file,
-        lastModified: file.lastModified,
-        folderId: destination,
-        resumeKey: resumeKeyFor(file, destination),
-        path
-      }));
-
-      // Appended, not assigned: a session restored from a previous visit is
-      // waiting in this queue, and replacing it would strand chunks the server
-      // is still holding.
-      setUploadQueue(q => [...q.filter(it => it.status !== "done"), ...items]);
-      setTrayOpen(true);
-      setUploading(true);
-      const batch = new AbortController();
-      batchController.current = batch;
       folderCache.current.clear();
-
-      let failed = false;
-      for (const item of items) {
-        if (batch.signal.aborted) break;
-        try {
-          // A directory upload recreates its structure under the current folder.
-          let target = destination;
-          if (item.path?.includes("/")) {
-            const segments = item.path.split("/").slice(0, -1);
-            target = await ensureFolderPath(segments, destination);
-          }
-          await uploadOne(item, target);
-        } catch (error) {
-          if (error instanceof UploadAbortedError) {
-            setUploadQueue(q => q.filter(it => it.id !== item.id));
-            continue;
-          }
-          failed = true;
-          const message = error instanceof Error ? error.message : "Upload failed";
-          setUploadQueue(q => q.map(it => (it.id === item.id ? { ...it, status: "error", error: message } : it)));
-        }
-      }
-
-      batchController.current = null;
-      setUploading(false);
-      refreshStats();
-      // Only the finished rows are cleared; a paused session from an earlier
-      // visit stays until it is resumed or dismissed.
-      if (!failed) window.setTimeout(() => setUploadQueue(q => q.filter(it => it.status !== "done")), 2500);
+      uploads.add(usable, destination);
+      setTrayOpen(true);
     },
-    [folderId, maxBytes, uploadOne, ensureFolderPath, refreshStats]
+    [folderId, maxBytes]
   );
-
-  const retryUpload = useCallback(
-    async (item: UploadItem) => {
-      try {
-        await uploadOne(item, folderId);
-      } catch (error) {
-        if (error instanceof UploadAbortedError) return;
-        setUploadQueue(q =>
-          q.map(it => (it.id === item.id ? { ...it, status: "error", error: error instanceof Error ? error.message : "Upload failed" } : it))
-        );
-      }
-    },
-    [uploadOne, folderId]
-  );
-
-  const cancelUpload = useCallback((id: string) => {
-    abortControllers.current.get(id)?.abort();
-    abortControllers.current.delete(id);
-    setUploadQueue(q => {
-      const item = q.find(it => it.id === id);
-      if (item?.resumeKey) void forgetHandle(item.resumeKey);
-      return q.filter(it => it.id !== id);
-    });
-  }, []);
-
-  const cancelAll = useCallback(() => {
-    abortControllers.current.forEach(c => c.abort());
-    abortControllers.current.clear();
-    batchController.current?.abort();
-    setUploadQueue(q => {
-      for (const item of q) if (item.resumeKey) void forgetHandle(item.resumeKey);
-      return [];
-    });
-    setUploading(false);
-  }, []);
-
-  // ── Uploads that outlive the page ─────────────────────────────────────────
-
-  /** Flipped once the stored sessions have been read back; see the restore below. */
-  const hydratedUploads = useRef(false);
-
-  /**
-   * Mirror the queue to storage on every change.
-   *
-   * Only chunked uploads are worth persisting: anything at or under one chunk is
-   * a single request with no server-side session to resume, and restarting it
-   * costs less than the bookkeeping would.
-   */
-  useEffect(() => {
-    // Not before the restore below has run: this effect fires on mount with an
-    // empty queue, and writing that would erase the very sessions it is meant to
-    // bring back.
-    if (!hydratedUploads.current) return;
-    const resumable = uploadQueue
-      .filter(it => it.size > SINGLE_SHOT_LIMIT && it.resumeKey && (it.status === "uploading" || it.status === "pending" || it.status === "paused" || it.status === "error"))
-      .map<PersistedUpload>(it => ({
-        id: it.id,
-        fileId: null,
-        name: it.name,
-        size: it.size,
-        // From the item, not from `it.file`: a session restored after a reload
-        // has no File, and writing 0 back would erase the timestamp the resume
-        // key is built from — stranding the very session this is preserving.
-        lastModified: it.lastModified ?? it.file?.lastModified ?? 0,
-        folderId: it.folderId ?? null,
-        resumeKey: it.resumeKey as string,
-        path: it.path,
-        loaded: it.loaded,
-        updatedAt: Date.now()
-      }));
-    writePersisted(cacheUser, resumable);
-  }, [uploadQueue, cacheUser]);
-
-  /**
-   * Put an interrupted upload back to work.
-   *
-   * `uploadFileInChunks` re-inits with the same resume key, and the server
-   * answers with the chunks it already holds — so this sends only what is
-   * missing, however far the upload had got before the page went away.
-   */
-  const resumeUpload = useCallback(
-    async (item: UploadItem, file: File) => {
-      const target = item.folderId ?? null;
-      const restored: UploadItem = { ...item, file };
-      setUploadQueue(q => q.map(it => (it.id === item.id ? restored : it)));
-      setUploading(true);
-      try {
-        await uploadOne(restored, target);
-        refreshStats();
-      } catch (error) {
-        if (error instanceof UploadAbortedError) return;
-        setUploadQueue(q =>
-          q.map(it =>
-            it.id === item.id ? { ...it, status: "error", error: error instanceof Error ? error.message : "Upload failed" } : it
-          )
-        );
-      } finally {
-        setUploading(false);
-      }
-    },
-    [uploadOne, refreshStats]
-  );
-
-  /** Hand the file back by picking it again — the fallback when no handle exists. */
-  const repickAndResume = useCallback(
-    (item: UploadItem) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.onchange = () => {
-        const picked = input.files?.[0];
-        if (!picked) return;
-        // Name and size must match, or this is a different file and its chunks
-        // are not the ones the server is holding. The timestamp is part of the
-        // resume key too, but a mismatch there is harmless: the key simply does
-        // not match, so the server starts a fresh session instead of resuming.
-        if (picked.name !== item.name || picked.size !== item.size) {
-          toast.error(`That is not the same file — pick "${item.name}" to carry on where it stopped.`);
-          return;
-        }
-        if (item.lastModified && picked.lastModified !== item.lastModified) {
-          toast.info(`"${picked.name}" has changed since the upload started, so it will be sent from the beginning.`);
-        }
-        void resumeUpload(item, picked);
-      };
-      input.click();
-    },
-    [resumeUpload]
-  );
-
-  /**
-   * Restore unfinished uploads on load, and carry on where the browser lets us.
-   *
-   * A `File` cannot survive a reload, so the bytes have to come from somewhere.
-   * Chromium hands out a `FileSystemFileHandle` for dropped files, which is
-   * storable and — when its read permission is still granted — usable without
-   * asking, so those resume on their own. Everything else is listed as paused
-   * with a Resume button, which is the closest the platform allows.
-   */
-  useEffect(() => {
-    if (hydratedUploads.current) return;
-    hydratedUploads.current = true;
-
-    const sessions = readPersisted(cacheUser);
-    if (!sessions.length) return;
-
-    const items: UploadItem[] = sessions.map(session => ({
-      id: session.id,
-      name: session.name,
-      size: session.size,
-      loaded: session.loaded,
-      percent: session.size ? Math.min(100, Math.round((session.loaded / session.size) * 100)) : 0,
-      speed: null,
-      eta: null,
-      status: "paused",
-      file: null,
-      lastModified: session.lastModified,
-      folderId: session.folderId,
-      resumeKey: session.resumeKey,
-      path: session.path
-    }));
-    setUploadQueue(q => [...items.filter(it => !q.some(existing => existing.resumeKey === it.resumeKey)), ...q]);
-    setTrayOpen(true);
-
-    void (async () => {
-      for (const session of sessions) {
-        const handle = await recallHandle(session.resumeKey);
-        if (!handle) continue;
-        const file = await fileFromHandle(handle, { prompt: false });
-        if (!file || !matchesSession(file, session)) continue;
-        const item = items.find(it => it.id === session.id);
-        if (item) await resumeUpload(item, file);
-      }
-    })();
-  }, [cacheUser, resumeUpload]);
 
   // ── Downloads ─────────────────────────────────────────────────────────────
 
@@ -1679,10 +1359,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           transfers={transfers}
           open={trayOpen}
           onToggle={() => setTrayOpen(o => !o)}
-          onCancelUpload={cancelUpload}
-          onCancelAll={cancelAll}
-          onRetryUpload={retryUpload}
-          onResumeUpload={repickAndResume}
+          onCancelUpload={id => uploads.cancel(id)}
+          onCancelAll={() => {
+            uploads.cancelAll();
+            downloadControllers.current.forEach(c => c.abort());
+            downloadControllers.current.clear();
+            setDownloads([]);
+          }}
+          onPauseUpload={id => uploads.pause(id)}
+          onResumeUpload={id => uploads.resume(id)}
+          onPauseAll={() => uploads.pauseAll()}
+          onResumeAll={() => uploads.resumeAll()}
+          onRetryUpload={id => uploads.retry(id)}
           onCancelDownload={cancelDownload}
           onRetryDownload={item => {
             setDownloads(list => list.filter(d => d.id !== item.id));
@@ -1695,7 +1383,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             void startDownload({ id: item.fileId, originalName: item.name, size: item.size });
           }}
           onDismiss={id => {
-            setUploadQueue(q => q.filter(it => it.id !== id));
+            uploads.dismiss(id);
             setDownloads(list => list.filter(d => d.id !== id));
           }}
         />

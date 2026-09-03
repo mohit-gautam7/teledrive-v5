@@ -208,3 +208,34 @@ export function telegramDeepLink(file: DriveFile, mtprotoUserId: string | null):
   }
   return BOT_USERNAME ? `https://t.me/${BOT_USERNAME}` : null;
 }
+
+/**
+ * Percent, speed and ETA from a series of byte counts.
+ *
+ * Shared by both directions so an upload and a download cannot disagree about
+ * what "12 MB/s" means. The window is deliberately short: long enough to ride
+ * out one slow chunk, short enough that the number follows the connection.
+ */
+const SPEED_WINDOW_MS = 6000;
+
+export function sampleRate(
+  samples: Array<{ t: number; loaded: number }>,
+  loaded: number,
+  size: number
+): Pick<DownloadItem, "loaded" | "percent" | "speed" | "eta"> {
+  const now = Date.now();
+  samples.push({ t: now, loaded });
+  while (samples.length > 2 && now - samples[0].t > SPEED_WINDOW_MS) samples.shift();
+
+  const first = samples[0];
+  const elapsed = (now - first.t) / 1000;
+  const moved = loaded - first.loaded;
+  const speed = elapsed >= 0.75 && moved > 0 ? moved / elapsed : null;
+
+  return {
+    loaded,
+    percent: size ? Math.min(100, Math.round((loaded / size) * 100)) : 0,
+    speed,
+    eta: speed && speed > 0 && size ? Math.max(0, (size - loaded) / speed) : null
+  };
+}
