@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { toast } from "sonner";
 import {
@@ -38,8 +38,16 @@ import { apiFetch } from "@/lib/api-client";
 import { uploads } from "@/lib/upload-manager";
 import { resumeKeyFor } from "@/lib/chunked-upload";
 import { MAX_FILE_SIZE } from "@/lib/upload-config";
+import {
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  SIDEBAR_DEFAULT,
+  applyAccent,
+  setPreference,
+  usePreferences
+} from "@/lib/preferences";
 import { cn, formatBytes } from "@/lib/utils";
-import { SPRING, fadeIn, fadeUp, riseFromBottom, transition } from "@/lib/motion";
+import { SPRING, fadeIn, fadeUp, riseFromBottom, transition, useReducedMotion } from "@/lib/motion";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
 import { filesFromDataTransfer, filesFromInput, rememberDroppedHandles, type PickedFile } from "@/components/drive/dnd";
@@ -79,19 +87,6 @@ const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
 /** Views that show the file/folder browser rather than a standalone panel. */
 const BROWSE_VIEWS: AppView[] = ["files", "favorites", "trash"];
 
-/**
- * Sidebar width, remembered across visits.
- *
- * Bounded rather than free: narrower than the minimum and the nav labels
- * collapse into their icons, wider and the file grid loses a column on a laptop.
- * Read during the first render so the page never paints at one width and jumps
- * to another.
- */
-const SIDEBAR_MIN = 208;
-const SIDEBAR_MAX = 460;
-const SIDEBAR_DEFAULT = 268;
-const SIDEBAR_KEY = "teledrive-sidebar-width";
-
 /** Long enough that a typed word is one request, short enough that the results
  *  feel like they are keeping up. */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -99,13 +94,6 @@ const SEARCH_DEBOUNCE_MS = 300;
 /** `useLayoutEffect`, minus the warning React prints when it is rendered on the
  *  server. Nothing here runs during SSR, so falling back to useEffect is safe. */
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
-
-function readSidebarWidth() {
-  if (typeof window === "undefined") return SIDEBAR_DEFAULT;
-  const stored = Number(window.localStorage.getItem(SIDEBAR_KEY));
-  if (!Number.isFinite(stored) || stored <= 0) return SIDEBAR_DEFAULT;
-  return Math.min(Math.max(stored, SIDEBAR_MIN), SIDEBAR_MAX);
-}
 
 export default function DriveApp({ user }: { user: { name: string; username?: string | null; avatar?: string | null } }) {
   const reduceMotion = useReducedMotion();
@@ -136,10 +124,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [aiSearchedFor, setAiSearchedFor] = useState("");
   const [askAi, setAskAi] = useState<{ file: DriveFile; action?: AiAction } | null>(null);
   const aiController = useRef<AbortController | null>(null);
-  const [view, setView] = useState<"grid" | "list">("grid");
+  /**
+   * Saved settings. The defaults below are only what the *session* starts at —
+   * sort and view can be changed for one visit without rewriting the preference,
+   * which is why they are still component state seeded from it.
+   */
+  const prefs = usePreferences();
+  const [view, setView] = useState<"grid" | "list">(prefs.view);
   const [appView, setAppView] = useState<AppView>("files");
-  const [sortField, setSortField] = useState<SortField>("date");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [sortField, setSortField] = useState<SortField>(prefs.sortField);
+  const [sortDir, setSortDir] = useState<SortDir>(prefs.sortDir);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const [loading, setLoading] = useState(true);
@@ -179,9 +173,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   // lazy initialiser cannot do this: the server renders the default, and React
   // keeps the server's markup during hydration, so the remembered width was
   // stored in state while the DOM stayed at 268px.
-  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const [sidebarWidth, setSidebarWidth] = useState(prefs.sidebarWidth);
   const [resizing, setResizing] = useState(false);
-  const [theme, setTheme] = useState<ThemeMode>("system");
+  const theme = prefs.theme;
+  const setTheme = useCallback((next: ThemeMode) => setPreference("theme", next), []);
   const [authStatus, setAuthStatus] = useState<"connected" | "pending" | "failed">("pending");
   const [insights, setInsights] = useState<Insights | null>(null);
   const [link, setLink] = useState<TelegramLink | null>(null);
@@ -204,10 +199,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       params.set("sort", sortField);
       params.set("dir", sortDir);
       if (typeFilter !== "all") params.set("type", typeFilter);
+      params.set("take", String(prefs.pageSize));
       for (const [k, v] of Object.entries(extra ?? {})) params.set(k, v);
       return params;
     },
-    [folderId, debouncedQuery, appView, sortField, sortDir, typeFilter]
+    [folderId, debouncedQuery, appView, sortField, sortDir, typeFilter, prefs.pageSize]
   );
 
   /**
@@ -494,26 +490,33 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  useEffect(() => {
-    setTheme((window.localStorage.getItem("teledrive-theme") as ThemeMode | null) || "system");
-  }, []);
-
   // Layout, not effect: this runs after hydration but before the browser paints,
-  // so a remembered sidebar width is in place for the first frame the user sees
-  // rather than snapping into position afterwards.
+  // so remembered settings are in place for the first frame the user sees rather
+  // than snapping into position afterwards. (The pre-paint script in
+  // app/layout.tsx covers theme and accent, which are visible sooner still.)
   useIsomorphicLayoutEffect(() => {
-    const stored = readSidebarWidth();
-    if (stored !== SIDEBAR_DEFAULT) setSidebarWidth(stored);
+    setSidebarWidth(prefs.sidebarWidth);
+    setView(prefs.view);
+    setSortField(prefs.sortField);
+    setSortDir(prefs.sortDir);
+    // Preferences load once, from storage, before first paint; re-syncing the
+    // session state on every later change would fight the user's per-visit
+    // choices in the toolbar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => document.documentElement.classList.toggle("dark", theme === "dark" || (theme === "system" && media.matches));
+    const apply = () => {
+      const dark = theme === "dark" || (theme === "system" && media.matches);
+      document.documentElement.classList.toggle("dark", dark);
+      // Each accent has a separate light variant, so this re-runs with the theme.
+      applyAccent(prefs.accent, dark);
+    };
     apply();
-    window.localStorage.setItem("teledrive-theme", theme);
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
-  }, [theme]);
+  }, [theme, prefs.accent]);
 
   useEffect(() => {
     if (!uploading) return;
@@ -1241,11 +1244,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       window.removeEventListener("pointercancel", end);
       setResizing(false);
       setSidebarWidth(width => {
-        try {
-          window.localStorage.setItem(SIDEBAR_KEY, String(width));
-        } catch {
-          /* best-effort */
-        }
+        setPreference("sidebarWidth", width);
         return width;
       });
     };
@@ -1440,11 +1439,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           onPointerDown={startResize}
           onDoubleClick={() => {
             setSidebarWidth(SIDEBAR_DEFAULT);
-            try {
-              window.localStorage.setItem(SIDEBAR_KEY, String(SIDEBAR_DEFAULT));
-            } catch {
-              /* best-effort */
-            }
+            setPreference("sidebarWidth", SIDEBAR_DEFAULT);
           }}
           onKeyDown={e => {
             const step = e.shiftKey ? 32 : 8;
@@ -1453,11 +1448,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             e.preventDefault();
             setSidebarWidth(width => {
               const next = Math.min(Math.max(width + delta, SIDEBAR_MIN), SIDEBAR_MAX);
-              try {
-                window.localStorage.setItem(SIDEBAR_KEY, String(next));
-              } catch {
-                /* best-effort */
-              }
+              setPreference("sidebarWidth", next);
               return next;
             });
           }}
@@ -1635,7 +1626,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           <div key={`${appView}-${folderId ?? "root"}`}>
             <motion.div initial={fadeUp(reduceMotion).initial} animate={{ opacity: 1, y: 0 }} transition={transition}>
               {appView === "settings" ? (
-                <SettingsPanel theme={theme} setTheme={setTheme} link={link} onLinkChanged={refreshLink} />
+                <SettingsPanel link={link} onLinkChanged={refreshLink} />
               ) : appView === "about" ? (
                 <AboutPanel maxBytes={maxBytes} />
               ) : appView === "shared" ? (

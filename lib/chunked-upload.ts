@@ -74,11 +74,14 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
 export async function uploadFileInChunks({
   file,
   folderId,
+  prefer,
   onProgress,
   signal,
 }: {
   file: File;
   folderId?: string | null;
+  /** The user's storage choice from Settings. The server may decline it. */
+  prefer?: string;
   /** Bytes of this file confirmed stored so far — the caller derives %, speed and ETA. */
   onProgress: (loadedBytes: number) => void;
   signal?: AbortSignal;
@@ -94,6 +97,7 @@ export async function uploadFileInChunks({
       mimeType: file.type,
       fileSize: file.size,
       folderId,
+      prefer,
       resumeKey: resumeKeyFor(file, folderId),
     }),
     signal,

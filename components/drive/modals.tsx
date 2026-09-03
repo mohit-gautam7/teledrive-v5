@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion } from "framer-motion";
 import { Folder as FolderIcon, Home, Info, Loader2 } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
-import { DURATION, EASE, SPRING, fadeIn } from "@/lib/motion";
+import { DURATION, EASE, SPRING, fadeIn, useReducedMotion } from "@/lib/motion";
 import type { DriveFolder, PropsTarget } from "./types";
 
 /** Shared modal chrome: dimmed backdrop, escape-to-close, click-outside-to-close.

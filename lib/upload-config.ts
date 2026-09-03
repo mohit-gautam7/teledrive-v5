@@ -103,12 +103,29 @@ export const SINGLE_SHOT_LIMIT = Math.min(CHUNK_SIZE, BOT_DOWNLOAD_LIMIT);
 
 export type UploadBackend = "bot" | "mtproto";
 
+/** What the user asked for in Settings, when they asked for anything. */
+export type BackendPreference = "auto" | "account" | "bot";
+
 /**
- * Where a new upload is stored. The whole of P1 lives in this one line, so it
- * lives in one place rather than inline in the route that happened to need it.
+ * Where a new upload is stored.
+ *
+ * One function rather than a condition inline in the route that happened to need
+ * it, because this is the decision the whole storage design turns on.
+ *
+ * `prefer` is a user setting and is therefore never trusted to make a file
+ * unreachable: "bot" above the bot's own download ceiling would store bytes
+ * Telegram will not serve back, so the automatic rule wins there. Wanting *more*
+ * MTProto than the default is always safe and always honoured.
  */
-export function backendFor(fileSize: number, hasMtprotoSession: boolean): UploadBackend {
-  return hasMtprotoSession && fileSize > MTPROTO_PREFERRED_ABOVE ? "mtproto" : "bot";
+export function backendFor(
+  fileSize: number,
+  hasMtprotoSession: boolean,
+  prefer: BackendPreference = "auto"
+): UploadBackend {
+  if (!hasMtprotoSession) return "bot";
+  if (prefer === "account") return "mtproto";
+  if (prefer === "bot" && fileSize <= BOT_DOWNLOAD_LIMIT) return "bot";
+  return fileSize > MTPROTO_PREFERRED_ABOVE ? "mtproto" : "bot";
 }
 
 /**

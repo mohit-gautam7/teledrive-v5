@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   Captions,
   Check,
@@ -18,7 +18,7 @@ import {
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
-import { DURATION, EASE, SPRING, fadeIn, fadeUp, stagger } from "@/lib/motion";
+import { DURATION, EASE, SPRING, fadeIn, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
 import type { AiSearchHit, DriveFile } from "./types";
 
 /**

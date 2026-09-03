@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { UploadAbortedError, uploadFile } from "@/lib/api-client";
 import { uploadFileInChunks, resumeKeyFor } from "@/lib/chunked-upload";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
+import { readPreferences } from "@/lib/preferences";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import {
   fileFromHandle,
@@ -286,6 +287,9 @@ class UploadManager {
         const result = await uploadFileInChunks({
           file: source,
           folderId: target,
+          // Read at send time, not at queue time, so changing the setting takes
+          // effect on the next file rather than on the next reload.
+          prefer: readPreferences().uploadBackend,
           onProgress: loaded => this.progress(item.id, loaded, item.size),
           signal: controller.signal
         });

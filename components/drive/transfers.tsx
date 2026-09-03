@@ -1,9 +1,9 @@
 "use client";
 
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Pause, Play, RotateCw, X } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
-import { DURATION, EASE } from "@/lib/motion";
+import { DURATION, EASE, useReducedMotion } from "@/lib/motion";
 import { formatEta, formatSpeed, type DownloadItem, type TransferItem } from "./types";
 
 /**

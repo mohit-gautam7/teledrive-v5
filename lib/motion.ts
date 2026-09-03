@@ -1,6 +1,7 @@
 "use client";
 
-import { useReducedMotion, type Transition, type Variants } from "framer-motion";
+import { useReducedMotion as useSystemReducedMotion, type Transition, type Variants } from "framer-motion";
+import { usePreferences } from "@/lib/preferences";
 
 /**
  * One motion vocabulary for the whole app.
@@ -112,7 +113,21 @@ export const listChild: Variants = {
   visible: { opacity: 1, y: 0, transition }
 };
 
-/** `useReducedMotion` with a name that reads the way it is used. */
-export function useMotionPreference() {
-  return useReducedMotion();
+/**
+ * Reduced motion, from the OS *or* from Settings.
+ *
+ * framer-motion's own `useReducedMotion` only ever answers for the media query,
+ * and `MotionConfig reducedMotion` only reaches `motion` components — neither
+ * covers the presets above, which take the boolean as an argument. So every
+ * component imports this one instead, and the in-app toggle works everywhere
+ * the OS setting does. The OS still wins when it says yes: an explicit system
+ * request is never overridden by an app default.
+ */
+export function useReducedMotion() {
+  const system = useSystemReducedMotion();
+  const { reduceMotion } = usePreferences();
+  return Boolean(system) || reduceMotion;
 }
+
+/** Older name, kept because it reads well at the call site. */
+export const useMotionPreference = useReducedMotion;

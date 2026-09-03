@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   ChevronLeft,
   ChevronRight,
@@ -16,7 +16,7 @@ import {
   X
 } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
-import { fadeIn } from "@/lib/motion";
+import { fadeIn, useReducedMotion } from "@/lib/motion";
 import type { DriveFile } from "./types";
 
 const isImage = (f: DriveFile) =>

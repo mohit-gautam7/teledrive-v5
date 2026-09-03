@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Check,
@@ -22,7 +22,7 @@ import {
   Video as VideoIcon
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
-import { popIn, stagger } from "@/lib/motion";
+import { popIn, stagger, useReducedMotion } from "@/lib/motion";
 import { aiActionsFor, type AiAction } from "./ai";
 import { type DriveFile, telegramDeepLink } from "./types";
 

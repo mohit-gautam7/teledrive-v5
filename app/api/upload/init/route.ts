@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
-import { CHUNK_SIZE, SAVED_MESSAGES, STALE_UPLOAD_MS, backendFor } from "@/lib/upload-config";
+import { CHUNK_SIZE, SAVED_MESSAGES, STALE_UPLOAD_MS, backendFor, type BackendPreference } from "@/lib/upload-config";
 import { purgeTelegramCopies } from "@/lib/file-delete";
 import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 
@@ -20,12 +20,13 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
 
-    const { fileName, mimeType, fileSize, folderId, resumeKey } = (await request.json()) as {
+    const { fileName, mimeType, fileSize, folderId, resumeKey, prefer } = (await request.json()) as {
       fileName: string;
       mimeType: string;
       fileSize: number;
       folderId?: string;
       resumeKey?: string;
+      prefer?: string;
     };
 
     if (!fileName || !fileSize || fileSize <= 0) {
@@ -68,7 +69,10 @@ export async function POST(request: NextRequest) {
     // Telegram session when they have linked one: a single message in their
     // Saved Messages instead of hundreds of bot chunks, and the only way past
     // the Bot API's 20 MB download ceiling.
-    const useMtproto = backendFor(fileSize, Boolean(config?.mtprotoSession)) === "mtproto";
+    // Anything other than the two named overrides is "auto", so a stale or
+    // hand-crafted value cannot steer storage anywhere unexpected.
+    const preference: BackendPreference = prefer === "account" || prefer === "bot" ? prefer : "auto";
+    const useMtproto = backendFor(fileSize, Boolean(config?.mtprotoSession), preference) === "mtproto";
 
     // Resume: an unfinished session for the same file+destination is reused, so
     // a dropped connection costs only the chunks that were still in flight.

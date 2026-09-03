@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Check, Infinity as InfinityIcon, KeyRound, Loader2, Lock, MessageCircle, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { Logo } from "@/components/logo";
-import { DURATION, EASE, SPRING } from "@/lib/motion";
+import { DURATION, EASE, SPRING, useReducedMotion } from "@/lib/motion";
 
 declare global {
   interface Window {

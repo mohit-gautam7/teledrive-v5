@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   AlertCircle,
   Check,
@@ -18,6 +18,7 @@ import {
   Power,
   RefreshCw,
   Smartphone,
+  RotateCcw,
   Sun,
   Trash2,
   Unlink
@@ -25,9 +26,19 @@ import {
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
-import { MAX_FILE_SIZE } from "@/lib/upload-config";
-import { DURATION, EASE, fadeUp, stagger } from "@/lib/motion";
-import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, TelegramLink, ThemeMode } from "./types";
+import { CHUNK_SIZE, MAX_FILE_SIZE, BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
+import {
+  ACCENTS,
+  PAGE_SIZES,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  resetPreferences,
+  setPreference,
+  usePreferences,
+  type AccentName
+} from "@/lib/preferences";
+import { DURATION, EASE, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
+import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
 
@@ -322,36 +333,218 @@ export function InsightsPanel({
 
 // ── Settings ────────────────────────────────────────────────────────────────
 
-export function SettingsPanel({
-  theme,
-  setTheme,
-  link,
-  onLinkChanged
+/** A labelled row of mutually exclusive choices — the shape most settings take. */
+function Choice<T extends string | number>({
+  label,
+  hint,
+  value,
+  options,
+  onChange
 }: {
-  theme: ThemeMode;
-  setTheme: (t: ThemeMode) => void;
-  link: TelegramLink | null;
-  onLinkChanged: () => void;
+  label: string;
+  hint?: string;
+  value: T;
+  options: Array<{ value: T; label: string; icon?: typeof Sun }>;
+  onChange: (value: T) => void;
 }) {
   return (
+    <div>
+      <p className="eyebrow">{label}</p>
+      {hint ? (
+        <p className="t-xs mt-0.5 leading-snug" style={{ color: "var(--text-3)" }}>
+          {hint}
+        </p>
+      ) : null}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {options.map(option => (
+          <button
+            key={String(option.value)}
+            onClick={() => onChange(option.value)}
+            aria-pressed={value === option.value}
+            className={value === option.value ? "btn btn-accent" : "btn btn-ghost"}
+            style={{ minHeight: 40 }}
+          >
+            {option.icon ? <option.icon className="h-4 w-4" /> : null}
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Everything the user can decide, in one place.
+ *
+ * Settings that used to be scattered — a theme in its own storage key, a sidebar
+ * width in another, a view mode and a sort order that reset on every reload —
+ * are all one object now (lib/preferences.ts), so anything added here is
+ * remembered by the same mechanism without new plumbing.
+ */
+export function SettingsPanel({ link, onLinkChanged }: { link: TelegramLink | null; onLinkChanged: () => void }) {
+  const prefs = usePreferences();
+
+  return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <section className="panel p-5">
-        <h2 className="display t-h2">Appearance</h2>
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          {([
-            ["light", Sun, "Light"],
-            ["dark", Moon, "Dark"],
-            ["system", Monitor, "System"]
-          ] as Array<[ThemeMode, typeof Sun, string]>).map(([value, Icon, label]) => (
-            <button key={value} onClick={() => setTheme(value)} className={theme === value ? "btn btn-accent" : "btn btn-ghost"} style={{ minHeight: 44 }}>
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
+      <section className="panel space-y-5 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="display t-h2">Appearance</h2>
+          <button
+            onClick={() => {
+              resetPreferences();
+              toast.success("Settings reset. Reload to apply the layout defaults.");
+            }}
+            className="btn btn-ghost"
+            style={{ minHeight: 34, fontSize: 12 }}
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Reset
+          </button>
+        </div>
+
+        <Choice<ThemeMode>
+          label="Theme"
+          value={prefs.theme}
+          onChange={value => setPreference("theme", value)}
+          options={[
+            { value: "light", label: "Light", icon: Sun },
+            { value: "dark", label: "Dark", icon: Moon },
+            { value: "system", label: "System", icon: Monitor }
+          ]}
+        />
+
+        <div>
+          <p className="eyebrow">Accent</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {(Object.keys(ACCENTS) as AccentName[]).map(name => (
+              <button
+                key={name}
+                onClick={() => setPreference("accent", name)}
+                aria-pressed={prefs.accent === name}
+                aria-label={ACCENTS[name].label}
+                title={ACCENTS[name].label}
+                className="h-9 w-9 rounded-full transition"
+                style={{
+                  background: `linear-gradient(135deg, ${ACCENTS[name].dark[0]} 0%, ${ACCENTS[name].dark[1]} 100%)`,
+                  outline: prefs.accent === name ? "2px solid var(--text-1)" : "1px solid var(--border-dim)",
+                  outlineOffset: 2
+                }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <Choice
+          label="Motion"
+          hint="Your system setting already switches this on; this forces it regardless."
+          value={prefs.reduceMotion ? "reduced" : "full"}
+          onChange={value => setPreference("reduceMotion", value === "reduced")}
+          options={[
+            { value: "full", label: "Full motion" },
+            { value: "reduced", label: "Reduced" }
+          ]}
+        />
+
+        <div>
+          <p className="eyebrow">Sidebar width</p>
+          <div className="mt-2 flex items-center gap-3">
+            <input
+              type="range"
+              min={SIDEBAR_MIN}
+              max={SIDEBAR_MAX}
+              step={4}
+              value={prefs.sidebarWidth}
+              onChange={event => setPreference("sidebarWidth", Number(event.target.value))}
+              aria-label="Sidebar width"
+              className="w-full"
+              style={{ accentColor: "var(--accent)" }}
+            />
+            <span className="mono shrink-0" style={{ color: "var(--text-3)" }}>
+              {prefs.sidebarWidth}px
+            </span>
+          </div>
+          <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>
+            Takes effect on the next load — drag the sidebar edge to change it now.
+          </p>
         </div>
       </section>
 
+      <section className="panel space-y-5 p-5">
+        <h2 className="display t-h2">Drive defaults</h2>
+        <p className="t-sm -mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
+          Where the drive starts each visit. The toolbar still overrides any of them for the session.
+        </p>
+
+        <Choice<"grid" | "list">
+          label="Default view"
+          value={prefs.view}
+          onChange={value => setPreference("view", value)}
+          options={[
+            { value: "grid", label: "Grid" },
+            { value: "list", label: "List" }
+          ]}
+        />
+
+        <Choice<SortField>
+          label="Default sort"
+          value={prefs.sortField}
+          onChange={value => {
+            setPreference("sortField", value);
+            // Names read best A→Z; dates and sizes read best largest-first.
+            setPreference("sortDir", value === "name" ? "asc" : "desc");
+          }}
+          options={[
+            { value: "date", label: "Date" },
+            { value: "name", label: "Name" },
+            { value: "size", label: "Size" }
+          ]}
+        />
+
+        <Choice<"asc" | "desc">
+          label="Sort direction"
+          value={prefs.sortDir}
+          onChange={value => setPreference("sortDir", value)}
+          options={[
+            { value: "desc", label: "Descending" },
+            { value: "asc", label: "Ascending" }
+          ]}
+        />
+
+        <Choice<number>
+          label="Items per page"
+          hint="How many files each scroll step loads."
+          value={prefs.pageSize}
+          onChange={value => setPreference("pageSize", value)}
+          options={PAGE_SIZES.map(size => ({ value: size, label: String(size) }))}
+        />
+      </section>
+
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
+
+      <section className="panel p-5">
+        <h2 className="display t-h2">Upload storage</h2>
+        <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+          {link?.linked
+            ? `Anything over ${formatBytes(BOT_DOWNLOAD_LIMIT)} is stored in your own Telegram account as a single message, because that is the largest document a bot can serve back. You can override that.`
+            : "Link your Telegram account above to store big files as one message instead of hundreds of bot chunks."}
+        </p>
+        <div className={link?.linked ? "mt-4" : "mt-4 opacity-50"}>
+          <Choice
+            label="Default backend"
+            value={prefs.uploadBackend}
+            onChange={value => setPreference("uploadBackend", value)}
+            options={[
+              { value: "auto" as const, label: "Automatic" },
+              { value: "account" as const, label: "Always my account" },
+              { value: "bot" as const, label: "Always the bot" }
+            ]}
+          />
+          {!link?.linked ? (
+            <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
+              Ignored until an account is linked — the bot is the only storage there is.
+            </p>
+          ) : null}
+        </div>
+      </section>
 
       <AiSection />
 
@@ -361,7 +554,7 @@ export function SettingsPanel({
           {[
             ["Minimum file size", "1 byte"],
             ["Maximum file size", formatBytes(link?.maxBytes ?? MAX_FILE_SIZE)],
-            ["Upload chunk", "4 MB"]
+            ["Upload chunk", formatBytes(CHUNK_SIZE)]
           ].map(([label, value]) => (
             <li key={label} className="rounded-xl p-3.5" style={{ background: "var(--surface)" }}>
               <p className="eyebrow">{label}</p>
@@ -370,8 +563,9 @@ export function SettingsPanel({
           ))}
         </ul>
         <p className="t-sm mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-          Telegram sets these ceilings, not TeleDrive. Bot storage chunks every file at 4 MB so it stays under the
-          Bot API&apos;s 20 MB download limit; linking your own account stores big files as a single message instead.
+          Telegram sets these ceilings, not TeleDrive. Bot storage chunks every file so no piece exceeds the Bot
+          API&apos;s {formatBytes(BOT_DOWNLOAD_LIMIT)} download limit; linking your own account stores big files as a
+          single message instead.
         </p>
       </section>
     </div>

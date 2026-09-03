@@ -35,6 +35,16 @@ assert.equal(backendFor(30 * MB, false), "bot");
 assert.ok(SINGLE_SHOT_LIMIT <= BOT_DOWNLOAD_LIMIT, "single-shot uploads must stay bot-downloadable");
 assert.ok(SINGLE_SHOT_LIMIT <= CHUNK_SIZE);
 
+// The Settings override. Asking for MORE of the user's own account is always
+// honoured; asking for less is honoured only where the bot can still serve the
+// file back, because a preference must not be able to make a file unreachable.
+assert.equal(backendFor(30 * MB, true, "account"), "mtproto");
+assert.equal(backendFor(1 * MB, true, "account"), "mtproto", "always-my-account applies below the bot limit too");
+assert.equal(backendFor(1 * MB, true, "bot"), "bot");
+assert.equal(backendFor(BOT_DOWNLOAD_LIMIT, true, "bot"), "bot");
+assert.equal(backendFor(30 * MB, true, "bot"), "mtproto", "a preference must not mint an unreachable file");
+assert.equal(backendFor(30 * MB, false, "account"), "bot", "no session, no choice");
+
 assert.equal(SAVED_MESSAGES, "me");
 
 console.log("upload routing ok — chunk", CHUNK_SIZE / MB, "MB, single-shot cap", SINGLE_SHOT_LIMIT / MB, "MB");

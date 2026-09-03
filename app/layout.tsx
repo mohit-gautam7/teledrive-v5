@@ -36,10 +36,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`dark ${syne.variable} ${inter.variable} ${jetbrainsMono.variable}`}
     >
       <head>
-        {/* Apply the saved theme before first paint so there is no flash. */}
+        {/* Theme and accent before first paint, so neither flashes. The
+            palette is duplicated here on purpose: this runs before any module
+            loads, and the alternative is a visible repaint on every visit.
+            lib/preferences.ts holds the copy everything else reads. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('teledrive-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);}catch(e){}})();`
+            __html: `(function(){try{var p={};try{p=JSON.parse(localStorage.getItem('teledrive:prefs'))||{}}catch(e){}var t=p.theme||localStorage.getItem('teledrive-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);var A={"cyan":{"dark":["#22d3ee","#818cf8"],"light":["#0891b2","#6366f1"]},"violet":{"dark":["#a78bfa","#f472b6"],"light":["#7c3aed","#db2777"]},"emerald":{"dark":["#34d399","#22d3ee"],"light":["#059669","#0891b2"]},"amber":{"dark":["#fbbf24","#fb7185"],"light":["#d97706","#e11d48"]},"rose":{"dark":["#fb7185","#a78bfa"],"light":["#e11d48","#7c3aed"]},"blue":{"dark":["#60a5fa","#22d3ee"],"light":["#2563eb","#0891b2"]}};var c=(A[p.accent]||A.cyan)[d?'dark':'light'];var r=document.documentElement.style;r.setProperty('--accent',c[0]);r.setProperty('--accent-2',c[1]);r.setProperty('--accent-dim','color-mix(in srgb, '+c[0]+' 10%, transparent)');r.setProperty('--accent-border','color-mix(in srgb, '+c[0]+' 25%, transparent)');r.setProperty('--accent-grad','linear-gradient(135deg, '+c[0]+' 0%, '+c[1]+' 100%)');}catch(e){}})();`
           }}
         />
       </head>
