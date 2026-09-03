@@ -45,7 +45,7 @@ import {
   writePersisted,
   type PersistedUpload
 } from "@/lib/upload-store";
-import { CHUNK_SIZE, MAX_FILE_SIZE } from "@/lib/upload-config";
+import { MAX_FILE_SIZE, SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import { cn, formatBytes } from "@/lib/utils";
 import { SPRING, fadeIn, fadeUp, riseFromBottom, transition } from "@/lib/motion";
@@ -655,7 +655,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       abortControllers.current.set(item.id, controller);
       try {
         let created: DriveFile | null = null;
-        if (source.size > CHUNK_SIZE) {
+        if (source.size > SINGLE_SHOT_LIMIT) {
           const result = await uploadFileInChunks({
             file: source,
             folderId: targetFolderId,
@@ -820,7 +820,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     // bring back.
     if (!hydratedUploads.current) return;
     const resumable = uploadQueue
-      .filter(it => it.size > CHUNK_SIZE && it.resumeKey && (it.status === "uploading" || it.status === "pending" || it.status === "paused" || it.status === "error"))
+      .filter(it => it.size > SINGLE_SHOT_LIMIT && it.resumeKey && (it.status === "uploading" || it.status === "pending" || it.status === "paused" || it.status === "error"))
       .map<PersistedUpload>(it => ({
         id: it.id,
         fileId: null,

@@ -5,7 +5,7 @@ import { safeName, toPublicFile } from "@/lib/file-router";
 import { prisma } from "@/lib/prisma";
 import { sendDocumentToChat } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
-import { CHUNK_SIZE } from "@/lib/upload-config";
+import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -23,8 +23,13 @@ export async function POST(request: NextRequest) {
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Missing file." }, { status: 400 });
     }
-    if (file.size > CHUNK_SIZE) {
-      return NextResponse.json({ error: "Files over 4 MB must use the chunked upload." }, { status: 413 });
+    // Not just "bigger than a chunk": this path stores one bot document, and a
+    // bot cannot download one over 20 MB. See SINGLE_SHOT_LIMIT.
+    if (file.size > SINGLE_SHOT_LIMIT) {
+      return NextResponse.json(
+        { error: `Files over ${Math.round(SINGLE_SHOT_LIMIT / (1024 * 1024))} MB must use the chunked upload.` },
+        { status: 413 }
+      );
     }
 
     const mimeType = file.type || "application/octet-stream";

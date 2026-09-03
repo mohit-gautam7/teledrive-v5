@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { streamFileResponse, streamInclude, readEntireFile, unreachableReason } from "@/lib/file-stream";
 import { sendDocumentToChat, fetchBotFile } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
+import { botChatFor } from "@/lib/file-router";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -62,7 +63,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
           // Persist the thumbnail so it never has to be regenerated.
           try {
-            const chatId = file.storageChatId || user.telegramId;
+            const chatId = botChatFor(file, user.telegramId);
             const sent = await sendDocumentToChat({
               chatId,
               data: out,

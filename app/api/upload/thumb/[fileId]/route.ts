@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { sendDocumentToChat } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
+import { botChatFor } from "@/lib/file-router";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest, { params }: { params: { fileId:
     }
 
     const sent = await sendDocumentToChat({
-      chatId: file.storageChatId || user.telegramId,
+      chatId: botChatFor(file, user.telegramId),
       data: Buffer.from(await blob.arrayBuffer()),
       filename: `${file.id}.thumb.webp`,
       mimeType: "image/webp",

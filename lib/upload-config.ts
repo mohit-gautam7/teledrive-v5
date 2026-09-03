@@ -67,11 +67,49 @@ export const CHUNK_CONCURRENCY = (() => {
 /** MTProto splits big files into 512 KiB parts; 4 MiB of payload = 8 parts. */
 export const MTPROTO_PART_SIZE = 512 * 1024;
 
-/** Files at or above this size prefer the user's own MTProto session when one
- *  is authorised — one Telegram message instead of hundreds of bot chunks. */
-export const MTPROTO_PREFERRED_ABOVE = 64 * 1024 * 1024; // 64 MB
+/**
+ * Above this, a linked account stores the file in its own Telegram session.
+ *
+ * The number is Telegram's, not a preference: BOT_DOWNLOAD_LIMIT is the largest
+ * document a bot can serve back, so it is exactly the largest file bot storage
+ * can hold in one message. Anything bigger has to be either bot-chunked into
+ * hundreds of parts or — when the user has linked their account — sent through
+ * MTProto as a single message in their own Saved Messages.
+ *
+ * It used to sit at 64 MB, which meant a linked user's 30 MB file was still
+ * chunked across eight bot messages for no reason at all.
+ */
+export const MTPROTO_PREFERRED_ABOVE = BOT_DOWNLOAD_LIMIT;
+
+/**
+ * `chatId` recorded for a file stored in the user's own Saved Messages.
+ *
+ * MTProto's own name for "this account's chat with itself", so it is what the
+ * download, delete and finalise paths already pass to Telegram. Storing it makes
+ * the row say where the bytes are instead of leaving it null and implied.
+ */
+export const SAVED_MESSAGES = "me";
+
+/**
+ * The largest file the single-request /api/upload path may take.
+ *
+ * Two ceilings, and the lower one wins. A chunk is the obvious one. The other is
+ * that this path stores its file as *one* bot document, so raising
+ * UPLOAD_CHUNK_MB above 20 would quietly start minting files Telegram will never
+ * serve back to a bot — the exact class of unreachable file chunking exists to
+ * prevent. Client and server both route on this, so they cannot disagree.
+ */
+export const SINGLE_SHOT_LIMIT = Math.min(CHUNK_SIZE, BOT_DOWNLOAD_LIMIT);
 
 export type UploadBackend = "bot" | "mtproto";
+
+/**
+ * Where a new upload is stored. The whole of P1 lives in this one line, so it
+ * lives in one place rather than inline in the route that happened to need it.
+ */
+export function backendFor(fileSize: number, hasMtprotoSession: boolean): UploadBackend {
+  return hasMtprotoSession && fileSize > MTPROTO_PREFERRED_ABOVE ? "mtproto" : "bot";
+}
 
 /**
  * An upload session becomes a `File` row before any bytes reach Telegram, so a

@@ -1,5 +1,16 @@
 import { StorageMode } from "@prisma/client";
-import { BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
+import { BOT_DOWNLOAD_LIMIT, SAVED_MESSAGES } from "@/lib/upload-config";
+
+/**
+ * Which chat the *bot* should put an auxiliary message in for this file.
+ *
+ * Thumbnails are always bot-stored, even for a file whose bytes live in the
+ * user's own Saved Messages — a bot cannot write to "me", so that value is not a
+ * chat id it can use and the user's own bot chat is the right destination.
+ */
+export function botChatFor(file: { storageChatId: string | null }, fallback: string) {
+  return file.storageChatId && file.storageChatId !== SAVED_MESSAGES ? file.storageChatId : fallback;
+}
 
 export function safeName(name: string) {
   return name.replace(/[^\w.\- ()]/g, "_").slice(0, 180) || "file";

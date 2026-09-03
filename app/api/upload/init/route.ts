@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
-import { CHUNK_SIZE, MTPROTO_PREFERRED_ABOVE, STALE_UPLOAD_MS } from "@/lib/upload-config";
+import { CHUNK_SIZE, SAVED_MESSAGES, STALE_UPLOAD_MS, backendFor } from "@/lib/upload-config";
 import { purgeTelegramCopies } from "@/lib/file-delete";
 import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 
@@ -64,10 +64,11 @@ export async function POST(request: NextRequest) {
       console.warn("[upload/init] stale-session sweep failed (continuing):", (sweepError as Error).message);
     }
 
-    // Big files go through the user's own Telegram session when they've linked
-    // one: a single message instead of hundreds of 4 MB bot chunks, and the only
-    // way past the Bot API's 20 MB download ceiling.
-    const useMtproto = Boolean(config?.mtprotoSession) && fileSize >= MTPROTO_PREFERRED_ABOVE;
+    // Anything a bot cannot hold in one message goes through the user's own
+    // Telegram session when they have linked one: a single message in their
+    // Saved Messages instead of hundreds of bot chunks, and the only way past
+    // the Bot API's 20 MB download ceiling.
+    const useMtproto = backendFor(fileSize, Boolean(config?.mtprotoSession)) === "mtproto";
 
     // Resume: an unfinished session for the same file+destination is reused, so
     // a dropped connection costs only the chunks that were still in flight.
@@ -110,7 +111,9 @@ export async function POST(request: NextRequest) {
         backend: useMtproto ? "mtproto" : "bot",
         // For MTProto this holds the in-progress upload id, not a Bot API file_id.
         telegramFileId: useMtproto ? newMtprotoFileId() : null,
-        storageChatId: useMtproto ? null : user.telegramId,
+        // "me" — the account's own Saved Messages, which is literally what the
+        // finalise, download and delete paths pass to Telegram for these files.
+        storageChatId: useMtproto ? SAVED_MESSAGES : user.telegramId,
         isChunked: true,
         totalChunks,
         uploadStatus: "uploading",
