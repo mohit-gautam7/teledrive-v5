@@ -5,7 +5,9 @@ import { safeName, toPublicFile } from "@/lib/file-router";
 import { prisma } from "@/lib/prisma";
 import { sendDocumentToChat } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
+import { rateLimit } from "@/lib/rate-limit";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -17,6 +19,7 @@ export const maxDuration = 60;
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
+    rateLimit(`upload-small:${user.id}`, 300, 60_000);
     const form = await request.formData();
     const file = form.get("file");
     const folderId = form.get("folderId");
@@ -32,6 +35,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const destination = await resolveOwnedFolder(user.id, typeof folderId === "string" ? folderId : null);
     const mimeType = file.type || "application/octet-stream";
     const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -55,7 +59,7 @@ export async function POST(request: NextRequest) {
         isChunked: true,
         totalChunks: 1,
         uploadStatus: "complete",
-        folderId: typeof folderId === "string" && folderId ? folderId : null,
+        folderId: destination,
         chunks: {
           create: { chunkIndex: 0, telegramMsgId: sent.messageId, telegramFileId: sent.fileId, chunkSize: buffer.length }
         }

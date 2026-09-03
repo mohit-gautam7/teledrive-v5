@@ -5,6 +5,7 @@ import { sendDocumentToChat } from "@/lib/telegram-bot";
 import { saveBigFileParts } from "@/lib/telegram-user";
 import { userMtprotoSession } from "@/lib/mtproto-session";
 import { jsonError } from "@/lib/api-response";
+import { rateLimit } from "@/lib/rate-limit";
 import { CHUNK_SIZE, MTPROTO_PART_SIZE } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
@@ -18,6 +19,9 @@ export async function POST(
 ) {
   try {
     const user = await requireUser();
+    // One chunk is one Telegram sendDocument, and the bot's own budget is
+    // around 30 messages a second shared across every user of this server.
+    rateLimit(`upload-chunk:${user.id}`, 600, 60_000);
     const fileId = params.fileId;
     const chunkIndex = parseInt(params.chunkIndex, 10);
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 import { rollUpFolders } from "@/lib/folder-tree";
 
 const folderSchema = z.object({
@@ -48,7 +49,9 @@ export async function POST(request: NextRequest) {
       data: {
         userId: user.id,
         name: input.name,
-        parentId: input.parentId || null
+        // A parent that is not this user's would graft their tree onto someone
+        // else's, and the whole subtree with it.
+        parentId: await resolveOwnedFolder(user.id, input.parentId ?? null)
       }
     });
     return NextResponse.json({ folder });

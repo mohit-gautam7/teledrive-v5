@@ -5,9 +5,11 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
+import { rateLimit } from "@/lib/rate-limit";
 import { CHUNK_SIZE, SAVED_MESSAGES, STALE_UPLOAD_MS, backendFor, type BackendPreference } from "@/lib/upload-config";
 import { purgeTelegramCopies } from "@/lib/file-delete";
 import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 
 export const runtime = "nodejs";
 
@@ -19,6 +21,10 @@ function newMtprotoFileId() {
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
+    // Each init creates a File row and sweeps stale sessions, so it is the
+    // expensive end of an upload. Generous enough for a folder drop of a few
+    // hundred files, tight enough that a loop cannot fill the table.
+    rateLimit(`upload-init:${user.id}`, 300, 60_000);
 
     const { fileName, mimeType, fileSize, folderId, resumeKey, prefer } = (await request.json()) as {
       fileName: string;
@@ -40,7 +46,7 @@ export async function POST(request: NextRequest) {
     }
 
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE);
-    const targetFolder = typeof folderId === "string" && folderId ? folderId : null;
+    const targetFolder = await resolveOwnedFolder(user.id, folderId ?? null);
 
     // Sweep this user's long-abandoned sessions. A session is kept resumable for
     // a day; past that the browser that started it is not coming back, and the

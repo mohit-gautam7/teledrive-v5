@@ -36,6 +36,53 @@ export type StreamableFile = {
  *  round trip, small enough that a 2 GB file never sits in function memory. */
 const MTPROTO_WINDOW = 4 * 1024 * 1024;
 
+/**
+ * Which stored types may be handed to the browser to *render*, rather than save.
+ *
+ * The stored mime type is whatever the uploader's browser reported, so echoing
+ * it back on an inline response let a user pick it. Upload an .html file, share
+ * it, and the victim opening the share ran the uploader's script on this app's
+ * own origin — with their session cookie. That is stored XSS, reachable by
+ * anyone with a share link.
+ *
+ * So inline rendering is allowlisted rather than filtered: anything not named
+ * here is served as an opaque download. SVG is deliberately absent — it is a
+ * document format that can carry script, not a picture.
+ */
+const INLINE_SAFE = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+  "image/x-icon",
+  "video/",
+  "audio/",
+  "application/pdf",
+  "text/plain"
+];
+
+function inlineSafe(mimeType: string) {
+  const type = (mimeType || "").toLowerCase().split(";")[0].trim();
+  return INLINE_SAFE.some(allowed => (allowed.endsWith("/") ? type.startsWith(allowed) : type === allowed));
+}
+
+/**
+ * Headers every file response carries, whichever route served it.
+ *
+ * `nosniff` stops a browser from deciding an octet-stream is really HTML, and
+ * the CSP is the belt to that brace: even if something slipped through the
+ * allowlist above, a document rendered under `default-src 'none'; sandbox` has
+ * no script, no origin and no access to anything.
+ */
+function protectiveHeaders(): Record<string, string> {
+  return {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox; base-uri 'none'; form-action 'none'"
+  };
+}
+
 
 /**
  * How much is served for a range that names no end.
@@ -142,6 +189,13 @@ function buildRangeStream(
   });
 }
 
+/** The user's own bot token, decrypted. Stored ciphertext since the token
+ *  stopped being kept in the clear; decryptSecret passes older plaintext
+ *  through untouched, so existing rows keep working. */
+export function userBotToken(file: StreamableFile) {
+  return decryptSecret(file.user?.storageConfig?.botToken) || null;
+}
+
 async function fetchBotChunkBuffer(fileId: string, botToken?: string | null): Promise<Buffer> {
   const res = await fetchBotFile(fileId, botToken);
   return Buffer.from(await res.arrayBuffer());
@@ -155,7 +209,7 @@ async function fetchBotChunkBuffer(fileId: string, botToken?: string | null): Pr
 export async function readEntireFile(file: StreamableFile): Promise<Buffer | null> {
   const totalSize = Number(file.size);
   if (totalSize > 25 * 1024 * 1024) return null;
-  const userBotToken = file.user?.storageConfig?.botToken || null;
+  const botToken = userBotToken(file);
 
   if (file.backend === "mtproto" && file.telegramMessageId) {
     const session = decryptSecret(file.user?.storageConfig?.mtprotoSession);
@@ -168,12 +222,12 @@ export async function readEntireFile(file: StreamableFile): Promise<Buffer | nul
     if (!file.chunks.every(c => !!c.telegramFileId)) return null; // legacy MTProto chunks
     const ordered = [...file.chunks].sort((a, b) => a.chunkIndex - b.chunkIndex);
     const parts: Buffer[] = [];
-    for (const c of ordered) parts.push(await fetchBotChunkBuffer(c.telegramFileId as string, userBotToken));
+    for (const c of ordered) parts.push(await fetchBotChunkBuffer(c.telegramFileId as string, botToken));
     return Buffer.concat(parts);
   }
 
   if (file.storageMode === StorageMode.BOT && file.telegramFileId) {
-    return fetchBotChunkBuffer(file.telegramFileId, userBotToken);
+    return fetchBotChunkBuffer(file.telegramFileId, botToken);
   }
   return null;
 }
@@ -208,6 +262,8 @@ export function unreachableReason(file: StreamableFile): string | null {
   return null;
 }
 
+export { protectiveHeaders };
+
 export function streamFileResponse(
   file: StreamableFile,
   rangeHeader: string | null,
@@ -219,23 +275,32 @@ export function streamFileResponse(
   // the bot's reach. `Cache-Control: no-store` because re-uploading fixes it.
   const unreachable = unreachableReason(file);
   if (unreachable) {
-    return NextResponse.json({ error: unreachable }, { status: 409, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { error: unreachable },
+      { status: 409, headers: { ...protectiveHeaders(), "Cache-Control": "no-store" } }
+    );
   }
 
   const userSession = decryptSecret(file.user?.storageConfig?.telegramSession);
   const mtprotoSession = decryptSecret(file.user?.storageConfig?.mtprotoSession);
-  const userBotToken = file.user?.storageConfig?.botToken || null;
+  const botToken = userBotToken(file);
+
+  // An inline request for a type we will not render becomes a download. The
+  // type is dropped too: naming it invites a sniffing browser to try anyway.
+  const renderable = disposition === "inline" && inlineSafe(file.mimeType);
+  const effectiveDisposition = disposition === "attachment" || renderable ? disposition : "attachment";
 
   const baseHeaders: Record<string, string> = {
-    "Content-Type": file.mimeType || "application/octet-stream",
+    ...protectiveHeaders(),
+    "Content-Type": renderable || disposition === "attachment" ? file.mimeType || "application/octet-stream" : "application/octet-stream",
     "Accept-Ranges": "bytes",
     // `no-store` meant the browser could keep nothing, so every seek in a video
     // re-fetched bytes it had already been given — on a 975 MB file that is the
     // difference between scrubbing and re-buffering. The URL is authenticated
     // per user and the bytes are immutable once stored, so a private cache is
     // safe; `private` keeps it out of any shared proxy or CDN.
-    "Cache-Control": disposition === "inline" ? "private, max-age=3600" : "private, no-store",
-    "Content-Disposition": `${disposition}; filename="${encodeURIComponent(file.originalName)}"`
+    "Cache-Control": effectiveDisposition === "inline" ? "private, max-age=3600" : "private, no-store",
+    "Content-Disposition": `${effectiveDisposition}; filename="${encodeURIComponent(file.originalName)}"`
   };
 
   const { start, end, partial } = parseRange(rangeHeader, totalSize);
@@ -279,7 +344,7 @@ export function streamFileResponse(
 
     const stream = buildChunkStream(chunkMap, start, end, chunk =>
       chunk.fileId
-        ? fetchBotChunkBuffer(chunk.fileId, userBotToken)
+        ? fetchBotChunkBuffer(chunk.fileId, botToken)
         : downloadChunkFromTelegram(chunk.msgId, userSession)
     );
 
@@ -292,7 +357,7 @@ export function streamFileResponse(
   if (file.storageMode === StorageMode.BOT && file.telegramFileId) {
     const fileId = file.telegramFileId;
     const singleChunk: OffsetChunk[] = [{ start: 0, end: totalSize - 1, msgId: 0, fileId, size: totalSize }];
-    const stream = buildChunkStream(singleChunk, start, end, () => fetchBotChunkBuffer(fileId, userBotToken));
+    const stream = buildChunkStream(singleChunk, start, end, () => fetchBotChunkBuffer(fileId, botToken));
     const headers: Record<string, string> = { ...baseHeaders, "Content-Length": String(end - start + 1) };
     if (partial) headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
     return new NextResponse(stream, { status: partial ? 206 : 200, headers });

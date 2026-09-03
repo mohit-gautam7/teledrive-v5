@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -28,7 +29,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     if (!source) return NextResponse.json({ error: "Folder not found." }, { status: 404 });
 
     const body = (await request.json().catch(() => ({}))) as { parentId?: string | null; name?: string };
-    const destinationParent = body.parentId === undefined ? source.parentId : body.parentId;
+    const destinationParent =
+      body.parentId === undefined ? source.parentId : await resolveOwnedFolder(user.id, body.parentId);
 
     // Copying a folder into itself (or its own descendant) would recurse forever.
     const all = await prisma.folder.findMany({

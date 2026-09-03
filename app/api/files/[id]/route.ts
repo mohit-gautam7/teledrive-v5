@@ -6,6 +6,8 @@ import { jsonError } from "@/lib/api-response";
 import { env } from "@/lib/env";
 import { deleteMessagesBot } from "@/lib/telegram-bot";
 import { purgeTelegramCopies } from "@/lib/file-delete";
+import { decryptSecret } from "@/lib/crypto";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 
 const patchSchema = z.union([
   z.object({ name: z.string().min(1).max(180) }),
@@ -24,10 +26,18 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     } else if ("isFavorite" in body) {
       data = { isFavorite: body.isFavorite };
     } else if ("folderId" in body) {
-      data = { folderId: body.folderId };
+      data = { folderId: await resolveOwnedFolder(user.id, body.folderId) };
     } else {
       data = { isDeleted: false };
     }
+    // Ownership is confirmed before the write rather than left to the update's
+    // own miss. Prisma raises P2025 for "no row matched", which jsonError can
+    // only report as a 500 — so someone else's file id answered with a server
+    // error (and a logged reference) instead of the 404 every sibling route
+    // gives. The write was already scoped; only the answer was wrong.
+    const owned = await prisma.file.findFirst({ where: { id: params.id, userId: user.id }, select: { id: true } });
+    if (!owned) return NextResponse.json({ error: "File not found." }, { status: 404 });
+
     const file = await prisma.file.update({
       where: { id: params.id, userId: user.id },
       data
@@ -54,7 +64,11 @@ export async function DELETE(_request: NextRequest, { params }: { params: { id: 
       if (!file.isChunked && file.storageMode === "BOT" && file.telegramMessageId) {
         const channelId = file.user.storageConfig?.botChannelId || env.BOT_CHANNEL_ID;
         if (channelId) {
-          await deleteMessagesBot(channelId, [Number(file.telegramMessageId)], file.user.storageConfig?.botToken);
+          await deleteMessagesBot(
+            channelId,
+            [Number(file.telegramMessageId)],
+            decryptSecret(file.user.storageConfig?.botToken)
+          );
         }
       }
 

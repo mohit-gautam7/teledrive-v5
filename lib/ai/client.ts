@@ -55,6 +55,77 @@ export class ProviderError extends Error {
 const DEFAULT_MAX_TOKENS = 1024;
 const TIMEOUT_MS = 120_000;
 
+/**
+ * Addresses a user's key may not point this server at.
+ *
+ * The base URL on a key is user input that becomes an outbound request made by
+ * the server, with the server's network position — the textbook SSRF shape. On
+ * a shared host the interesting targets are the cloud metadata endpoint and
+ * whatever else answers on the private network, so those are refused.
+ *
+ * The "local AI" providers are the reason this is a switch rather than a flat
+ * ban: someone self-hosting TeleDrive next to their own Ollama has a legitimate
+ * reason to point a key at 127.0.0.1, and AI_ALLOW_PRIVATE_ENDPOINTS=1 says so
+ * deliberately. On a multi-user host it stays off, where "localhost" means the
+ * server's own loopback and never the user's laptop.
+ *
+ * ponytail: matches the literal host only. A hostname that *resolves* into
+ * these ranges still gets through, because closing that means resolving the
+ * name here and pinning the address through the socket — a custom agent per
+ * request. Upgrade to that if this ever serves untrusted signups.
+ */
+const BLOCKED_HOSTS = /^(localhost|.*\.localhost|.*\.local|.*\.internal|metadata|metadata\.google\.internal)$/i;
+
+function isBlockedAddress(hostname: string) {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (BLOCKED_HOSTS.test(host)) return true;
+  // IPv6 loopback, unique-local (fc00::/7) and link-local (fe80::/10).
+  if (host === "::1" || /^(f[cd]|fe[89ab])/.test(host) && host.includes(":")) return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!v4) return false;
+  const [a, b] = v4.slice(1).map(Number);
+  return (
+    a === 0 || // "this network"
+    a === 127 || // loopback
+    a === 10 || // private
+    (a === 172 && b >= 16 && b <= 31) || // private
+    (a === 192 && b === 168) || // private
+    (a === 169 && b === 254) || // link-local, and every cloud metadata service
+    (a === 100 && b >= 64 && b <= 127) || // carrier-grade NAT
+    a >= 224 // multicast and reserved
+  );
+}
+
+/**
+ * The one place a base URL becomes a request target.
+ *
+ * chat, embed and transcribe each resolved `override || spec.baseUrl` for
+ * themselves, so a guard in one would have left the other two open.
+ */
+export function resolveBaseUrl(spec: ProviderSpec, override: string | null): string {
+  const raw = override || spec.baseUrl;
+  if (!raw) throw new ProviderError(`${spec.label} needs a base URL on the key.`, 400);
+  // A provider default comes from our own table, not from a request.
+  if (!override || override === spec.baseUrl) return raw;
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ProviderError("That key's base URL is not a valid URL.", 400);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new ProviderError("A base URL must be http:// or https://", 400);
+  }
+  if (process.env.AI_ALLOW_PRIVATE_ENDPOINTS !== "1" && isBlockedAddress(url.hostname)) {
+    throw new ProviderError(
+      "That base URL points at a private or loopback address, which this server will not call. Set AI_ALLOW_PRIVATE_ENDPOINTS=1 if you are self-hosting a local model alongside it.",
+      400
+    );
+  }
+  return raw;
+}
+
 async function readError(res: Response) {
   // Providers disagree on error shape; the message is for logs and the usage
   // record, so a best-effort extraction is enough.
@@ -209,8 +280,7 @@ export async function chat(
   const spec = getProvider(providerId);
   if (!spec) throw new ProviderError(`Unknown provider "${providerId}".`, 400);
 
-  const baseUrl = baseUrlOverride || spec.baseUrl;
-  if (!baseUrl) throw new ProviderError(`${spec.label} needs a base URL on the key.`, 400);
+  const baseUrl = resolveBaseUrl(spec, baseUrlOverride);
 
   return spec.kind === "anthropic"
     ? chatAnthropic(spec, apiKey, baseUrl, req)
@@ -236,8 +306,7 @@ export async function embed(
   if (spec.kind === "anthropic") {
     throw new ProviderError("Anthropic does not provide embeddings. Use another provider for semantic search.", 400);
   }
-  const baseUrl = baseUrlOverride || spec.baseUrl;
-  if (!baseUrl) throw new ProviderError(`${spec.label} needs a base URL on the key.`, 400);
+  const baseUrl = resolveBaseUrl(spec, baseUrlOverride);
 
   const { signal: timed, done } = withTimeout(signal);
   try {
@@ -283,8 +352,7 @@ export async function transcribe(
   if (spec.kind === "anthropic") {
     throw new ProviderError("Anthropic does not transcribe audio. Use another provider for transcripts.", 400);
   }
-  const baseUrl = baseUrlOverride || spec.baseUrl;
-  if (!baseUrl) throw new ProviderError(`${spec.label} needs a base URL on the key.`, 400);
+  const baseUrl = resolveBaseUrl(spec, baseUrlOverride);
 
   const { signal: timed, done } = withTimeout(signal);
   try {

@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { streamFileResponse, streamInclude, readEntireFile, unreachableReason } from "@/lib/file-stream";
+import {
+  streamFileResponse,
+  streamInclude,
+  readEntireFile,
+  unreachableReason,
+  protectiveHeaders,
+  userBotToken
+} from "@/lib/file-stream";
 import { sendDocumentToChat, fetchBotFile } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
 import { botChatFor } from "@/lib/file-router";
@@ -30,20 +37,23 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     // tile falls back to its icon on any non-2xx.
     const unreachable = unreachableReason(file);
     if (unreachable) {
-      return NextResponse.json({ error: unreachable }, { status: 409, headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json(
+        { error: unreachable },
+        { status: 409, headers: { ...protectiveHeaders(), "Cache-Control": "no-store" } }
+      );
     }
 
     // ── Small thumbnail for grid tiles ────────────────────────────────────────
     if (wantThumb && isImage) {
-      const userBotToken = file.user?.storageConfig?.botToken || null;
+      const botToken = userBotToken(file);
 
       // Fast path: a thumbnail was already generated and stored in Telegram.
       if (file.thumbFileId) {
         try {
-          const res = await fetchBotFile(file.thumbFileId, userBotToken);
+          const res = await fetchBotFile(file.thumbFileId, botToken);
           return new NextResponse(res.body, {
             status: 200,
-            headers: { "Content-Type": "image/webp", "Cache-Control": IMMUTABLE }
+            headers: { ...protectiveHeaders(), "Content-Type": "image/webp", "Cache-Control": IMMUTABLE }
           });
         } catch {
           // stored thumb vanished — fall through and regenerate
@@ -78,7 +88,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
           return new NextResponse(new Uint8Array(out), {
             status: 200,
-            headers: { "Content-Type": "image/webp", "Cache-Control": IMMUTABLE }
+            headers: { ...protectiveHeaders(), "Content-Type": "image/webp", "Cache-Control": IMMUTABLE }
           });
         }
       } catch (err) {

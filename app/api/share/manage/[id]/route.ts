@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -25,6 +26,7 @@ async function ownedShare(id: string, userId: string) {
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   try {
     const user = await requireUser();
+    rateLimit(`share-manage:${user.id}`, 60, 60_000);
     const share = await ownedShare(params.id, user.id);
     if (!share) return NextResponse.json({ error: "Share not found." }, { status: 404 });
 

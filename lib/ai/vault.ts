@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import { getProvider } from "@/lib/ai/providers";
+import { resolveBaseUrl } from "@/lib/ai/client";
 
 /**
  * Per-user storage for bring-your-own API keys.
@@ -79,6 +80,15 @@ export async function addKey(userId: string, input: NewKeyInput) {
   if (baseUrl && !/^https?:\/\//i.test(baseUrl)) {
     throw new VaultError("The base URL must start with http:// or https://");
   }
+  // Refused here as well as at call time, so the answer arrives while the user
+  // is looking at the field rather than as a failed job an hour later.
+  if (baseUrl) {
+    try {
+      resolveBaseUrl(spec, baseUrl);
+    } catch (err) {
+      throw new VaultError((err as Error).message);
+    }
+  }
 
   // The provider's default stands in when no model is named. Requiring one made
   // adding a key a research task — the exact model string had to be known before
@@ -140,8 +150,26 @@ export type KeyPatch = {
 };
 
 export async function updateKey(userId: string, keyId: string, patch: KeyPatch) {
-  const owned = await prisma.aiKey.findFirst({ where: { id: keyId, userId }, select: { id: true } });
+  const owned = await prisma.aiKey.findFirst({
+    where: { id: keyId, userId },
+    select: { id: true, provider: true }
+  });
   if (!owned) throw new VaultError("Key not found.", 404);
+
+  // The endpoint can be edited as well as set, so it is checked on the way in
+  // here too — a guard only on create is a guard with a PATCH-shaped hole.
+  if (patch.baseUrl) {
+    const spec = getProvider(owned.provider);
+    if (!spec) throw new VaultError(`Unknown provider "${owned.provider}".`);
+    if (!/^https?:\/\//i.test(patch.baseUrl)) {
+      throw new VaultError("The base URL must start with http:// or https://");
+    }
+    try {
+      resolveBaseUrl(spec, patch.baseUrl);
+    } catch (err) {
+      throw new VaultError((err as Error).message);
+    }
+  }
 
   // Re-enabling is how a user retries a key the router disabled, so the health
   // counters reset with it — otherwise it would be disabled again immediately.

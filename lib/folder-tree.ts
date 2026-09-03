@@ -1,3 +1,5 @@
+import { prisma } from "@/lib/prisma";
+
 /**
  * Folder sizes and counts, rolled up through the tree.
  *
@@ -8,6 +10,35 @@
  */
 
 export type FolderRow = { id: string; name: string; parentId: string | null; createdAt: Date };
+
+/**
+ * Resolve a caller-supplied destination folder, or refuse it.
+ *
+ * Every route that accepts a folder id — move, bulk move, upload, create,
+ * copy — took it on trust and wrote it straight into the row. A folder id is
+ * just a cuid in a request body, so one user could file their own uploads into
+ * another user's folder: invisible to them afterwards (their listing is scoped
+ * by folder *and* user), and carried into that folder's share listing.
+ *
+ * Null and empty mean the root, which every user has. Anything else has to be a
+ * folder this user actually owns.
+ */
+export async function resolveOwnedFolder(userId: string, folderId: unknown): Promise<string | null> {
+  if (folderId === null || folderId === undefined || folderId === "") return null;
+  if (typeof folderId !== "string") throw notFound();
+  const owned = await prisma.folder.findFirst({ where: { id: folderId, userId }, select: { id: true } });
+  if (!owned) throw notFound();
+  return owned.id;
+}
+
+/** Thrown, not returned, so every caller is guarded by writing one `await`.
+ *  jsonError passes a thrown Response straight through. */
+function notFound() {
+  return new Response(JSON.stringify({ error: "Folder not found." }), {
+    status: 404,
+    headers: { "content-type": "application/json" }
+  });
+}
 
 export type FolderAggregate = { folderId: string | null; _sum: { size: bigint | null }; _count: { _all: number } };
 

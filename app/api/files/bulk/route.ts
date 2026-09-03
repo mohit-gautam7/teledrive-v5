@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { purgeTelegramCopies } from "@/lib/file-delete";
 import { jsonError } from "@/lib/api-response";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 
 const schema = z.union([
   z.object({
@@ -34,7 +35,8 @@ export async function POST(request: NextRequest) {
     const scope = { id: { in: ids }, userId: user.id };
 
     if (action === "move") {
-      await prisma.file.updateMany({ where: scope, data: { folderId: folderId ?? null } });
+      const destination = await resolveOwnedFolder(user.id, folderId ?? null);
+      await prisma.file.updateMany({ where: scope, data: { folderId: destination } });
     } else if (action === "trash") {
       await prisma.file.updateMany({ where: scope, data: { isDeleted: true } });
     } else if (action === "restore") {

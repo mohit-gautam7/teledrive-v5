@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
+import { rateLimit } from "@/lib/rate-limit";
 
 const commonFields = {
   expiryDate: z.string().datetime().optional().nullable(),
@@ -56,6 +57,8 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser();
+    // Every one of these mints a public URL, and a password hashes at cost 10.
+    rateLimit(`share-create:${user.id}`, 30, 60_000);
     const input = shareSchema.parse(await request.json());
     const shareData: Record<string, unknown> = {
       shareToken: nanoid(24),
