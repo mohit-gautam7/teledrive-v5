@@ -235,9 +235,13 @@ model File {
   /// Which Telegram transport holds the bytes: "bot" (chunked, zero setup) or
   /// "mtproto" (the user's own session — one message, up to 2 GB / 4 GB Premium).
   backend           String      @default("bot")
-  /// Stable client-supplied fingerprint (name+size+folder) so an interrupted
+  /// Stable client-supplied fingerprint (name+size+mtime) so an interrupted
   /// upload can be found and resumed instead of restarted.
   resumeKey         String?
+  /// Content fingerprint from lib/file-identity, used to recognise a file that is
+  /// already stored. Null on everything uploaded before the column existed, which
+  /// is why lib/duplicates also matches those on name and size.
+  contentHash       String?
   createdAt         DateTime    @default(now())
   user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   folder            Folder?     @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -247,6 +251,7 @@ model File {
   @@index([userId, folderId])
   @@index([userId, createdAt])
   @@index([userId, resumeKey])
+  @@index([userId, folderId, contentHash])
   embeddings        FileEmbedding[]
 }
 

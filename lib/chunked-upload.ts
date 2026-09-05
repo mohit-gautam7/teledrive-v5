@@ -1,4 +1,5 @@
 import { UploadAbortedError } from "@/lib/api-client";
+import { resumeKeyFor } from "@/lib/file-identity";
 import { CHUNK_SIZE, CHUNK_CONCURRENCY, type UploadBackend } from "@/lib/upload-config";
 
 const MAX_RETRIES = 5;
@@ -15,15 +16,6 @@ export type UploadedFileMeta = {
   isFavorite: boolean;
   createdAt: string;
 };
-
-/**
- * Stable fingerprint for one (file, destination) pair. The server keys the
- * in-progress upload on it, so closing the tab or losing the network mid-file
- * resumes from the chunks that already landed instead of starting over.
- */
-export function resumeKeyFor(file: File, folderId?: string | null) {
-  return `${file.name}|${file.size}|${file.lastModified}|${folderId ?? "root"}`;
-}
 
 /** Full-jitter backoff — keeps a room full of retrying uploaders from
  *  synchronising into a second thundering herd. */
@@ -71,10 +63,20 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
   throw lastErr instanceof Error ? lastErr : new Error(`Chunk ${index} failed.`);
 }
 
+/** The server refused because this file is already stored in that folder. */
+export class DuplicateFileError extends Error {
+  constructor(readonly existing: { id: string; name: string }) {
+    super(`"${existing.name}" is already in this folder.`);
+    this.name = "DuplicateFileError";
+  }
+}
+
 export async function uploadFileInChunks({
   file,
   folderId,
   prefer,
+  contentHash,
+  allowDuplicate,
   onProgress,
   signal,
 }: {
@@ -82,6 +84,10 @@ export async function uploadFileInChunks({
   folderId?: string | null;
   /** The user's storage choice from Settings. The server may decline it. */
   prefer?: string;
+  /** Content fingerprint, so the server can refuse a duplicate the user did not ask for. */
+  contentHash?: string | null;
+  /** The user was shown the duplicate and chose to upload anyway. */
+  allowDuplicate?: boolean;
   /** Bytes of this file confirmed stored so far — the caller derives %, speed and ETA. */
   onProgress: (loadedBytes: number) => void;
   signal?: AbortSignal;
@@ -98,12 +104,20 @@ export async function uploadFileInChunks({
       fileSize: file.size,
       folderId,
       prefer,
-      resumeKey: resumeKeyFor(file, folderId),
+      contentHash,
+      allowDuplicate,
+      resumeKey: resumeKeyFor(file),
     }),
     signal,
   });
   if (!initRes.ok) {
-    const body = (await initRes.json().catch(() => ({}))) as { error?: string };
+    const body = (await initRes.json().catch(() => ({}))) as {
+      error?: string;
+      duplicate?: { id: string; name: string };
+    };
+    // 409 is the server's half of the duplicate check: the client asks first, but
+    // another tab — or a stale answer — can still have stored it since.
+    if (initRes.status === 409 && body.duplicate) throw new DuplicateFileError(body.duplicate);
     throw new Error(body.error || "Failed to initialise chunked upload.");
   }
   const {

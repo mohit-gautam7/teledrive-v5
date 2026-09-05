@@ -8,6 +8,7 @@ import { jsonError } from "@/lib/api-response";
 import { rateLimit } from "@/lib/rate-limit";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
 import { resolveOwnedFolder } from "@/lib/folder-tree";
+import { findDuplicate } from "@/lib/duplicates";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -23,6 +24,8 @@ export async function POST(request: NextRequest) {
     const form = await request.formData();
     const file = form.get("file");
     const folderId = form.get("folderId");
+    const contentHash = form.get("contentHash");
+    const allowDuplicate = form.get("allowDuplicate") === "1";
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Missing file." }, { status: 400 });
     }
@@ -36,6 +39,21 @@ export async function POST(request: NextRequest) {
     }
 
     const destination = await resolveOwnedFolder(user.id, typeof folderId === "string" ? folderId : null);
+    const hash = typeof contentHash === "string" && contentHash ? contentHash : null;
+
+    // Checked again here, not only in /api/upload/check, so "skip" holds even
+    // when two tabs are told "no duplicates" at the same moment. Before the
+    // Telegram send, so a refused duplicate costs nothing.
+    if (!allowDuplicate) {
+      const duplicate = await findDuplicate(user.id, destination, { name: file.name, size: file.size, hash });
+      if (duplicate) {
+        return NextResponse.json(
+          { error: `"${duplicate.name}" is already in this folder.`, duplicate },
+          { status: 409 }
+        );
+      }
+    }
+
     const mimeType = file.type || "application/octet-stream";
     const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -59,6 +77,7 @@ export async function POST(request: NextRequest) {
         isChunked: true,
         totalChunks: 1,
         uploadStatus: "complete",
+        contentHash: hash,
         folderId: destination,
         chunks: {
           create: { chunkIndex: 0, telegramMsgId: sent.messageId, telegramFileId: sent.fileId, chunkSize: buffer.length }

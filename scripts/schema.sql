@@ -6,6 +6,13 @@ ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "backend"   TEXT NOT NULL DEFAULT 'b
 ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "resumeKey" TEXT;
 CREATE INDEX IF NOT EXISTS "File_userId_resumeKey_idx" ON "File"("userId", "resumeKey");
 
+-- File: content fingerprint, so re-uploading a file already in a folder can be
+-- recognised and offered as skip / replace / keep both. Nullable and unindexed
+-- for old rows on purpose — see lib/duplicates.ts for the name+size fallback.
+ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "contentHash" TEXT;
+CREATE INDEX IF NOT EXISTS "File_userId_folderId_contentHash_idx"
+  ON "File"("userId", "folderId", "contentHash");
+
 -- StorageConfig: per-user MTProto session + half-finished login state.
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "mtprotoSession" TEXT;
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "mtprotoUserId"  TEXT;

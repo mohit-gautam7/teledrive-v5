@@ -36,8 +36,10 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { uploads } from "@/lib/upload-manager";
-import { resumeKeyFor } from "@/lib/chunked-upload";
+import { dedupeBatch, planBatch, type DuplicateChoice, type QueuedUpload } from "@/lib/duplicate-plan";
+import { fingerprintAll } from "@/lib/file-identity";
 import { MAX_FILE_SIZE } from "@/lib/upload-config";
+import type { StoredDirectoryHandle } from "@/lib/upload-store";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -52,9 +54,22 @@ import { cn, formatBytes } from "@/lib/utils";
 import { SPRING, fadeIn, fadeUp, riseFromBottom, transition, useReducedMotion } from "@/lib/motion";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
-import { filesFromDataTransfer, filesFromInput, rememberDroppedHandles, type PickedFile } from "@/components/drive/dnd";
+import {
+  filesFromDataTransfer,
+  filesFromDirectoryHandle,
+  filesFromInput,
+  rememberDroppedHandles,
+  type PickedFile
+} from "@/components/drive/dnd";
 import { Lightbox } from "@/components/drive/lightbox";
-import { ConfirmModal, MoveModal, NameModal, PropertiesModal, ShareModal } from "@/components/drive/modals";
+import {
+  ConfirmModal,
+  DuplicateModal,
+  MoveModal,
+  NameModal,
+  PropertiesModal,
+  ShareModal
+} from "@/components/drive/modals";
 import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
 import { AiSearchResults, AiSearchToggle, AskAiPanel, type AiAction } from "@/components/drive/ai";
 import { TransferPanel } from "@/components/drive/transfers";
@@ -166,6 +181,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [moveModal, setMoveModal] = useState<{ ids: string[] } | null>(null);
   const [propsTarget, setPropsTarget] = useState<PropsTarget | null>(null);
   const [shareTarget, setShareTarget] = useState<{ fileId?: string; folderId?: string; name: string } | null>(null);
+  /** A batch waiting on the user to say what to do about the files in it that
+   *  are already stored. Nothing is queued until they answer. */
+  const [duplicateModal, setDuplicateModal] = useState<{
+    batch: QueuedUpload[];
+    duplicates: Array<{ index: number; id: string; name: string }>;
+  } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Folders are selectable alongside files so several can be zipped together.
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
@@ -534,11 +555,24 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   useEffect(() => {
     if (!uploading) return;
     const handler = (e: BeforeUnloadEvent) => {
+      // Progress is written on a trailing timer, so up to two seconds of it is
+      // still only in memory when the page goes away. Force it out first, or the
+      // session comes back claiming less progress than the server actually holds.
+      uploads.flush();
       e.preventDefault();
       e.returnValue = "An upload is still running. Leaving pauses it — it resumes from here when you come back.";
     };
+    // Hiding covers what beforeunload does not: a mobile tab discarded in the
+    // background never fires it.
+    const onHide = () => {
+      if (document.visibilityState === "hidden") uploads.flush();
+    };
     window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("beforeunload", handler);
+      document.removeEventListener("visibilitychange", onHide);
+    };
   }, [uploading]);
 
   // ── Uploads ───────────────────────────────────────────────────────────────
@@ -608,9 +642,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    * in the folder the user is actually looking at rather than the one they were
    * in when the upload started.
    */
+  const dropFileFromState = useCallback((fileId: string) => {
+    setFiles(fs => fs.filter(f => f.id !== fileId));
+  }, []);
+
   useEffect(() => {
-    uploads.setHooks({ ensureFolderPath, onStored: addFileToState, onIdle: refreshStats });
-  }, [ensureFolderPath, addFileToState, refreshStats]);
+    uploads.setHooks({ onStored: addFileToState, onRemoved: dropFileFromState, onIdle: refreshStats });
+  }, [addFileToState, dropFileFromState, refreshStats]);
 
   // Sessions left behind by a previous visit. Runs once per user, inside the
   // manager, so a remount does not re-read them.
@@ -618,8 +656,24 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     uploads.hydrate(cacheUser);
   }, [cacheUser]);
 
+  /**
+   * Turn a pick or a drop into queued uploads.
+   *
+   * Everything that has to be decided *before* the first byte moves happens here,
+   * in this order and once per batch:
+   *
+   *  1. the folder chain a directory implies is created, so every file carries a
+   *     real destination id from the start. It used to be resolved inside the
+   *     upload worker instead, which re-created the tree underneath itself on
+   *     every resume and, because the resume key carried the folder id, made the
+   *     server start a fresh session and abandon the chunks it was holding;
+   *  2. each file is fingerprinted;
+   *  3. files duplicated *within* the batch collapse to one;
+   *  4. the server is asked which of them it already has, once, for the whole
+   *     batch — because being asked two hundred times is not a question.
+   */
   const startUploads = useCallback(
-    (incoming: PickedFile[], destination: string | null = folderId) => {
+    async (incoming: PickedFile[], destination: string | null = folderId) => {
       const usable = incoming.filter(p => p.file.size > 0);
       const tooLarge = usable.find(p => p.file.size > maxBytes);
       if (tooLarge) {
@@ -630,12 +684,109 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         if (incoming.length) toast.error("Those files are empty, so there was nothing to upload.");
         return;
       }
-      folderCache.current.clear();
-      uploads.add(usable, destination);
       setTrayOpen(true);
+
+      // Worth saying out loud only when the wait is noticeable.
+      const toastId = usable.length > 20 ? toast.loading(`Checking ${usable.length} files…`) : undefined;
+      const done = () => {
+        if (toastId !== undefined) toast.dismiss(toastId);
+      };
+
+      let batch: QueuedUpload[];
+      try {
+        folderCache.current.clear();
+        const queued: QueuedUpload[] = [];
+        for (const { file, path } of usable) {
+          const target = path?.includes("/")
+            ? await ensureFolderPath(path.split("/").slice(0, -1), destination)
+            : destination;
+          queued.push({ file, path, destination: target });
+        }
+
+        const hashes = await fingerprintAll(
+          queued.map(q => q.file),
+          toastId === undefined
+            ? undefined
+            : (finished, total) => toast.loading(`Checking ${finished} of ${total} files…`, { id: toastId })
+        );
+        queued.forEach((entry, i) => (entry.contentHash = hashes[i]));
+
+        batch = dedupeBatch(queued);
+      } catch (error) {
+        done();
+        toast.error(error instanceof Error ? error.message : "Could not prepare the upload.");
+        return;
+      }
+
+      try {
+        const { duplicates } = await apiFetch<{ duplicates: Array<{ index: number; id: string; name: string }> }>(
+          "/api/upload/check",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              entries: batch.map(entry => ({
+                folderId: entry.destination,
+                name: entry.file.name,
+                size: entry.file.size,
+                hash: entry.contentHash
+              }))
+            })
+          }
+        );
+        done();
+        if (duplicates.length) setDuplicateModal({ batch, duplicates });
+        else uploads.add(batch);
+      } catch {
+        // The check is a courtesy, not a gate. If it cannot be made the upload
+        // still goes ahead — /api/upload and /api/upload/init check again before
+        // they write, and anything already stored comes back as skipped there.
+        done();
+        uploads.add(batch);
+      }
     },
-    [folderId, maxBytes]
+    [folderId, maxBytes, ensureFolderPath]
   );
+
+  /** Queue what the user chose to upload, and list what they chose to skip. */
+  const applyDuplicateChoices = useCallback(
+    (choices: Record<number, DuplicateChoice>) => {
+      if (!duplicateModal) return;
+      const { queue, skipped } = planBatch(duplicateModal.batch, duplicateModal.duplicates, choices);
+      setDuplicateModal(null);
+      uploads.add(queue, skipped);
+      if (!queue.length) toast.info(`${skipped.length} file${skipped.length === 1 ? "" : "s"} skipped — already here.`);
+    },
+    [duplicateModal]
+  );
+
+  /**
+   * Pick a folder, keeping a handle to it where the browser has one.
+   *
+   * `webkitdirectory` works everywhere but hands back detached `File`s, so a
+   * folder picked that way cannot resume after a reload. `showDirectoryPicker`
+   * returns a real handle, which is stored and later walked to find each file
+   * again. No browser lets several folders be chosen in one dialog, so picking
+   * repeatedly is the way to queue more than one — hence nothing here clears what
+   * is already in the queue.
+   */
+  const pickFolder = useCallback(async () => {
+    const picker = (window as Window & { showDirectoryPicker?: () => Promise<StoredDirectoryHandle> })
+      .showDirectoryPicker;
+    if (typeof picker !== "function") {
+      dirInputRef.current?.click();
+      return;
+    }
+    try {
+      const picked = await filesFromDirectoryHandle(await picker.call(window));
+      if (picked.length) await startUploads(picked);
+      else toast.info("That folder has no files in it.");
+    } catch (error) {
+      // Closing the picker is not a failure; anything else falls back to the
+      // input, which at least still uploads.
+      if ((error as DOMException)?.name !== "AbortError") dirInputRef.current?.click();
+    }
+  }, [startUploads]);
 
   // ── Downloads ─────────────────────────────────────────────────────────────
 
@@ -801,9 +952,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       // Entries must be read before awaiting — the DataTransfer is neutered
       // once the event handler returns.
       const items = Array.from(e.dataTransfer.items ?? []);
-      void rememberDroppedHandles(items, file => resumeKeyFor(file, folderId));
+      void rememberDroppedHandles(items);
       filesFromDataTransfer(e.dataTransfer).then(picked => {
-        if (picked.length) startUploads(picked);
+        if (picked.length) void startUploads(picked);
       });
     };
     window.addEventListener("dragenter", onEnter);
@@ -1155,7 +1306,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
-  const modalOpen = Boolean(previewFile || folderModal || confirmModal || moveModal || renameFile || propsTarget || shareTarget);
+  const modalOpen = Boolean(
+    previewFile || folderModal || confirmModal || moveModal || renameFile || propsTarget || shareTarget || duplicateModal
+  );
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const el = document.activeElement as HTMLElement | null;
@@ -1287,7 +1440,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         multiple
         hidden
         onChange={e => {
-          startUploads(filesFromInput(e.target.files));
+          void startUploads(filesFromInput(e.target.files));
           e.target.value = "";
         }}
       />
@@ -1306,7 +1459,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         multiple
         hidden
         onChange={e => {
-          startUploads(filesFromInput(e.target.files));
+          void startUploads(filesFromInput(e.target.files));
           e.target.value = "";
         }}
       />
@@ -1358,11 +1511,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         </div>
 
         <div className="mt-5 flex gap-2">
-          <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="btn btn-primary flex-1" style={{ minHeight: 42 }}>
+          {/* Not disabled while uploading: the queue appends, so adding more
+              files — or another folder — to a running batch is expected. */}
+          <button onClick={() => fileInputRef.current?.click()} className="btn btn-primary flex-1" style={{ minHeight: 42 }}>
             <Upload className="h-4 w-4" />
             {uploading ? "Uploading…" : "Upload"}
           </button>
-          <button onClick={() => dirInputRef.current?.click()} disabled={uploading} className="btn btn-ghost" style={{ minHeight: 42, width: 42, padding: 0 }} aria-label="Upload a folder" title="Upload a folder">
+          <button onClick={() => void pickFolder()} className="btn btn-ghost" style={{ minHeight: 42, width: 42, padding: 0 }} aria-label="Upload a folder" title="Upload a folder — pick again to add another">
             <FolderUp className="h-4 w-4" />
           </button>
         </div>
@@ -1524,7 +1679,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               </div>
             ) : null}
 
-            <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="btn btn-primary lg:hidden" aria-label="Upload files">
+            <button onClick={() => fileInputRef.current?.click()} className="btn btn-primary lg:hidden" aria-label="Upload files">
               <Upload className="h-4 w-4" />
             </button>
           </div>
@@ -1705,8 +1860,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                               e.preventDefault();
                               e.stopPropagation();
                               setDragDepth(0);
+                              // Same as the window handler: the handles have to be
+                              // taken before the DataTransfer is neutered, or a
+                              // drop onto a folder card can never auto-resume.
+                              void rememberDroppedHandles(Array.from(e.dataTransfer.items ?? []));
                               filesFromDataTransfer(e.dataTransfer).then(picked => {
-                                if (picked.length) startUploads(picked, folder.id);
+                                if (picked.length) void startUploads(picked, folder.id);
                               });
                             }
                           }}
@@ -2037,6 +2196,25 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>{propsTarget ? <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} /> : null}</AnimatePresence>
       <AnimatePresence>
         {shareTarget ? <ShareModal targetName={shareTarget.name} onCreate={createShare} onClose={() => setShareTarget(null)} /> : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {duplicateModal ? (
+          <DuplicateModal
+            batchSize={duplicateModal.batch.length}
+            entries={duplicateModal.duplicates.map(entry => {
+              const item = duplicateModal.batch[entry.index];
+              return {
+                index: entry.index,
+                name: item.file.name,
+                size: item.file.size,
+                location: item.path?.split("/").slice(0, -1).join("/") || undefined,
+                existing: { id: entry.id, name: entry.name }
+              };
+            })}
+            onConfirm={applyDuplicateChoices}
+            onClose={() => setDuplicateModal(null)}
+          />
+        ) : null}
       </AnimatePresence>
     </div>
   );

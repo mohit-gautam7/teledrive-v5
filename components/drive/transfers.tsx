@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Pause, Play, RotateCw, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Pause, Play, RotateCw, SkipForward, X } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { DURATION, EASE, listRow, useReducedMotion } from "@/lib/motion";
 import { formatEta, formatSpeed, type DownloadItem, type TransferItem } from "./types";
@@ -54,6 +54,10 @@ export function TransferPanel({
   const done = transfers.filter(t => t.status === "done").length;
   const failed = transfers.filter(t => t.status === "error").length;
   const paused = transfers.filter(t => t.status === "paused").length;
+  // Skipped duplicates are listed but never counted as transferred: no bytes
+  // moved, and folding them into "done" would claim work that did not happen.
+  const skipped = transfers.filter(t => t.status === "skipped");
+  const moving = transfers.filter(t => t.status !== "skipped");
   const uploadsPresent = transfers.some(t => t.kind === "upload");
   // "Pause all" only means something while something is actually moving, and
   // "Resume all" only while something is stopped but still holds its bytes.
@@ -64,8 +68,8 @@ export function TransferPanel({
     t => t.kind === "upload" && (t.status === "paused" || t.status === "error")
   );
 
-  const totalBytes = transfers.reduce((sum, t) => sum + t.size, 0);
-  const loadedBytes = transfers.reduce((sum, t) => sum + (t.status === "done" ? t.size : t.loaded), 0);
+  const totalBytes = moving.reduce((sum, t) => sum + t.size, 0);
+  const loadedBytes = moving.reduce((sum, t) => sum + (t.status === "done" ? t.size : t.loaded), 0);
   const speed = active.reduce((sum, t) => sum + (t.speed ?? 0), 0);
   const eta = speed > 0 ? (totalBytes - loadedBytes) / speed : null;
 
@@ -83,8 +87,9 @@ export function TransferPanel({
           <button onClick={onToggle} className="t-xs flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-2)" }}>
             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
             <span className="truncate">
-              {done}/{transfers.length} done{failed ? ` · ${failed} failed` : ""}
+              {done}/{moving.length} done{failed ? ` · ${failed} failed` : ""}
               {paused ? ` · ${paused} paused` : ""}
+              {skipped.length ? ` · ${skipped.length} already there` : ""}
             </span>
           </button>
           <span className="flex shrink-0 items-center gap-2">
@@ -164,7 +169,8 @@ function TransferRow({
   onDismiss: () => void;
 }) {
   const inFlight = item.status === "uploading" || item.status === "downloading" || item.status === "pending";
-  const Arrow = item.kind === "upload" ? ArrowUpFromLine : ArrowDownToLine;
+  const skipped = item.status === "skipped";
+  const Arrow = skipped ? SkipForward : item.kind === "upload" ? ArrowUpFromLine : ArrowDownToLine;
 
   return (
     <>
@@ -172,8 +178,8 @@ function TransferRow({
         <span className="flex min-w-0 items-center gap-1.5">
           <Arrow
             className="h-3 w-3 shrink-0"
-            style={{ color: item.kind === "upload" ? "var(--accent)" : "var(--accent-2)" }}
-            aria-label={item.kind === "upload" ? "Uploading" : "Downloading"}
+            style={{ color: skipped ? "var(--text-3)" : item.kind === "upload" ? "var(--accent)" : "var(--accent-2)" }}
+            aria-label={skipped ? "Skipped" : item.kind === "upload" ? "Uploading" : "Downloading"}
           />
           <span className="t-xs truncate font-medium" style={{ color: "var(--text-1)" }} title={item.name}>
             {item.name}
@@ -185,6 +191,7 @@ function TransferRow({
             <span className="mono" style={{ color: "var(--accent)" }}>{item.percent}%</span>
           ) : null}
           {item.status === "done" ? <Check className="h-3.5 w-3.5" style={{ color: "var(--emerald)" }} /> : null}
+          {skipped ? <span className="mono" style={{ color: "var(--text-3)" }}>skipped</span> : null}
           {/* Only uploads pause. A download is one response being consumed, and
               stopping it mid-body cannot be picked up where it stopped. */}
           {item.kind === "upload" && (item.status === "uploading" || item.status === "pending") ? (
@@ -214,17 +221,27 @@ function TransferRow({
         </span>
       </div>
 
-      <div className="progress-track h-1 overflow-hidden rounded-full" style={{ background: "var(--surface-hi)" }}>
-        <div
-          className={cn("h-full rounded-full transition-[width] duration-300", inFlight && item.percent > 0 && "progress-bar")}
-          style={{
-            width: `${item.status === "done" ? 100 : item.percent}%`,
-            background: item.status === "error" ? "var(--danger)" : item.status === "done" ? "var(--emerald)" : undefined
-          }}
-        />
-      </div>
+      {/* Nothing moved for a skipped duplicate, so there is no progress to draw. */}
+      {skipped ? null : (
+        <div className="progress-track h-1 overflow-hidden rounded-full" style={{ background: "var(--surface-hi)" }}>
+          <div
+            className={cn("h-full rounded-full transition-[width] duration-300", inFlight && item.percent > 0 && "progress-bar")}
+            style={{
+              width: `${item.status === "done" ? 100 : item.percent}%`,
+              background: item.status === "error" ? "var(--danger)" : item.status === "done" ? "var(--emerald)" : undefined
+            }}
+          />
+        </div>
+      )}
 
-      {item.status === "error" ? (
+      {skipped ? (
+        <p className="t-xs truncate" style={{ color: "var(--text-3)" }}>
+          Already in this folder{item.kind === "upload" && item.duplicateOf && item.duplicateOf.name !== item.name
+            ? ` as "${item.duplicateOf.name}"`
+            : ""}
+          {" "}— {formatBytes(item.size)} not sent again.
+        </p>
+      ) : item.status === "error" ? (
         <p className="t-xs mt-1 truncate" style={{ color: "var(--danger)" }} title={item.error}>
           {item.error}
         </p>

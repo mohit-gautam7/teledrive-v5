@@ -143,3 +143,22 @@ export const STORED_ONLY = { uploadStatus: { not: "uploading" } } as const;
 
 /** Abandoned upload sessions are garbage-collected after this long. */
 export const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long an MTProto upload's parts are assumed to still be on Telegram.
+ *
+ * A bot-backed session is resumable for as long as the rows survive, because the
+ * chunks are real messages in a chat. MTProto is different: `saveBigFilePart`
+ * parks parts on Telegram's servers under a temporary id, and Telegram expires
+ * them on a schedule it does not publish. Resuming past that point sends only the
+ * chunks we think are missing and then finalises a file that is quietly
+ * truncated — far worse than re-sending it.
+ *
+ * So past this age an MTProto session is offered back with no received chunks at
+ * all, and the upload restarts. Two hours is a guess at a number Telegram does
+ * not document, which is exactly why it is a knob and not a literal.
+ */
+export const MTPROTO_PART_TTL_MS = (() => {
+  const raw = Number(process.env.MTPROTO_PART_TTL_MINUTES);
+  return Number.isFinite(raw) && raw > 0 ? raw * 60_000 : 2 * 60 * 60 * 1000;
+})();

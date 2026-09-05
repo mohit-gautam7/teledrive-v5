@@ -6,10 +6,18 @@ import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
 import { rateLimit } from "@/lib/rate-limit";
-import { CHUNK_SIZE, SAVED_MESSAGES, STALE_UPLOAD_MS, backendFor, type BackendPreference } from "@/lib/upload-config";
+import {
+  CHUNK_SIZE,
+  MTPROTO_PART_TTL_MS,
+  SAVED_MESSAGES,
+  STALE_UPLOAD_MS,
+  backendFor,
+  type BackendPreference
+} from "@/lib/upload-config";
 import { purgeTelegramCopies } from "@/lib/file-delete";
 import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 import { resolveOwnedFolder } from "@/lib/folder-tree";
+import { findDuplicate } from "@/lib/duplicates";
 
 export const runtime = "nodejs";
 
@@ -26,14 +34,17 @@ export async function POST(request: NextRequest) {
     // hundred files, tight enough that a loop cannot fill the table.
     rateLimit(`upload-init:${user.id}`, 300, 60_000);
 
-    const { fileName, mimeType, fileSize, folderId, resumeKey, prefer } = (await request.json()) as {
-      fileName: string;
-      mimeType: string;
-      fileSize: number;
-      folderId?: string;
-      resumeKey?: string;
-      prefer?: string;
-    };
+    const { fileName, mimeType, fileSize, folderId, resumeKey, prefer, contentHash, allowDuplicate } =
+      (await request.json()) as {
+        fileName: string;
+        mimeType: string;
+        fileSize: number;
+        folderId?: string;
+        resumeKey?: string;
+        prefer?: string;
+        contentHash?: string;
+        allowDuplicate?: boolean;
+      };
 
     if (!fileName || !fileSize || fileSize <= 0) {
       return NextResponse.json({ error: "fileName and fileSize are required." }, { status: 400 });
@@ -99,14 +110,42 @@ export async function POST(request: NextRequest) {
       // line up and reusing it would interleave slices of two different sizes —
       // so it is left to the sweeper and a fresh session is created instead.
       if (existing && existing.totalChunks === totalChunks) {
+        // MTProto parks its parts on Telegram's servers under a temporary id and
+        // expires them on a schedule of its own. Past that age, claiming to hold
+        // them would finalise a truncated file, so the session is handed back
+        // empty and the bytes are sent again. Bot chunks are real messages and
+        // stay valid for as long as the row does.
+        const expired =
+          existing.backend === "mtproto" && Date.now() - existing.createdAt.getTime() > MTPROTO_PART_TTL_MS;
+        if (expired && existing.chunks.length) {
+          await prisma.chunk.deleteMany({ where: { fileId: existing.id } });
+        }
         return NextResponse.json({
           fileId: existing.id,
           totalChunks: existing.totalChunks,
           chunkSizeBytes: CHUNK_SIZE,
           backend: existing.backend,
-          received: existing.chunks.map(c => c.chunkIndex),
+          received: expired ? [] : existing.chunks.map(c => c.chunkIndex),
           resumed: true
         });
+      }
+    }
+
+    // The client asks /api/upload/check before queueing anything, so reaching
+    // here without `allowDuplicate` means either another tab stored this file in
+    // the meantime or something skipped the prompt. Refusing is what makes "skip"
+    // a guarantee rather than a suggestion.
+    if (!allowDuplicate) {
+      const duplicate = await findDuplicate(user.id, targetFolder, {
+        name: fileName,
+        size: fileSize,
+        hash: contentHash ?? null
+      });
+      if (duplicate) {
+        return NextResponse.json(
+          { error: `"${duplicate.name}" is already in this folder.`, duplicate },
+          { status: 409 }
+        );
       }
     }
 
@@ -128,6 +167,7 @@ export async function POST(request: NextRequest) {
         totalChunks,
         uploadStatus: "uploading",
         resumeKey: resumeKey || null,
+        contentHash: contentHash || null,
         folderId: targetFolder
       }
     });

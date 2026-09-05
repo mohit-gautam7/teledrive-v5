@@ -1,10 +1,14 @@
 export class ApiError extends Error {
   status: number;
+  /** The parsed error body, for the few callers that need more than its message
+   *  — a 409 duplicate carries the id of the file it collided with. */
+  details?: unknown;
 
-  constructor(message: string, status = 500) {
+  constructor(message: string, status = 500, details?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -54,7 +58,7 @@ export async function parseResponse<T>(response: Response): Promise<T> {
     const body = isJson ? await response.json().catch(() => null) : await response.text().catch(() => "");
     const message = typeof body === "object" && body && "error" in body ? String(body.error) : String(body || response.statusText);
     const ref = typeof body === "object" && body && "ref" in body ? String((body as { ref?: unknown }).ref) : undefined;
-    throw new ApiError(friendlyStatus(response.status, message, ref), response.status);
+    throw new ApiError(friendlyStatus(response.status, message, ref), response.status, body);
   }
 
   if (!isJson) {
@@ -109,7 +113,7 @@ export function uploadFile<T>(
         if (contentType.includes("application/json")) {
           try {
             const parsed = JSON.parse(text) as { error?: string };
-            reject(new ApiError(friendlyStatus(xhr.status, parsed.error || xhr.statusText), xhr.status));
+            reject(new ApiError(friendlyStatus(xhr.status, parsed.error || xhr.statusText), xhr.status, parsed));
             return;
           } catch {
             reject(new ApiError("Upload failed with an unreadable server error.", xhr.status));

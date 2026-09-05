@@ -70,14 +70,29 @@ export async function POST(
       if (!file.telegramFileId) {
         return NextResponse.json({ error: "Upload session is missing its Telegram file id." }, { status: 500 });
       }
-      const { messageId } = await finalizeBigFile({
-        session,
-        fileId: file.telegramFileId,
-        totalParts: Math.ceil(Number(file.size) / MTPROTO_PART_SIZE),
-        fileName: file.filename,
-        mimeType: file.mimeType,
-        caption: `📄 ${file.originalName}`
-      });
+      let messageId: number | string;
+      try {
+        ({ messageId } = await finalizeBigFile({
+          session,
+          fileId: file.telegramFileId,
+          totalParts: Math.ceil(Number(file.size) / MTPROTO_PART_SIZE),
+          fileName: file.filename,
+          mimeType: file.mimeType,
+          caption: `📄 ${file.originalName}`
+        }));
+      } catch (error) {
+        // Telegram would not assemble the parts — almost always because it has
+        // expired the ones sent hours ago. Dropping the chunk ledger is what makes
+        // the retry a real retry: /api/upload/init hands the session back with
+        // nothing received, so the file is sent again in full rather than resuming
+        // onto parts that are no longer there and finalising something truncated.
+        await prisma.chunk.deleteMany({ where: { fileId } });
+        console.warn("[upload/complete] mtproto finalise failed:", (error as Error).message);
+        return NextResponse.json(
+          { error: "Telegram could not assemble this upload — it has to be sent again. Retry to start it over." },
+          { status: 409 }
+        );
+      }
       const updated = await prisma.file.update({
         where: { id: fileId },
         data: {

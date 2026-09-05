@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Folder as FolderIcon, Home, Info, Loader2 } from "lucide-react";
+import { CopyPlus, Folder as FolderIcon, Home, Info, Loader2, RefreshCw, SkipForward } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
 import { fadeIn, sheet, useReducedMotion } from "@/lib/motion";
+import type { DuplicateChoice } from "@/lib/duplicate-plan";
 import type { DriveFolder, PropsTarget } from "./types";
 
 /** Shared modal chrome: dimmed backdrop, escape-to-close, click-outside-to-close.
@@ -308,6 +309,148 @@ export function ShareModal({
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Create &amp; copy
           </button>
+        </div>
+      </div>
+    </Shell>
+  );
+}
+
+// ── Duplicate uploads ────────────────────────────────────────────────────────
+
+export type DuplicateEntry = {
+  /** Position in the caller's batch, so a decision can be mapped back to a file. */
+  index: number;
+  name: string;
+  size: number;
+  /** Folder path relative to the drop target, for a folder upload. */
+  location?: string;
+  existing: { id: string; name: string };
+};
+
+const CHOICES: Array<{ value: DuplicateChoice; label: string; icon: typeof SkipForward; hint: string }> = [
+  { value: "skip", label: "Skip", icon: SkipForward, hint: "Leave the copy that is already there" },
+  { value: "replace", label: "Replace", icon: RefreshCw, hint: "Upload again and move the old one to Trash" },
+  { value: "copy", label: "Keep both", icon: CopyPlus, hint: "Upload a second copy alongside it" }
+];
+
+/**
+ * Ask once for the whole batch, not once per file.
+ *
+ * Re-dropping a folder of two hundred files is the normal case, not the edge
+ * one, so the answer has to be a single decision with the option to disagree in
+ * places — hence three buttons at the top and a per-file override below them.
+ * Skip is the default because it is the only choice that cannot lose anything.
+ */
+export function DuplicateModal({
+  entries,
+  batchSize,
+  onConfirm,
+  onClose
+}: {
+  entries: DuplicateEntry[];
+  /** How many files were picked in total, duplicates included. */
+  batchSize: number;
+  onConfirm: (choices: Record<number, DuplicateChoice>) => void;
+  onClose: () => void;
+}) {
+  const [choices, setChoices] = useState<Record<number, DuplicateChoice>>(() =>
+    Object.fromEntries(entries.map(entry => [entry.index, "skip" as DuplicateChoice]))
+  );
+  const setAll = (value: DuplicateChoice) =>
+    setChoices(Object.fromEntries(entries.map(entry => [entry.index, value])));
+
+  const counts = entries.reduce<Record<DuplicateChoice, number>>(
+    (acc, entry) => {
+      acc[choices[entry.index]]++;
+      return acc;
+    },
+    { skip: 0, replace: 0, copy: 0 }
+  );
+  const uploading = batchSize - entries.length + counts.replace + counts.copy;
+
+  return (
+    <Shell onClose={onClose} wide>
+      <div className="p-5 sm:p-6">
+        <h2 className="display t-h2">
+          {entries.length === 1 ? "This file is already here" : `${entries.length} files are already here`}
+        </h2>
+        <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>
+          {entries.length === batchSize
+            ? "Every file you picked is already stored in its destination."
+            : `${entries.length} of ${batchSize} files you picked match something already stored.`}
+        </p>
+
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          {CHOICES.map(({ value, label, icon: Icon, hint }) => (
+            <button
+              key={value}
+              onClick={() => setAll(value)}
+              title={hint}
+              className="btn btn-ghost flex-col gap-1 py-3"
+              style={{
+                border: "1px solid var(--border-dim)",
+                background: counts[value] === entries.length ? "var(--accent-dim)" : undefined,
+                borderColor: counts[value] === entries.length ? "var(--accent-border)" : undefined
+              }}
+            >
+              <Icon className="h-4 w-4" style={{ color: "var(--accent)" }} />
+              <span className="t-xs font-semibold">{label} all</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-4 max-h-[38vh] space-y-1.5 overflow-y-auto pr-1">
+          {entries.map(entry => (
+            <div
+              key={entry.index}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg p-2"
+              style={{ background: "var(--bg-1)" }}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="t-xs block truncate font-medium" style={{ color: "var(--text-1)" }} title={entry.name}>
+                  {entry.name}
+                </span>
+                <span className="mono block truncate" style={{ color: "var(--text-3)" }}>
+                  {formatBytes(entry.size)}
+                  {entry.location ? ` · ${entry.location}` : ""}
+                  {entry.existing.name !== entry.name ? ` · stored as "${entry.existing.name}"` : ""}
+                </span>
+              </span>
+              <span className="flex shrink-0 overflow-hidden rounded-lg" role="radiogroup" aria-label={`What to do with ${entry.name}`}>
+                {CHOICES.map(({ value, label, hint }) => {
+                  const active = choices[entry.index] === value;
+                  return (
+                    <button
+                      key={value}
+                      role="radio"
+                      aria-checked={active}
+                      title={hint}
+                      onClick={() => setChoices(current => ({ ...current, [entry.index]: value }))}
+                      className="t-xs px-2.5 py-1.5 font-semibold"
+                      style={{
+                        color: active ? "var(--accent)" : "var(--text-3)",
+                        background: active ? "var(--accent-dim)" : "var(--surface)"
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+          <p className="mono" style={{ color: "var(--text-3)" }}>
+            {uploading === 0 ? "Nothing will be uploaded" : `${uploading} file${uploading === 1 ? "" : "s"} will upload`}
+            {counts.skip ? ` · ${counts.skip} skipped` : ""}
+            {counts.replace ? ` · ${counts.replace} replaced` : ""}
+          </p>
+          <span className="flex gap-2">
+            <button onClick={onClose} className="btn btn-ghost">Cancel</button>
+            <button onClick={() => onConfirm(choices)} className="btn btn-primary">Continue</button>
+          </span>
         </div>
       </div>
     </Shell>

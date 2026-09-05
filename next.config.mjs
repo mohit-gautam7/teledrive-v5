@@ -1,4 +1,22 @@
+import { readFileSync } from "node:fs";
+
 const dev = process.env.NODE_ENV !== "production";
+
+/**
+ * What is actually running, baked in at build time.
+ *
+ * The version comes from package.json so there is one place to bump, and the
+ * build time is stamped here rather than read from a git SHA because .dockerignore
+ * excludes .git — on Render the build has no repository to ask. Together they
+ * answer the only question that matters after a deploy: is the thing I just
+ * pushed the thing that is now live?
+ *
+ * The timestamp is pre-formatted as UTC rather than left as an ISO string for the
+ * browser to format, because `toLocaleString` disagrees between the server render
+ * and the client and React would call that a hydration error.
+ */
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+const builtAt = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
 
 /**
  * Content Security Policy.
@@ -59,6 +77,10 @@ const securityHeaders = [
 const nextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  env: {
+    NEXT_PUBLIC_APP_VERSION: pkg.version,
+    NEXT_PUBLIC_BUILD_TIME: builtAt
+  },
   experimental: {
     serverComponentsExternalPackages: ["telegram", "sharp"],
     instrumentationHook: true,

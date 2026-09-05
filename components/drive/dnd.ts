@@ -1,33 +1,69 @@
-import { handleFromDataTransferItem, rememberHandle } from "@/lib/upload-store";
+import { resumeKeyFor } from "@/lib/file-identity";
+import {
+  directoryKey,
+  handleFromDataTransferItem,
+  rememberHandle,
+  type StoredDirectoryHandle
+} from "@/lib/upload-store";
 
 /** A file plus the folder path it should be filed under, relative to the drop target. */
 export type PickedFile = { file: File; path?: string };
 
 /**
- * Keep a durable handle for each dropped file, so an upload interrupted by a
+ * Keep a durable handle for everything dropped, so an upload interrupted by a
  * reload can pick the bytes back up on its own.
  *
- * Best-effort by design: only Chromium exposes `getAsFileSystemHandle`, and only
- * for files (not the directories walked above). Everywhere else the transfer
- * panel falls back to a Resume button that re-picks the file by hand, so nothing
- * here is allowed to fail an upload — hence the silent catch.
+ * A dropped file is remembered under its own resume key. A dropped *directory*
+ * is remembered once, under its name, and individual files are resolved out of
+ * it later by walking their relative path — the alternative, which is what this
+ * did before, was to discard directory handles entirely and make a folder upload
+ * unresumable.
+ *
+ * Best-effort by design: only Chromium exposes `getAsFileSystemHandle`.
+ * Everywhere else the transfer panel falls back to a Resume button that re-picks
+ * the file by hand, so nothing here is allowed to fail an upload — hence the
+ * silent catch.
  */
-export async function rememberDroppedHandles(
-  items: DataTransferItem[],
-  keyFor: (file: File) => string
-): Promise<void> {
+export async function rememberDroppedHandles(items: DataTransferItem[]): Promise<void> {
   await Promise.all(
     items.map(async item => {
       try {
         const handle = await handleFromDataTransferItem(item);
         if (!handle) return;
-        const file = await handle.getFile();
-        await rememberHandle(keyFor(file), handle);
+        if (handle.kind === "directory") {
+          await rememberHandle(directoryKey(handle.name), handle);
+          return;
+        }
+        await rememberHandle(resumeKeyFor(await handle.getFile()), handle);
       } catch {
         /* no handle available — the manual Resume path covers it */
       }
     })
   );
+}
+
+/**
+ * Walk a directory the user picked through `showDirectoryPicker`.
+ *
+ * The `webkitdirectory` input works everywhere but hands back plain `File`s and
+ * no handle, so a folder picked that way can never auto-resume. Where the picker
+ * exists this path is used instead, and the handle it returns is remembered the
+ * same way a dropped folder's is.
+ */
+export async function filesFromDirectoryHandle(root: StoredDirectoryHandle): Promise<PickedFile[]> {
+  await rememberHandle(directoryKey(root.name), root);
+  const out: PickedFile[] = [];
+  const walk = async (dir: FileSystemDirectoryHandle, prefix: string) => {
+    for await (const entry of (dir as FileSystemDirectoryHandle & {
+      values: () => AsyncIterable<FileSystemHandle>;
+    }).values()) {
+      const path = `${prefix}/${entry.name}`;
+      if (entry.kind === "file") out.push({ file: await (entry as FileSystemFileHandle).getFile(), path });
+      else await walk(entry as FileSystemDirectoryHandle, path);
+    }
+  };
+  await walk(root, root.name);
+  return out;
 }
 
 type FileSystemEntryLike = {

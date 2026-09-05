@@ -9,15 +9,30 @@ boundary that matters. No server, no database.
 node scripts/check-upload-routing.mjs
 ```
 
+## check-dedupe.mjs
+
+Pure assertions over `lib/file-identity.ts` and `lib/duplicate-plan.ts` — how a
+file is recognised as the same upload, or the same content, and what a skip /
+replace / keep-both answer turns into. No server, no database.
+
+Both modules import nothing, which is why these rules can be checked here at all:
+they are the ones that silently ruin an upload when they drift. A resume key that
+starts depending on the destination folder again, or a skip that quietly queues
+the file anyway, fails here.
+
+```
+node scripts/check-dedupe.mjs
+```
+
 ## The probes
 
-Four live probes against a **running production build**. They exist because the
+Five live probes against a **running production build**. They exist because the
 things worth checking here — a 20 MB threshold, a share that unlocks, a mime type
 that must not render — are properties of a real HTTP response and a real Telegram
 round trip, not of a function in isolation.
 
-All four clean up after themselves: every row and every Telegram message they
-create is deleted before they exit, and the two that mutate an existing row put
+All five clean up after themselves: every row and every Telegram message they
+create is deleted before they exit, and the ones that mutate an existing row put
 it back in a `finally`. Run them against your own account.
 
 ```
@@ -68,6 +83,23 @@ owner-login, which would write `name: "Owner"` onto the account it signs in as.
 ```
 PROBE_TELEGRAM_ID=<a linked account's telegram id> node scripts/probe-bigfile.mjs --routing-only
 PROBE_TELEGRAM_ID=<…> PROBE_SIZE_MB=22 node scripts/probe-bigfile.mjs
+```
+
+### probe-dedupe.mjs — duplicates and resume
+
+Whether re-uploading a file is caught, and whether an interrupted one picks up
+where it stopped. Covers `/api/upload/check` over a batch, the refusals on both
+upload paths, the name-and-size fallback for rows that predate `contentHash`
+(which is every file uploaded before this existed), a trashed file not blocking a
+re-upload, and the init → chunk → init resume handshake.
+
+The odd one out: it sends **nothing** to Telegram. The stored files it asks about
+are seeded straight into the database and every path it exercises answers before
+a byte would leave the machine, so it can be run repeatedly against a real account
+without filling anyone's Saved Messages.
+
+```
+PROBE_TELEGRAM_ID=<any account's telegram id> node scripts/probe-dedupe.mjs
 ```
 
 ### probe-flows.mjs — the regression net

@@ -44,9 +44,13 @@ export type UploadItem = {
   /** Seconds remaining at the current speed, or null when unknown. */
   eta: number | null;
   /** `paused` is a session restored after a reload: the server still holds the
-   *  chunks, but this tab has no bytes to send until the file is handed back. */
-  status: "pending" | "uploading" | "done" | "error" | "paused";
+   *  chunks, but this tab has no bytes to send until the file is handed back.
+   *  `skipped` is a duplicate the user chose not to upload — shown rather than
+   *  dropped silently, so "12 files skipped" is visible instead of implied. */
+  status: "pending" | "uploading" | "done" | "error" | "paused" | "skipped";
   error?: string;
+  /** For a skipped duplicate: the file already in the drive it matched. */
+  duplicateOf?: { id: string; name: string };
   /** Null only for a restored session whose file this tab cannot read yet. */
   file: File | null;
   /** Kept separately from `file`, which a restored session does not have: it is
@@ -56,8 +60,17 @@ export type UploadItem = {
   folderId?: string | null;
   /** Server-side session fingerprint; the resume key is what makes this durable. */
   resumeKey?: string;
-  /** Relative path when the item came from a folder drop / directory picker. */
+  /** Relative path when the item came from a folder drop / directory picker.
+   *  Display and handle-resolution only — the destination folder is resolved
+   *  before the item is queued, never again while it uploads. */
   path?: string;
+  /** Content fingerprint from lib/file-identity, sent so the server can refuse a
+   *  duplicate the user never agreed to. */
+  contentHash?: string | null;
+  /** The user saw the duplicate prompt and chose Replace or Upload anyway. */
+  allowDuplicate?: boolean;
+  /** Replace: the existing file to move to Trash once this one is safely stored. */
+  replaceFileId?: string;
 };
 
 /** One in-flight download, mirrored from the uploads so both read alike. */

@@ -1,8 +1,10 @@
 "use client";
 
 import { toast } from "sonner";
-import { UploadAbortedError, uploadFile } from "@/lib/api-client";
-import { uploadFileInChunks, resumeKeyFor } from "@/lib/chunked-upload";
+import { ApiError, UploadAbortedError, uploadFile } from "@/lib/api-client";
+import { DuplicateFileError, uploadFileInChunks } from "@/lib/chunked-upload";
+import { resumeKeyFor } from "@/lib/file-identity";
+import type { QueuedUpload, SkippedUpload } from "@/lib/duplicate-plan";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
 import { readPreferences } from "@/lib/preferences";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
@@ -11,6 +13,7 @@ import {
   forgetHandle,
   matchesSession,
   readPersisted,
+  recallFromDirectory,
   recallHandle,
   writePersisted,
   type PersistedUpload
@@ -35,10 +38,10 @@ import { sampleRate, type DriveFile, type UploadItem } from "@/components/drive/
  */
 
 type Hooks = {
-  /** Create (or find) the folder chain a dropped directory implies. */
-  ensureFolderPath?: (segments: string[], rootId: string | null) => Promise<string | null>;
   /** A file finished storing — the drive listing can show it now. */
   onStored?: (file: DriveFile) => void;
+  /** A replaced file was moved to Trash — drop it from the listing. */
+  onRemoved?: (fileId: string) => void;
   /** The queue went quiet; a good moment to refresh totals. */
   onIdle?: () => void;
 };
@@ -46,6 +49,11 @@ type Hooks = {
 type Listener = () => void;
 
 const MAX_PARALLEL = 1;
+
+/** Trailing delay on writing the queue to localStorage. Progress ticks arrive
+ *  dozens of times a second and each one used to mean a synchronous
+ *  `localStorage.setItem` over the whole queue. */
+const PERSIST_DEBOUNCE_MS = 2000;
 
 class UploadManager {
   private items: UploadItem[] = EMPTY;
@@ -57,6 +65,8 @@ class UploadManager {
   private pausedGlobally = false;
   private user = "anon";
   private hydrated = false;
+  private persistTimer: number | null = null;
+  private emitFrame: number | null = null;
   /** Cached so `getSnapshot` is referentially stable between real changes —
    *  useSyncExternalStore re-renders forever otherwise. */
   private snapshot: UploadItem[] = EMPTY;
@@ -76,12 +86,42 @@ class UploadManager {
   getServerSnapshot = () => EMPTY;
 
   private emit() {
+    if (this.emitFrame !== null) {
+      cancelAnimationFrame(this.emitFrame);
+      this.emitFrame = null;
+    }
     this.snapshot = this.items;
     for (const listener of this.listeners) listener();
   }
 
-  private patch(id: string, changes: Partial<UploadItem>) {
+  /**
+   * Publish at most once per frame.
+   *
+   * Progress arrives far faster than anyone can read it, and every notification
+   * re-renders the drive. requestAnimationFrame collapses a burst into one paint
+   * and — because browsers stop running it in a hidden tab — costs nothing at all
+   * while the upload runs in the background, which is exactly when it should.
+   * State changes still call `emit` directly, so nothing final waits on a frame.
+   */
+  private emitSoon() {
+    if (typeof requestAnimationFrame !== "function") {
+      this.emit();
+      return;
+    }
+    if (this.emitFrame !== null) return;
+    this.emitFrame = requestAnimationFrame(() => {
+      this.emitFrame = null;
+      this.snapshot = this.items;
+      for (const listener of this.listeners) listener();
+    });
+  }
+
+  private assign(id: string, changes: Partial<UploadItem>) {
     this.items = this.items.map(it => (it.id === id ? { ...it, ...changes } : it));
+  }
+
+  private patch(id: string, changes: Partial<UploadItem>) {
+    this.assign(id, changes);
     this.emit();
     this.persist();
   }
@@ -103,26 +143,43 @@ class UploadManager {
 
   // ── Queueing ──────────────────────────────────────────────────────────────
 
-  add(picked: Array<{ file: File; path?: string }>, destination: string | null) {
-    const items: UploadItem[] = picked.map(({ file, path }) => ({
-      id: Math.random().toString(36).slice(2),
-      name: file.name,
-      size: file.size,
-      loaded: 0,
-      percent: 0,
-      speed: null,
-      eta: null,
-      status: "pending",
-      file,
-      lastModified: file.lastModified,
-      folderId: destination,
-      resumeKey: resumeKeyFor(file, destination),
-      path
-    }));
+  add(picked: QueuedUpload[], skipped: SkippedUpload[] = []) {
+    const items: UploadItem[] = [
+      ...skipped.map<UploadItem>(entry => ({
+        id: Math.random().toString(36).slice(2),
+        name: entry.name,
+        size: entry.size,
+        loaded: entry.size,
+        percent: 100,
+        speed: null,
+        eta: null,
+        status: "skipped",
+        file: null,
+        duplicateOf: entry.duplicateOf
+      })),
+      ...picked.map<UploadItem>(({ file, path, destination, contentHash, allowDuplicate, replaceFileId }) => ({
+        id: Math.random().toString(36).slice(2),
+        name: file.name,
+        size: file.size,
+        loaded: 0,
+        percent: 0,
+        speed: null,
+        eta: null,
+        status: "pending",
+        file,
+        lastModified: file.lastModified,
+        folderId: destination,
+        resumeKey: resumeKeyFor(file),
+        path,
+        contentHash,
+        allowDuplicate,
+        replaceFileId
+      }))
+    ];
     // Appended, not assigned: a session restored from a previous visit is
     // waiting in this queue, and replacing it would strand chunks the server is
     // still holding.
-    this.items = [...this.items.filter(it => it.status !== "done"), ...items];
+    this.items = [...this.items.filter(it => it.status !== "done" && it.status !== "skipped"), ...items];
     // Adding work is an explicit act, so it lifts a global pause rather than
     // silently landing in a queue that will not move.
     this.pausedGlobally = false;
@@ -158,12 +215,13 @@ class UploadManager {
 
   resume(id: string) {
     const item = this.items.find(it => it.id === id);
-    if (!item || item.status === "uploading") return;
+    if (!item || item.status === "uploading" || item.status === "skipped") return;
     this.pausedGlobally = false;
     if (!item.file) {
-      // No bytes in this tab — the server still holds the chunks, but only the
-      // user can hand the file back.
-      void this.repick(item);
+      // No bytes in this tab. A Resume click is a real user gesture, which is the
+      // one moment `requestPermission` on a stored handle is legal — so ask for
+      // the handle back before falling back to a file dialog.
+      void this.reattach(item);
       return;
     }
     this.patch(id, { status: "pending", error: undefined });
@@ -216,6 +274,9 @@ class UploadManager {
     this.persist();
   }
 
+  /** Finished rows tidy themselves away. Skipped ones stay: "12 files were
+   *  already here" is the answer to what just happened, and it should still be
+   *  on screen a moment later. */
   clearFinished() {
     if (!this.items.some(it => it.status === "done")) return;
     this.items = this.items.filter(it => it.status !== "done");
@@ -255,16 +316,11 @@ class UploadManager {
     const source = item.file;
     if (!source) return;
 
-    let target = item.folderId ?? null;
-    try {
-      // A directory upload recreates its structure under the drop target.
-      if (item.path?.includes("/") && this.hooks.ensureFolderPath) {
-        target = await this.hooks.ensureFolderPath(item.path.split("/").slice(0, -1), item.folderId ?? null);
-      }
-    } catch (error) {
-      this.fail(item.id, error);
-      return;
-    }
+    // The destination was resolved before this item was ever queued, so nothing
+    // here creates folders. It used to, and re-running it on a resume nested the
+    // dropped tree inside itself and changed the resume key, which abandoned
+    // every chunk the server was holding and restarted the file from zero.
+    const target = item.folderId ?? null;
 
     this.samples.delete(item.id);
     this.patch(item.id, {
@@ -274,9 +330,7 @@ class UploadManager {
       // start again.
       loaded: item.status === "paused" ? item.loaded : 0,
       percent: item.status === "paused" ? item.percent : 0,
-      error: undefined,
-      folderId: target,
-      resumeKey: resumeKeyFor(source, target)
+      error: undefined
     });
 
     const controller = new AbortController();
@@ -290,6 +344,8 @@ class UploadManager {
           // Read at send time, not at queue time, so changing the setting takes
           // effect on the next file rather than on the next reload.
           prefer: readPreferences().uploadBackend,
+          contentHash: item.contentHash,
+          allowDuplicate: item.allowDuplicate,
           onProgress: loaded => this.progress(item.id, loaded, item.size),
           signal: controller.signal
         });
@@ -305,13 +361,33 @@ class UploadManager {
       if (created && canThumbnail(source)) await uploadThumbnail(created.id, source);
       if (created) this.hooks.onStored?.(created);
 
+      // Replace: the new copy is safely stored, so the old one can go to Trash.
+      // In this order deliberately — a failed replace must never lose a file.
+      if (created && item.replaceFileId) await this.retireReplaced(item.replaceFileId);
+
       this.samples.delete(item.id);
       this.patch(item.id, { loaded: item.size, percent: 100, speed: null, eta: null, status: "done" });
-      void forgetHandle(resumeKeyFor(source, target));
+      void forgetHandle(resumeKeyFor(source));
     } catch (error) {
       if (error instanceof UploadAbortedError || (error instanceof DOMException && error.name === "AbortError")) {
         // A pause already set the status and wants the row kept; a cancel has
         // already removed it. Either way there is nothing left to do.
+        return;
+      }
+      // The server refused it as a duplicate. The client asks before queueing, so
+      // reaching here means another tab stored the same file in between — and the
+      // honest answer is the one the user would have been given: skip it.
+      const duplicate = asDuplicate(error);
+      if (duplicate) {
+        this.samples.delete(item.id);
+        this.patch(item.id, {
+          status: "skipped",
+          loaded: item.size,
+          percent: 100,
+          speed: null,
+          eta: null,
+          duplicateOf: duplicate
+        });
         return;
       }
       this.fail(item.id, error);
@@ -320,11 +396,25 @@ class UploadManager {
     }
   }
 
+  /** Move the file a Replace superseded into Trash. Recoverable on purpose. */
+  private async retireReplaced(fileId: string) {
+    try {
+      const response = await fetch(`/api/files/${fileId}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(String(response.status));
+      this.hooks.onRemoved?.(fileId);
+    } catch {
+      // The new copy is stored either way; saying so beats failing the upload.
+      toast.info("The new copy is stored, but the file it replaced could not be moved to Trash.");
+    }
+  }
+
   /** The one-request path for anything a bot can hold as a single document. */
   private async uploadSmall(source: File, target: string | null, item: UploadItem, signal: AbortSignal) {
     const form = new FormData();
     form.append("file", source);
     if (target) form.append("folderId", target);
+    if (item.contentHash) form.append("contentHash", item.contentHash);
+    if (item.allowDuplicate) form.append("allowDuplicate", "1");
     const result = await uploadFile<{ file: DriveFile }>(
       "/api/upload",
       form,
@@ -343,10 +433,35 @@ class UploadManager {
   private progress(id: string, loaded: number, size: number) {
     const history = this.samples.get(id) ?? [];
     this.samples.set(id, history);
-    this.patch(id, sampleRate(history, loaded, size));
+    this.assign(id, sampleRate(history, loaded, size));
+    this.emitSoon();
+    this.schedulePersist();
   }
 
   // ── Surviving a reload ────────────────────────────────────────────────────
+
+  /** Progress is worth remembering, but not thirty times a second. */
+  private schedulePersist() {
+    if (this.persistTimer !== null || typeof window === "undefined") return;
+    this.persistTimer = window.setTimeout(() => {
+      this.persistTimer = null;
+      this.persist();
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  /**
+   * Write the queue out now.
+   *
+   * The debounce above means up to two seconds of progress lives only in memory,
+   * so the page going away — hidden, unloaded — has to force it out first.
+   */
+  flush() {
+    if (this.persistTimer !== null && typeof window !== "undefined") {
+      window.clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.persist();
+  }
 
   private persist() {
     if (!this.hydrated) return;
@@ -361,7 +476,6 @@ class UploadManager {
         )
         .map<PersistedUpload>(it => ({
           id: it.id,
-          fileId: null,
           name: it.name,
           size: it.size,
           // From the item, not from `it.file`: a session restored after a reload
@@ -414,13 +528,55 @@ class UploadManager {
 
     void (async () => {
       for (const session of sessions) {
-        const handle = await recallHandle(session.resumeKey);
-        if (!handle) continue;
-        const file = await fileFromHandle(handle, { prompt: false });
-        if (!file || !matchesSession(file, session)) continue;
-        this.attach(session.id, file);
+        const file = await this.recall(session, { prompt: false });
+        if (file) this.attach(session.id, file);
       }
     })();
+  }
+
+  /**
+   * Find the bytes for a restored session without asking the user.
+   *
+   * Two sources, because a file inside a dropped folder has no handle of its own:
+   * the file's own remembered handle, or the tree's handle walked down the item's
+   * relative path. Folder uploads had neither before, which is why they always
+   * came back needing a manual re-pick — once per file.
+   */
+  private async recall(
+    session: { resumeKey: string; path?: string; name: string; size: number; lastModified: number },
+    options: { prompt: boolean }
+  ): Promise<File | null> {
+    const handle = await recallHandle(session.resumeKey);
+    if (handle && handle.kind === "file") {
+      const file = await fileFromHandle(handle, options);
+      if (file && matchesSession(file, session)) return file;
+    }
+    if (session.path?.includes("/")) {
+      const file = await recallFromDirectory(session.path, options);
+      if (file && matchesSession(file, session)) return file;
+    }
+    return null;
+  }
+
+  /** Resume with the file the browser already knows about, or ask for it. */
+  private async reattach(item: UploadItem) {
+    if (item.resumeKey && item.lastModified) {
+      const file = await this.recall(
+        {
+          resumeKey: item.resumeKey,
+          path: item.path,
+          name: item.name,
+          size: item.size,
+          lastModified: item.lastModified
+        },
+        { prompt: true }
+      );
+      if (file) {
+        this.attach(item.id, file);
+        return;
+      }
+    }
+    this.repick(item);
   }
 
   /** Hand the file back by picking it again — the fallback when no handle exists. */
@@ -448,6 +604,16 @@ class UploadManager {
 }
 
 const EMPTY: UploadItem[] = [];
+
+/** The duplicate a refusal names, whichever of the two upload paths raised it. */
+function asDuplicate(error: unknown): { id: string; name: string } | null {
+  if (error instanceof DuplicateFileError) return error.existing;
+  if (error instanceof ApiError && error.status === 409) {
+    const duplicate = (error.details as { duplicate?: { id: string; name: string } } | undefined)?.duplicate;
+    if (duplicate?.id) return duplicate;
+  }
+  return null;
+}
 
 /**
  * Store a browser-made thumbnail alongside the upload.

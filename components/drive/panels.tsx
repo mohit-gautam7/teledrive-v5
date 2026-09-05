@@ -1901,11 +1901,26 @@ function QrCanvas({ value }: { value: string }) {
 
 // ── About ───────────────────────────────────────────────────────────────────
 
+/**
+ * Baked in by next.config.mjs at build time. The fallback is for a bundle built
+ * before this existed — better a quiet "dev" than a crash on a stale deploy.
+ */
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
+const BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || "";
+
 export function AboutPanel({ maxBytes }: { maxBytes: number }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <section className="panel p-6">
-        <h2 className="display t-h2">TeleDrive</h2>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 className="display t-h2">TeleDrive</h2>
+          {/* The answer to "did my deploy actually go out?" — read it here after
+              every push rather than guessing from a page that looks the same. */}
+          <Tag tone="ok">v{APP_VERSION}</Tag>
+        </div>
+        {BUILD_TIME ? (
+          <p className="mono mt-1.5" style={{ color: "var(--text-3)" }}>Built {BUILD_TIME}</p>
+        ) : null}
         <p className="t-sm mt-3 leading-relaxed" style={{ color: "var(--text-2)" }}>
           A self-hostable personal cloud that uses Telegram as its storage layer. Files are chunked and sent to your own
           chat with the bot, so the data stays in an account you control — and the bot token never leaves the server.
