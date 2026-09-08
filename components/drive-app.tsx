@@ -38,6 +38,7 @@ import { apiFetch } from "@/lib/api-client";
 import { uploads } from "@/lib/upload-manager";
 import { dedupeBatch, planBatch, type DuplicateChoice, type QueuedUpload } from "@/lib/duplicate-plan";
 import { fingerprintAll } from "@/lib/file-identity";
+import { FILE_ORIGIN, primeFileToken } from "@/lib/file-origin";
 import { MAX_FILE_SIZE } from "@/lib/upload-config";
 import type { StoredDirectoryHandle } from "@/lib/upload-store";
 import {
@@ -657,6 +658,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   }, [cacheUser]);
 
   /**
+   * Fetch the file-origin token up front, and keep it fresh.
+   *
+   * Only does anything when NEXT_PUBLIC_FILE_ORIGIN is set — the split where
+   * file bytes are served from a second deployment (see lib/file-origin.ts).
+   * Primed here rather than on first use so the grid's thumbnails have a token
+   * on their very first render instead of loading unauthenticated and retrying,
+   * and renewed on a timer because the token is good for an hour and a tab is
+   * routinely left open for longer.
+   */
+  useEffect(() => {
+    if (!FILE_ORIGIN) return;
+    void primeFileToken();
+    const timer = window.setInterval(() => void primeFileToken(), 45 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  /**
    * Turn a pick or a drop into queued uploads.
    *
    * Everything that has to be decided *before* the first byte moves happens here,
@@ -719,29 +737,52 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       }
 
       try {
-        const { duplicates } = await apiFetch<{ duplicates: Array<{ index: number; id: string; name: string }> }>(
-          "/api/upload/check",
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              entries: batch.map(entry => ({
-                folderId: entry.destination,
-                name: entry.file.name,
-                size: entry.file.size,
-                hash: entry.contentHash
-              }))
-            })
-          }
-        );
+        const answer = await apiFetch<{
+          duplicates?: Array<{ index: number; id: string; name: string }>;
+          degraded?: string;
+        }>("/api/upload/check", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            entries: batch.map(entry => ({
+              folderId: entry.destination,
+              name: entry.file.name,
+              size: entry.file.size,
+              hash: entry.contentHash
+            }))
+          })
+        });
         done();
-        if (duplicates.length) setDuplicateModal({ batch, duplicates });
+
+        // A deployment that predates /api/upload/check answers 404 with HTML,
+        // which throws below. One that has the route but an older shape answers
+        // 200 without `duplicates` — which used to become `undefined.length` and
+        // land in the same silent catch. Neither may look like "nothing to ask".
+        if (!Array.isArray(answer.duplicates)) {
+          throw new Error("the server did not return a duplicate list");
+        }
+        if (answer.degraded === "contentHash") {
+          // Matching still works, on name and size. Worth saying once, because
+          // the user will otherwise wonder why a renamed re-upload slipped past.
+          console.warn(
+            "[upload] duplicate check is running without fingerprints — File.contentHash is missing from the database. Run `pnpm db:sync`."
+          );
+        }
+        if (answer.duplicates.length) setDuplicateModal({ batch, duplicates: answer.duplicates });
         else uploads.add(batch);
-      } catch {
-        // The check is a courtesy, not a gate. If it cannot be made the upload
-        // still goes ahead — /api/upload and /api/upload/init check again before
-        // they write, and anything already stored comes back as skipped there.
+      } catch (error) {
+        // The check is a courtesy, not a gate: the upload still goes ahead, and
+        // /api/upload and /api/upload/init check again before they write.
+        //
+        // But it is not a *silent* courtesy any more. Swallowing this error is
+        // what made a broken check indistinguishable from a clean folder — the
+        // prompt simply never appeared and nothing anywhere said why. The upload
+        // proceeds exactly as before; the difference is that the reason is now
+        // on screen and in the console.
         done();
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn("[upload] duplicate check failed:", error);
+        toast.warning(`Could not check for duplicates — ${reason}. Uploading anyway.`);
         uploads.add(batch);
       }
     },

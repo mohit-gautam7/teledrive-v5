@@ -15,6 +15,8 @@
  *    perfectly well; the panel then says so rather than inventing a percentage.
  */
 
+import { apiUrl, assetUrl, fileAuthHeaders } from "@/lib/file-origin";
+
 /** Above this, an in-memory download is a tab crash waiting to happen. */
 export const MEMORY_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
 
@@ -39,10 +41,16 @@ export function canStreamToDisk() {
   return typeof window !== "undefined" && typeof (window as PickerWindow).showSaveFilePicker === "function";
 }
 
-/** Hand the transfer back to the browser — always works, just unobservable. */
+/**
+ * Hand the transfer back to the browser — always works, just unobservable.
+ *
+ * `assetUrl` rather than `apiUrl`: the browser makes this request itself, so
+ * there is no header to put a token in and it has to travel in the query string.
+ * Same-origin, both return the path untouched.
+ */
 export function browserDownload(url: string) {
   const anchor = document.createElement("a");
-  anchor.href = url;
+  anchor.href = assetUrl(url);
   anchor.download = "";
   document.body.appendChild(anchor);
   anchor.click();
@@ -88,7 +96,13 @@ export async function downloadWithProgress({
   }
 
   try {
-    const response = await fetch(url, { ...init, signal });
+    const target = apiUrl(url);
+    const auth = target === url ? {} : await fileAuthHeaders();
+    const response = await fetch(target, {
+      ...init,
+      signal,
+      headers: { ...((init?.headers as Record<string, string>) ?? {}), ...auth }
+    });
     if (!response.ok || !response.body) {
       const body = (await response.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error || `Download failed (HTTP ${response.status}).`);

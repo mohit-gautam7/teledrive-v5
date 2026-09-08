@@ -19,6 +19,17 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
 const builtAt = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
 
 /**
+ * The second origin that serves file bytes, when the app is split across two.
+ *
+ * Normalised once, here, because it has to agree in three places that are easy
+ * to let drift: the CSP below, the value inlined into the browser bundle, and
+ * lib/file-origin. A trailing slash in the dashboard would otherwise produce a
+ * CSP entry that matches nothing and a URL with a double slash.
+ */
+const fileOrigin = (process.env.NEXT_PUBLIC_FILE_ORIGIN || "").trim().replace(/\/+$/, "");
+const withFileOrigin = value => (fileOrigin ? `${value} ${fileOrigin}` : value);
+
+/**
  * Content Security Policy.
  *
  * Honest about what it can and cannot do here:
@@ -48,9 +59,12 @@ const csp = [
   `script-src 'self' 'unsafe-inline'${dev ? " 'unsafe-eval'" : ""} https://telegram.org`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
-  "media-src 'self' blob:",
+  withFileOrigin("media-src 'self' blob:"),
   "font-src 'self' data:",
-  "connect-src 'self'",
+  // The file origin is added only when there is one. Without it, every upload
+  // chunk and every streamed download to that host is blocked by the CSP — and
+  // blocked silently, which is the worst way to discover a misconfigured split.
+  withFileOrigin("connect-src 'self'"),
   "frame-src https://oauth.telegram.org https://telegram.org",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
@@ -79,7 +93,9 @@ const nextConfig = {
   poweredByHeader: false,
   env: {
     NEXT_PUBLIC_APP_VERSION: pkg.version,
-    NEXT_PUBLIC_BUILD_TIME: builtAt
+    NEXT_PUBLIC_BUILD_TIME: builtAt,
+    // Inlined normalised, so the bundle and the CSP cannot disagree about it.
+    NEXT_PUBLIC_FILE_ORIGIN: fileOrigin
   },
   experimental: {
     serverComponentsExternalPackages: ["telegram", "sharp"],

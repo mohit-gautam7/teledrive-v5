@@ -2,15 +2,90 @@
 
 ## The short version
 
-**Vercel's free tier cannot carry this workload. Move the app to an always-on VM
-— Oracle Cloud Always Free is the best free option.**
+**Neither free tier can carry this workload alone. Split it: the app on Vercel,
+the file bytes on Render.** If you would rather run one box, Oracle Cloud Always
+Free is still the best single-host option — that walkthrough is further down and
+unchanged.
 
 The blocker is not CPU or cleverness, it is *bandwidth*. TeleDrive never hands a
 Telegram URL to the browser (it embeds the bot token), so every downloaded byte
 is proxied through the server. On Vercel Hobby that meters against a 100 GB /
 month allowance. One user downloading a 2 GB file fifty times ends the month.
 
+## The split: Vercel for the app, Render for the bytes
+
+Two deployments of the *same repository*, sharing one `DATABASE_URL` and one
+`JWT_SECRET`. They are the same drive; only the traffic is divided.
+
+| | Vercel | Render |
+| --- | --- | --- |
+| Serves | the app, auth, listings, folders, shares, settings, `/api/upload/check` | `/api/upload/*`, `/api/download/*`, `/api/stream/*`, `/api/preview/*`, `/api/public/*` |
+| Traffic | small JSON, cached static assets | every byte of every file |
+| Why there | fast global edge, instant cold start, free CDN | no 4.5 MB body cap, no 60 s ceiling, no per-invocation billing |
+
+The browser calls Render **directly**. Nothing is proxied, and that is the whole
+point: a proxied byte still crosses Vercel and still counts against its 100 GB.
+
+### The two settings
+
+Set both, or neither. Neither means one origin, exactly as before — which is
+what you want for `pnpm dev`.
+
+| Where | Variable | Value |
+| --- | --- | --- |
+| Vercel | `NEXT_PUBLIC_FILE_ORIGIN` | the Render URL, e.g. `https://teledrive.onrender.com` |
+| Render | `CORS_ALLOWED_ORIGINS` | the Vercel URL(s), comma-separated, e.g. `https://teledrive-codex1.vercel.app` |
+
+No trailing slashes. Each variable goes on **one** side only: setting
+`NEXT_PUBLIC_FILE_ORIGIN` on Render would make that deployment send its own
+users to itself by absolute URL and then fail its own CORS check.
+
+`NEXT_PUBLIC_FILE_ORIGIN` is inlined into the browser bundle at build time, so
+changing it needs a **redeploy**, not a restart; `CORS_ALLOWED_ORIGINS` is read
+at runtime by `middleware.ts`, so a restart is enough.
+
+### How the session crosses
+
+The session is an httpOnly, `SameSite=Lax` cookie. That is correct, and it also
+means the browser will not send it to Render and script cannot read it to
+forward it. So the Vercel side mints a second, narrower credential:
+`POST /api/auth/file-token` returns a JWT signed with the same `JWT_SECRET`,
+scoped to file routes, valid for an hour. `fetch` calls send it as
+`Authorization: Bearer`; `<img>`, `<video>` and download links — which cannot set
+a header — carry it as `?t=`.
+
+`lib/auth.ts` refuses a file-scoped token wherever it would act as a session, and
+refuses a session token presented as a bearer. So the token that ends up in a URL
+buys an hour of access to file bytes, not an account. No cookie ever reaches
+Render, which is also why the CORS setup needs no `Allow-Credentials`.
+
+### What this costs you
+
+- **Render free sleeps after ~15 minutes idle.** The first upload or download
+  after a quiet spell waits ~30–60 s for the container to wake. Uploads resume
+  rather than restart, so a wake mid-flight is survivable, but it is the reason
+  `/api/upload/check` stays on Vercel — the duplicate prompt opens immediately
+  and the wake happens while you are reading it. A 10-minute cron hitting `/`
+  keeps it warm; see `docs/RENDER.md`.
+- **Two things to keep in sync.** Both deployments must be on the same commit,
+  the same `DATABASE_URL` and the same `JWT_SECRET`. A mismatched secret shows
+  up as every file request 401ing while the rest of the app works fine.
+- **Render free is 100 GB egress too.** The split buys you two allowances and
+  puts the heavy traffic on the one with no timeout, not infinite bandwidth.
+
+### Checking it works
+
+1. `https://<vercel>/api/upload/check` (signed in) — reports the running version,
+   the build time and whether the database has the `contentHash` column.
+2. Open the drive with devtools on the Network tab. Thumbnails and downloads
+   should show the Render host; everything else, the Vercel one.
+3. A blocked request with no visible error is almost always the CSP: check that
+   `NEXT_PUBLIC_FILE_ORIGIN` was set **before** the Vercel build ran.
+
 ## Vercel Hobby, measured against what this app does
+
+(Why the file routes have to leave. This is the case for the split above, and for
+Oracle if you would rather run one box.)
 
 | Limit | Hobby | What TeleDrive does |
 | --- | --- | --- |

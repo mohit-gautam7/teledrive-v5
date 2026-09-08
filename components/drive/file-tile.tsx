@@ -24,6 +24,7 @@ import {
 import { cn, formatBytes } from "@/lib/utils";
 import { popIn, stagger, useReducedMotion } from "@/lib/motion";
 import { aiActionsFor, type AiAction } from "./ai";
+import { useAssetUrl } from "@/lib/use-file-auth";
 import { type DriveFile, telegramDeepLink } from "./types";
 
 export type TileActions = {
@@ -68,6 +69,9 @@ function FileTileBase({
   // price for not shipping a second menu implementation that would drift.
   const [menuOpen, setMenuOpen] = useState(false);
   const image = file.mimeType.startsWith("image/");
+  // Hoisted out of the JSX because it is a hook: the thumbnail source has to be
+  // resolved unconditionally, whether or not this tile happens to be an image.
+  const thumbSrc = useAssetUrl(`/api/preview/${file.id}?thumb=1`);
   const video = file.mimeType.startsWith("video/");
   const Icon = image ? ImageIcon : video ? VideoIcon : FileIcon;
   const deepLink = telegramDeepLink(file, mtprotoUserId);
@@ -176,7 +180,7 @@ function FileTileBase({
           <>
             {!loaded ? <span className="skeleton absolute inset-0" /> : null}
             <img
-              src={`/api/preview/${file.id}?thumb=1`}
+              src={thumbSrc}
               alt=""
               loading="lazy"
               decoding="async"

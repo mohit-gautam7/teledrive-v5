@@ -1,4 +1,4 @@
-import { UploadAbortedError } from "@/lib/api-client";
+import { UploadAbortedError, fileFetch } from "@/lib/api-client";
 import { resumeKeyFor } from "@/lib/file-identity";
 import { CHUNK_SIZE, CHUNK_CONCURRENCY, type UploadBackend } from "@/lib/upload-config";
 
@@ -33,7 +33,7 @@ function isAbort(err: unknown) {
  *  replace the real error the caller is about to see. */
 async function discardSession(fileId: string) {
   try {
-    await fetch(`/api/upload/abort/${fileId}`, { method: "DELETE" });
+    await fileFetch(`/api/upload/abort/${fileId}`, { method: "DELETE" });
   } catch {
     /* the stale session is garbage-collected server-side instead */
   }
@@ -46,7 +46,7 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
     try {
       const form = new FormData();
       form.append("chunk", blob);
-      const res = await fetch(`/api/upload/chunk/${fileId}/${index}`, { method: "POST", body: form, signal });
+      const res = await fileFetch(`/api/upload/chunk/${fileId}/${index}`, { method: "POST", body: form, signal });
       if (res.ok) return;
 
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -95,7 +95,7 @@ export async function uploadFileInChunks({
   if (signal?.aborted) throw new UploadAbortedError();
 
   // 1. Init — creates a session, or hands back the one we left half-finished.
-  const initRes = await fetch("/api/upload/init", {
+  const initRes = await fileFetch("/api/upload/init", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -181,7 +181,7 @@ export async function uploadFileInChunks({
 
   // 3. Complete
   if (signal?.aborted) throw new UploadAbortedError();
-  const completeRes = await fetch(`/api/upload/complete/${fileId}`, { method: "POST", signal });
+  const completeRes = await fileFetch(`/api/upload/complete/${fileId}`, { method: "POST", signal });
   if (!completeRes.ok) {
     const body = (await completeRes.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error || "Failed to complete chunked upload.");

@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireEnv } from "@/lib/env";
@@ -79,6 +79,40 @@ export function signSession(user: SessionUser) {
   return jwt.sign(user, String(requireEnv("JWT_SECRET")), { expiresIn: "30d" });
 }
 
+/**
+ * The credential the file origin accepts.
+ *
+ * When the app is split across two origins (see lib/file-origin.ts), the session
+ * cookie cannot reach the second one: it is httpOnly and SameSite=Lax, which is
+ * correct and which also means the browser will not send it there and script
+ * cannot read it to forward it. This is the narrower thing that goes instead —
+ * signed with the same JWT_SECRET, so the file origin needs no shared state
+ * beyond the secret it already has, and marked with a scope so it can never be
+ * used as a session.
+ *
+ * One hour, and only the user id: it travels in an Authorization header for
+ * fetches and in a query string for `<img>`/`<video>`, and a query string is the
+ * kind of place a credential ends up in a log.
+ */
+const FILE_SCOPE = "files";
+
+export function signFileToken(userId: string) {
+  return jwt.sign({ id: userId, scope: FILE_SCOPE }, String(requireEnv("JWT_SECRET")), { expiresIn: "1h" });
+}
+
+/** A bearer token from the Authorization header, if there is one. */
+function bearerToken() {
+  try {
+    const value = headers().get("authorization");
+    if (!value) return null;
+    const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+    return match ? match[1].trim() || null : null;
+  } catch {
+    // headers() throws outside a request scope; there is simply no bearer then.
+    return null;
+  }
+}
+
 export function setSessionCookie(response: NextResponse, token: string) {
   response.cookies.set(AUTH_COOKIE, token, {
     httpOnly: true,
@@ -99,19 +133,46 @@ export function clearSessionCookie(response: NextResponse) {
   });
 }
 
-export async function getCurrentUser() {
-  const token = cookies().get(AUTH_COOKIE)?.value;
-  if (!token) return null;
+/**
+ * Who is making this request.
+ *
+ * Three places a credential can arrive, in order of preference:
+ *
+ *  1. the session cookie — the normal case, and the only one on a single-origin
+ *     deployment;
+ *  2. `Authorization: Bearer` — a fetch to the file origin, which the cookie
+ *     cannot reach;
+ *  3. `?t=` — an `<img>`, `<video>` or browser download against the file origin,
+ *     where there is no way to set a header at all.
+ *
+ * `request` is only needed for the third; every route that is not loaded
+ * directly by the browser can keep calling `requireUser()` with no argument.
+ *
+ * The scope check in the middle is the point of the whole arrangement. A
+ * file-scoped token presented as a session cookie is rejected, and a full
+ * session token presented as a bearer is rejected too. Each credential works
+ * only on the path it was minted for, so the short-lived token that ends up in a
+ * URL cannot be replayed as a login.
+ */
+export async function getCurrentUser(request?: NextRequest) {
+  const cookieToken = cookies().get(AUTH_COOKIE)?.value ?? null;
+  const presented = cookieToken ?? bearerToken() ?? request?.nextUrl.searchParams.get("t") ?? null;
+  if (!presented) return null;
   try {
-    const decoded = jwt.verify(token, String(requireEnv("JWT_SECRET"))) as unknown as SessionUser;
+    const decoded = jwt.verify(presented, String(requireEnv("JWT_SECRET"))) as unknown as SessionUser & {
+      scope?: string;
+    };
+    const isFileToken = decoded.scope === FILE_SCOPE;
+    if (isFileToken === Boolean(cookieToken)) return null;
+    if (!decoded.id) return null;
     return prisma.user.findUnique({ where: { id: decoded.id } });
   } catch {
     return null;
   }
 }
 
-export async function requireUser() {
-  const user = await getCurrentUser();
+export async function requireUser(request?: NextRequest) {
+  const user = await getCurrentUser(request);
   if (!user) {
     throw new Response("Unauthorized", { status: 401 });
   }

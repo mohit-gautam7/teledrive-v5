@@ -22,7 +22,42 @@ export type DuplicateCandidate = {
 
 export type DuplicateMatch = { id: string; name: string; createdAt: string };
 
-type Row = { id: string; originalName: string; size: bigint; contentHash: string | null; createdAt: Date };
+type Row = { id: string; originalName: string; size: bigint; contentHash?: string | null; createdAt: Date };
+
+/**
+ * Whether this database actually has `File.contentHash`.
+ *
+ * `null` until the first query has told us. A module-level cache rather than a
+ * per-call probe because the answer cannot change while the process is running,
+ * and asking Postgres on every upload would be a round-trip spent confirming
+ * something already known.
+ */
+let hashColumn: boolean | null = null;
+
+/** True once a query has proved the column is missing from this database. */
+export function hashColumnMissing() {
+  return hashColumn === false;
+}
+
+/**
+ * Does this error mean `File.contentHash` is not in the database?
+ *
+ * This is the failure that took the whole feature down without a trace. The
+ * column ships in prisma/schema.prisma and scripts/schema.sql, but a deployment
+ * where `pnpm db:sync` was never run against the live database has the code and
+ * not the column. Prisma then throws P2022 on every duplicate query,
+ * /api/upload/check answers 500, and the client — which treated the check as a
+ * courtesy and swallowed every error — simply never opened the prompt. Uploads
+ * kept working, so nothing looked broken; the dialog just never appeared.
+ */
+function isMissingHashColumn(error: unknown) {
+  if ((error as { code?: string })?.code === "P2022") return true;
+  // The raw Postgres code for "undefined column", in case it surfaces
+  // unwrapped. Paired with the column name so an unrelated 42703 is not
+  // quietly downgraded into a working-but-weaker check.
+  const message = String((error as Error)?.message ?? "");
+  return /42703/.test(message) && /contentHash/i.test(message);
+}
 
 function matches(row: Row, candidate: DuplicateCandidate) {
   if (candidate.hash && row.contentHash) return row.contentHash === candidate.hash;
@@ -39,16 +74,46 @@ async function candidateRows(userId: string, folderId: string | null, candidates
   const names = candidates.map(c => c.name);
   const sizes = candidates.map(c => BigInt(c.size));
 
-  const arms: object[] = [{ originalName: { in: names }, size: { in: sizes } }];
-  if (hashes.length) arms.push({ contentHash: { in: hashes } });
+  /**
+   * The same query with and without the fingerprint column, so a database that
+   * has not had the schema applied still answers on name and size instead of
+   * throwing. Degrading is the right call: name-and-size is what every
+   * pre-fingerprint file matches on anyway, so the prompt keeps working — it
+   * just stops catching a duplicate that was renamed before being re-uploaded.
+   */
+  const run = (withHash: boolean) => {
+    const arms: object[] = [{ originalName: { in: names }, size: { in: sizes } }];
+    if (withHash && hashes.length) arms.push({ contentHash: { in: hashes } });
+    return prisma.file.findMany({
+      where: { userId, folderId, isDeleted: false, ...STORED_ONLY, OR: arms },
+      select: {
+        id: true,
+        originalName: true,
+        size: true,
+        createdAt: true,
+        ...(withHash ? { contentHash: true } : {})
+      },
+      // Oldest first, so the file named as "already there" is the original rather
+      // than whichever copy the database happened to return first.
+      orderBy: { createdAt: "asc" }
+    }) as unknown as Promise<Row[]>;
+  };
 
-  return await prisma.file.findMany({
-    where: { userId, folderId, isDeleted: false, ...STORED_ONLY, OR: arms },
-    select: { id: true, originalName: true, size: true, contentHash: true, createdAt: true },
-    // Oldest first, so the file named as "already there" is the original rather
-    // than whichever copy the database happened to return first.
-    orderBy: { createdAt: "asc" }
-  });
+  if (hashColumn === false) return await run(false);
+
+  try {
+    const rows = await run(true);
+    hashColumn = true;
+    return rows;
+  } catch (error) {
+    if (!isMissingHashColumn(error)) throw error;
+    hashColumn = false;
+    console.warn(
+      "[duplicates] File.contentHash is missing from this database — falling back to name and size. " +
+        "Run `pnpm db:sync` (or apply scripts/schema.sql) to restore fingerprint matching."
+    );
+    return await run(false);
+  }
 }
 
 /** The stored file this one duplicates, if any. */

@@ -1,7 +1,7 @@
 "use client";
 
 import { toast } from "sonner";
-import { ApiError, UploadAbortedError, uploadFile } from "@/lib/api-client";
+import { ApiError, UploadAbortedError, fileFetch, uploadFile } from "@/lib/api-client";
 import { DuplicateFileError, uploadFileInChunks } from "@/lib/chunked-upload";
 import { resumeKeyFor } from "@/lib/file-identity";
 import type { QueuedUpload, SkippedUpload } from "@/lib/duplicate-plan";
@@ -630,7 +630,7 @@ async function uploadThumbnail(fileId: string, source: File) {
     const abort = new AbortController();
     const timer = window.setTimeout(() => abort.abort(), 15_000);
     try {
-      await fetch(`/api/upload/thumb/${fileId}`, { method: "POST", body: form, signal: abort.signal });
+      await fileFetch(`/api/upload/thumb/${fileId}`, { method: "POST", body: form, signal: abort.signal });
     } finally {
       window.clearTimeout(timer);
     }

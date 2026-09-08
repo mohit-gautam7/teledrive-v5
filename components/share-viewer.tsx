@@ -5,6 +5,7 @@ import { Download, File as FileIcon, Folder, Lock, Share2 } from "lucide-react";
 import { Button } from "@/components/button";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
+import { apiUrl } from "@/lib/file-origin";
 
 type SharedFile = {
   id: string;
@@ -96,9 +97,9 @@ export default function ShareViewer({ token }: { token: string }) {
             <h1 className="truncate text-xl font-semibold">{file.originalName}</h1>
             <p className="mt-2 text-sm text-slate-500">{file.mimeType} · {formatBytes(file.size)}</p>
             {file.mimeType.startsWith("video/") ? (
-              <video className="mt-5 w-full rounded-md" controls src={`/api/public/stream/${token}`} />
+              <video className="mt-5 w-full rounded-md" controls src={apiUrl(`/api/public/stream/${token}`)} />
             ) : null}
-            <a href={`/api/public/download/${token}`} className="mt-6 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-sky-600 text-sm font-medium text-white hover:bg-sky-700">
+            <a href={apiUrl(`/api/public/download/${token}`)} className="mt-6 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-sky-600 text-sm font-medium text-white hover:bg-sky-700">
               <Download className="h-4 w-4" />
               Download
             </a>

@@ -9,7 +9,11 @@ export const maxDuration = 300;
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const user = await requireUser();
+    // `request` is passed so requireUser can also accept the short-lived file
+    // token from `?t=`. This route is loaded directly by an <img>, a <video> or
+    // a download link, which cannot set an Authorization header — and on a split
+    // deployment the session cookie does not reach this origin at all.
+    const user = await requireUser(request);
     const file = await prisma.file.findFirst({
       where: { id: params.id, userId: user.id, isDeleted: false },
       include: streamInclude

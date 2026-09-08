@@ -8,6 +8,13 @@ const envSchema = z.object({
   WEBHOOK_SECRET: z.string().optional(),
   NEXT_PUBLIC_APP_URL: z.string().optional(),
 
+  // Split hosting (see lib/file-origin.ts and docs/DEPLOY.md).
+  // NEXT_PUBLIC_FILE_ORIGIN is set on the *app* deployment and names the origin
+  // that serves file bytes; CORS_ALLOWED_ORIGINS is set on the *file* deployment
+  // and lists the origins allowed to call it. Both unset = one origin, as before.
+  NEXT_PUBLIC_FILE_ORIGIN: z.string().optional(),
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
+
   // Legacy only — recovering files stored by older TeleDrive versions
   BOT_CHANNEL_ID: z.string().optional(),
   API_ID: z.coerce.number().optional(),

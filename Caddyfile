@@ -7,11 +7,18 @@
 		flush_interval -1
 	}
 
-	# Uploads arrive as 4 MB chunks; the ceiling is generous but bounded so a
-	# malformed request cannot exhaust memory.
+	# Must stay comfortably above UPLOAD_CHUNK_MB, which is 4 only because
+	# Vercel forced it — on this host it should be 16-32. The ceiling is bounded
+	# so a malformed request cannot exhaust memory; raise both together or a
+	# chunk will be rejected here before the app ever sees it.
 	request_body {
-		max_size 32MB
+		max_size 64MB
 	}
+
+	# Cross-origin preflights must reach the app: when this host is the file
+	# origin for a Vercel-served front end, middleware.ts answers OPTIONS and
+	# sets the CORS headers. Caddy passes both through untouched — nothing to
+	# configure here, but do not add a header directive that strips them.
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

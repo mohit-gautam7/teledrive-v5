@@ -1,3 +1,5 @@
+import { apiUrl, fileAuthHeaders } from "@/lib/file-origin";
+
 export class ApiError extends Error {
   status: number;
   /** The parsed error body, for the few callers that need more than its message
@@ -73,9 +75,36 @@ export async function parseResponse<T>(response: Response): Promise<T> {
   }
 }
 
+/**
+ * One call, sent to whichever origin owns it.
+ *
+ * On a single-origin deployment `apiUrl` hands the path back unchanged and
+ * `fileAuthHeaders` is empty, so this is a plain fetch and nothing about the
+ * app's behaviour changes. On a split deployment the heavy paths are rewritten
+ * to the file origin and carry a bearer token, because the session cookie
+ * cannot cross to it. Every caller goes through here, so no call site has to
+ * know which of the two it is.
+ */
 export async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit) {
+  if (typeof input === "string" && input.startsWith("/")) {
+    const url = apiUrl(input);
+    const extra = url === input ? {} : await fileAuthHeaders();
+    const response = await fetch(url, {
+      ...init,
+      headers: { ...((init?.headers as Record<string, string>) ?? {}), ...extra }
+    });
+    return parseResponse<T>(response);
+  }
   const response = await fetch(input, init);
   return parseResponse<T>(response);
+}
+
+/** `fetch`, routed and authenticated the same way, for callers that need the
+ *  raw Response — a streamed download, a chunk PUT that reads its own body. */
+export async function fileFetch(path: string, init?: RequestInit) {
+  const url = apiUrl(path);
+  const extra = url === path ? {} : await fileAuthHeaders();
+  return fetch(url, { ...init, headers: { ...((init?.headers as Record<string, string>) ?? {}), ...extra } });
 }
 
 type UploadResult<T> = {
@@ -89,6 +118,13 @@ export class UploadAbortedError extends Error {
   }
 }
 
+/**
+ * XHR rather than fetch, because only XHR reports upload progress.
+ *
+ * The token has to be resolved before `open`, so this is async up front and the
+ * promise the caller sees still resolves with the response — the shape has not
+ * changed. On a single origin `fileAuthHeaders` is empty and no header is set.
+ */
 export function uploadFile<T>(
   url: string,
   form: FormData,
@@ -96,8 +132,19 @@ export function uploadFile<T>(
   signal?: AbortSignal
 ): Promise<UploadResult<T>> {
   return new Promise((resolve, reject) => {
+    const target = apiUrl(url);
+
+    const start = (auth: Record<string, string>) => {
+    // Abort can land while the token is being minted; the request must not then
+    // be sent at all.
+    if (signal?.aborted) {
+      reject(new UploadAbortedError());
+      return;
+    }
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
+    xhr.open("POST", target);
+    // After open(), which is the only place setRequestHeader is legal.
+    for (const [key, value] of Object.entries(auth)) xhr.setRequestHeader(key, value);
     xhr.responseType = "text";
     xhr.upload.onprogress = event => {
       if (event.lengthComputable) {
@@ -141,5 +188,12 @@ export function uploadFile<T>(
       signal.addEventListener("abort", () => xhr.abort(), { once: true });
     }
     xhr.send(form);
+    };
+
+    // Same origin: no token to wait for, so the request starts in this tick
+    // exactly as it always did. Cross-origin: one await for a token that is
+    // cached after the first upload of the session.
+    if (target === url) start({});
+    else fileAuthHeaders().then(start, () => start({}));
   });
 }

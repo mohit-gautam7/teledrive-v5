@@ -3,6 +3,19 @@
 # request cap and no 60 s function timeout, so large uploads and streamed
 # downloads work (the two things Vercel's free tier can't do).
 #
+# In the split deployment (docs/DEPLOY.md), this service is the FILE ORIGIN: the
+# Vercel deployment serves the app and its light JSON routes, and calls this one
+# directly for uploads, downloads, previews and video streams. Both are the same
+# code and the same database; only the traffic is divided, which is what keeps
+# each side inside its own free tier. Two settings make that work, and they must
+# agree with the Vercel side:
+#
+#   CORS_ALLOWED_ORIGINS  here      = the Vercel URL(s) allowed to call this
+#   NEXT_PUBLIC_FILE_ORIGIN on Vercel = this service's URL
+#
+# Leave CORS_ALLOWED_ORIGINS unset to run this as a standalone single-origin
+# deployment instead; nothing else changes.
+#
 # How to use: push this file, then in the Render dashboard choose
 # "New +" -> "Blueprint" and point it at this repo. Render reads this file,
 # creates the service, and asks you to fill the secret env vars marked
@@ -60,6 +73,16 @@ services:
       - key: NEXT_PUBLIC_APP_URL   # set to your Render URL, e.g. https://teledrive.onrender.com
         sync: false
       - key: NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
+        sync: false
+
+      # ── Split hosting: who may call this origin ──
+      # Comma-separated exact origins, no trailing slash — the Vercel production
+      # URL, plus any preview or custom domain that should reach the file routes.
+      # Cross-origin callers present a short-lived, file-scoped bearer token
+      # (lib/auth.signFileToken), never the session cookie, so no credentialed
+      # CORS is involved and there is no cookie here to steal.
+      # e.g. https://teledrive-codex1.vercel.app
+      - key: CORS_ALLOWED_ORIGINS
         sync: false
 
       # ── Optional: large files via the user's own Telegram account ──

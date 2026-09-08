@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
 import { fadeIn, useReducedMotion } from "@/lib/motion";
+import { useAssetUrl } from "@/lib/use-file-auth";
 import type { DriveFile } from "./types";
 
 const isImage = (f: DriveFile) =>
@@ -391,7 +392,10 @@ export function Lightbox({
   const audio = isAudio(file);
   // Images come from /api/preview (cacheable); anything time-based streams from
   // /api/stream, which serves HTTP ranges so the player can seek.
-  const src = image ? `/api/preview/${file.id}` : video || audio ? `/api/stream/${file.id}` : "";
+  const src = useAssetUrl(image ? `/api/preview/${file.id}` : video || audio ? `/api/stream/${file.id}` : "");
+  // An <a download> is fetched by the browser, not by the app, so the token has
+  // to be in the URL rather than a header. Same-origin this is the bare path.
+  const downloadHref = useAssetUrl(`/api/download/${file.id}`);
   const Icon = image ? ImageIcon : video ? VideoIcon : audio ? Music : FileIcon;
 
   return (
@@ -418,7 +422,7 @@ export function Lightbox({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <a href={`/api/download/${file.id}`} className="btn btn-accent" aria-label="Download">
+          <a href={downloadHref} className="btn btn-accent" aria-label="Download">
             <Download className="h-4 w-4" />
             <span className="hidden sm:inline">Download</span>
           </a>

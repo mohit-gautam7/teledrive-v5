@@ -6,6 +6,49 @@ deploy, that is where you check whether what you pushed is what is live.
 
 Bump it in the same commit as the change: patch for a fix, minor for a feature.
 
+## 1.2.0
+
+**The duplicate prompt actually appears.** It was built in 1.1.0 and then hidden
+by its own error handling. The client treated `/api/upload/check` as advisory and
+swallowed *every* failure, so a check that could not run at all looked exactly
+like a check that found nothing: no dialog, no message, no console line — and
+uploads kept working, so nothing looked broken. Three changes, together:
+
+- The client no longer swallows it. A failed check still lets the upload through
+  (the server checks again before it writes), but now says why, on screen and in
+  the console. A 200 that is missing `duplicates` — an older deployment — is
+  treated as a failure rather than as "nothing to ask about".
+- A database without the `File.contentHash` column no longer takes the whole
+  check down with a 500. It degrades to name-and-size matching, which is what
+  every pre-fingerprint file matched on anyway, and says so once. That column
+  ships in `scripts/schema.sql`; a deployment where `pnpm db:sync` was never run
+  had the code and not the column.
+- `GET /api/upload/check` reports the running version, the build time and
+  whether that column exists. Open it signed in — it distinguishes "not
+  deployed" from "no column" from "working" in one request.
+
+**Hosting split across two free tiers.** The app on Vercel, every byte of every
+file on Render, calling Render directly rather than proxying — a proxied byte
+still crosses Vercel and still counts against its 100 GB.
+
+- `NEXT_PUBLIC_FILE_ORIGIN` (Vercel) and `CORS_ALLOWED_ORIGINS` (Render) turn it
+  on. Set neither and the app is single-origin exactly as before, which is what
+  `pnpm dev` wants.
+- `/api/auth/file-token` mints an hour-long, file-scoped JWT, because the
+  `SameSite=Lax` session cookie cannot reach the second origin and script cannot
+  read it to forward it. Sent as a bearer by `fetch`, and as `?t=` by `<img>`,
+  `<video>` and download links, which cannot set a header.
+- `lib/auth` refuses a file token used as a session and a session token used as
+  a bearer, so the credential that ends up in a URL is not a login.
+- `middleware.ts` answers preflights and sets CORS on the file origin. No
+  `Allow-Credentials`, because no cookie ever goes there.
+- The CSP grows `connect-src` and `media-src` entries for the file origin —
+  without them every chunk and every stream is blocked, and blocked silently.
+- `/api/upload/check` deliberately stays on the primary origin, so the duplicate
+  prompt is not held behind a Render cold start.
+
+Checks: `node scripts/check-dedupe.mjs` (pure), `GET /api/upload/check` (live).
+
 ## 1.1.0
 
 **Resume actually resumes.** The destination folder was being resolved inside the
