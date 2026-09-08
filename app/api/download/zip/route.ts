@@ -9,7 +9,26 @@ import { zipSize, zipStream, type ZipEntry } from "@/lib/zip-stream";
 import { STORED_ONLY } from "@/lib/upload-config";
 
 export const runtime = "nodejs";
-export const maxDuration = 3600;
+
+/**
+ * 300, not 3600 — and this is not a preference, it is the ceiling.
+ *
+ * Vercel validates `maxDuration` *after* the build, at "Deploying outputs", and
+ * rejects the whole deployment when a route asks for more than the plan allows:
+ * 300 s on Hobby, 800 s on Pro. The 3600 that used to be here was above every
+ * plan's limit, so the build compiled cleanly and the deploy failed with a
+ * generic "project or build error" and no log line naming the cause. It went in
+ * with the zip feature itself and quietly broke every production deploy from
+ * that commit onward — twenty-one of them — which is why features merged weeks
+ * ago were never actually live.
+ *
+ * The archive streams, so this is a wall-clock ceiling on one response, not a
+ * memory or size limit: a zip still building at five minutes is cut off. That is
+ * a real limitation of serving files from a serverless function, and the reason
+ * docs/DEPLOY.md moves this route to an always-on host. Raise it there, where
+ * there is no cap — never above the plan's maximum here.
+ */
+export const maxDuration = 300;
 
 /** Enough for a large personal folder; past this the archive is unwieldy anyway. */
 const MAX_ENTRIES = 5000;

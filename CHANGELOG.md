@@ -46,6 +46,10 @@ still crosses Vercel and still counts against its 100 GB.
   without them every chunk and every stream is blocked, and blocked silently.
 - `/api/upload/check` deliberately stays on the primary origin, so the duplicate
   prompt is not held behind a Render cold start.
+- Public share links (`/api/public/stream`, `/api/public/download`) go to the
+  file origin too. They authenticate by the token in the path, so they need no
+  credential of their own — and a shared video is the single largest thing a
+  stranger can pull through the app.
 
 Checks: `node scripts/check-dedupe.mjs` (pure), `GET /api/upload/check` (live).
 
