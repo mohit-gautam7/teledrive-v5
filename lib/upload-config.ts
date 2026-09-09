@@ -12,10 +12,25 @@ const DEFAULT_CHUNK_MB = 4;
  *  leaves room for multipart overhead and keeps a failed chunk cheap to retry. */
 const MAX_CHUNK_MB = 50;
 
+/**
+ * Vercel refuses a request body over 4.5 MB, and it does not refuse it cleanly:
+ * the route still runs and `request.formData()` throws on a body that was never
+ * delivered whole, which surfaced as a bare "Chunk upload failed" — five slow
+ * retries per chunk, no mention of size anywhere.
+ *
+ * So the cap is enforced here rather than left to a dashboard field someone has
+ * to remember. `VERCEL` is set by the platform itself, so an UPLOAD_CHUNK_MB of
+ * 16 copied from the always-on host's config is clamped instead of quietly
+ * breaking every upload above one chunk. Raise it by moving the file routes to a
+ * host without the cap (docs/DEPLOY.md), not by raising this.
+ */
+const VERCEL_MAX_CHUNK_MB = 4;
+
 function resolveChunkSize() {
+  const ceiling = process.env.VERCEL ? Math.min(MAX_CHUNK_MB, VERCEL_MAX_CHUNK_MB) : MAX_CHUNK_MB;
   const raw = Number(process.env.UPLOAD_CHUNK_MB);
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_CHUNK_MB * 1024 * 1024;
-  const mb = Math.min(Math.max(raw, 1), MAX_CHUNK_MB);
+  if (!Number.isFinite(raw) || raw <= 0) return Math.min(DEFAULT_CHUNK_MB, ceiling) * 1024 * 1024;
+  const mb = Math.min(Math.max(raw, 1), ceiling);
   // Round down to a whole number of MTProto parts; a ragged chunk would make
   // PARTS_PER_CHUNK fractional and misalign every big-file upload.
   return Math.max(PART, Math.floor((mb * 1024 * 1024) / PART) * PART);

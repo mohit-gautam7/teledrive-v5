@@ -8,9 +8,18 @@ import { findDuplicates, hashColumnMissing } from "@/lib/duplicates";
 
 export const runtime = "nodejs";
 
-/** A folder drop can be large, but not unboundedly so — this is also the cap on
- *  how much work one request can ask the database to do. */
-const MAX_ENTRIES = 2000;
+/**
+ * A backstop, not the batch size.
+ *
+ * The client slices a drop into requests of 500 (see startUploads), so a folder
+ * of any size is checked without ever approaching this. It stays as a bound on
+ * what a single request can ask the database to do: each entry contributes three
+ * bound parameters to the `IN` lists, and Postgres refuses a statement with more
+ * than 65535 of them — so this must stay well under ~21000 whatever else changes.
+ * It was 2000, which a whole-folder drop hit and which then failed the check
+ * outright rather than checking the folder in pieces.
+ */
+const MAX_ENTRIES = 5000;
 
 type Entry = { folderId?: string | null; name?: unknown; size?: unknown; hash?: unknown };
 

@@ -39,13 +39,34 @@ export async function POST(
       return NextResponse.json({ error: "chunkIndex out of range." }, { status: 400 });
     }
 
-    const form = await request.formData();
+    // Parsed inside its own try: a body the host truncated or refused does not
+    // arrive as a clean 413, it arrives as a form that will not parse. Left to
+    // the outer catch it became "Chunk upload failed" — a 500, which the client
+    // reads as transient and retries five times before giving up, with nothing
+    // anywhere naming the size. 413 is refused fast and says what to change.
+    let form: FormData;
+    try {
+      form = await request.formData();
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            `Chunk ${chunkIndex} did not arrive intact — the host rejected or truncated the request body. ` +
+            `Chunks are ${Math.round(CHUNK_SIZE / (1024 * 1024))} MB here; if this host caps request bodies ` +
+            `(Vercel allows 4.5 MB), UPLOAD_CHUNK_MB must be below that cap.`
+        },
+        { status: 413 }
+      );
+    }
     const blob = form.get("chunk");
     if (!(blob instanceof Blob)) {
       return NextResponse.json({ error: "Missing 'chunk' field in form data." }, { status: 400 });
     }
     if (blob.size > CHUNK_SIZE + 1024) {
-      return NextResponse.json({ error: "Chunk exceeds the 4 MB limit." }, { status: 413 });
+      return NextResponse.json(
+        { error: `Chunk exceeds the ${Math.round(CHUNK_SIZE / (1024 * 1024))} MB limit this server is using.` },
+        { status: 413 }
+      );
     }
 
     // Idempotent: a retried or resumed chunk that already landed is acknowledged
