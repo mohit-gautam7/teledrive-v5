@@ -2,8 +2,13 @@
 # large uploads and streamed downloads actually need. Debian slim rather than
 # Alpine: sharp ships prebuilt binaries for glibc arm64, and Oracle's Always
 # Free tier is ARM (Ampere A1).
+#
+# Node 24 rather than 20: the 20 line left LTS in April 2026 and no longer gets
+# security patches, which is not a base image to put on the public internet.
+# scripts/check-*.mjs also import .ts directly and need the type stripping that
+# arrived after 20.
 
-FROM node:20-slim AS base
+FROM node:24-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
@@ -37,7 +42,7 @@ ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 RUN pnpm run build
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
-FROM node:20-slim AS runner
+FROM node:24-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
