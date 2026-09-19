@@ -61,8 +61,8 @@ export function setPendingLinkCookie(response: NextResponse, link: PendingLink) 
   });
 }
 
-export function readPendingLink(): PendingLink | null {
-  const token = cookies().get(LINK_COOKIE)?.value;
+export async function readPendingLink(): Promise<PendingLink | null> {
+  const token = (await cookies()).get(LINK_COOKIE)?.value;
   if (!token) return null;
   try {
     return jwt.verify(token, String(requireEnv("JWT_SECRET"))) as unknown as PendingLink;
@@ -101,9 +101,9 @@ export function signFileToken(userId: string) {
 }
 
 /** A bearer token from the Authorization header, if there is one. */
-function bearerToken() {
+async function bearerToken() {
   try {
-    const value = headers().get("authorization");
+    const value = (await headers()).get("authorization");
     if (!value) return null;
     const match = /^Bearer\s+(.+)$/i.exec(value.trim());
     return match ? match[1].trim() || null : null;
@@ -155,8 +155,8 @@ export function clearSessionCookie(response: NextResponse) {
  * URL cannot be replayed as a login.
  */
 export async function getCurrentUser(request?: NextRequest) {
-  const cookieToken = cookies().get(AUTH_COOKIE)?.value ?? null;
-  const presented = cookieToken ?? bearerToken() ?? request?.nextUrl.searchParams.get("t") ?? null;
+  const cookieToken = (await cookies()).get(AUTH_COOKIE)?.value ?? null;
+  const presented = cookieToken ?? (await bearerToken()) ?? request?.nextUrl.searchParams.get("t") ?? null;
   if (!presented) return null;
   try {
     const decoded = jwt.verify(presented, String(requireEnv("JWT_SECRET"))) as unknown as SessionUser & {

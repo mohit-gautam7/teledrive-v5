@@ -7,13 +7,13 @@ import {
   readPendingLink,
   clearPendingLinkCookie
 } from "@/lib/auth";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 import { jsonError } from "@/lib/api-response";
 
 export async function POST(request: NextRequest) {
   try {
     assertSameOrigin(request);
-    rateLimit(`bot-login:${request.ip || "local"}`, 10, 60_000);
+    rateLimit(`bot-login:${clientIp(request)}`, 10, 60_000);
 
     const { code } = await request.json();
     if (!code || typeof code !== "string" || !/^\d{6}$/.test(code)) {
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
     // If a third-party sign-in is waiting to be attached, this code proves the
     // Telegram account belongs to the same person — link them permanently so
     // next time that provider signs in on its own.
-    const pending = readPendingLink();
+    const pending = await readPendingLink();
     if (pending) {
       await prisma.oAuthAccount.upsert({
         where: { provider_providerId: { provider: pending.provider, providerId: pending.providerId } },

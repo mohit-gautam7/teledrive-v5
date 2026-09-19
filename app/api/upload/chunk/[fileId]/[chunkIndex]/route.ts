@@ -15,8 +15,9 @@ const PARTS_PER_CHUNK = CHUNK_SIZE / MTPROTO_PART_SIZE;
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { fileId: string; chunkIndex: string } }
+  props: { params: Promise<{ fileId: string; chunkIndex: string }> }
 ) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     // One chunk is one Telegram sendDocument, and the bot's own budget is

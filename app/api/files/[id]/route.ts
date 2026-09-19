@@ -16,7 +16,8 @@ const patchSchema = z.union([
   z.object({ folderId: z.string().nullable() })
 ]);
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     const body = patchSchema.parse(await request.json());
@@ -48,7 +49,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     const file = await prisma.file.findFirst({

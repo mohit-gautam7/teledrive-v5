@@ -2,13 +2,13 @@ import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin, setSessionCookie, signSession } from "@/lib/auth";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 import { jsonError } from "@/lib/api-response";
 
 export async function POST(request: NextRequest) {
   try {
     assertSameOrigin(request);
-    rateLimit(`owner-login:${request.ip || "local"}`, 5, 60_000);
+    rateLimit(`owner-login:${clientIp(request)}`, 5, 60_000);
 
     const ownerKey = process.env.OWNER_LOGIN_KEY;
     if (!ownerKey) {

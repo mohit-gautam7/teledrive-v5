@@ -41,3 +41,24 @@ export function rateLimit(key: string, limit = 60, windowMs = 60_000) {
     });
   }
 }
+
+/**
+ * The caller's address, for keying the buckets above.
+ *
+ * Next 15 removed `NextRequest.ip`, which is what every call site used to read.
+ * Both hosts this runs on put the client address in front of the chain
+ * (`x-real-ip` on Vercel, the leftmost `x-forwarded-for` hop on Render), so the
+ * header is the replacement rather than a workaround.
+ *
+ * ponytail: a client can forge these when nothing trusted sits in front — which
+ * buys an attacker a fresh rate-limit bucket, and nothing else. Every header
+ * here is used for counting only, never for authorisation. If this ever moves
+ * behind an untrusted proxy, pin the hop count instead.
+ */
+export function clientIp(request: { headers: Headers }) {
+  const real = request.headers.get("x-real-ip");
+  if (real) return real.trim();
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0]!.trim() || "local";
+  return "local";
+}

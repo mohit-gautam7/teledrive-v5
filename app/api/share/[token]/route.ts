@@ -2,18 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { toPublicFile } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 import { checkSharePassword, grantShareUnlock } from "@/lib/share-access";
 
 export const runtime = "nodejs";
 
-export async function POST(request: NextRequest, { params }: { params: { token: string } }) {
+export async function POST(request: NextRequest, props: { params: Promise<{ token: string }> }) {
+  const params = await props.params;
   try {
     // A share password is the only credential in this app that an anonymous
     // caller may guess at, so it is the one that needs a ceiling. Keyed by
     // token as well as address: one person hammering one link must not lock
     // everyone else out of every other share.
-    rateLimit(`share-open:${params.token}:${request.ip || "local"}`, 20, 60_000);
+    rateLimit(`share-open:${params.token}:${clientIp(request)}`, 20, 60_000);
 
     const body = await request.json().catch(() => ({}));
     const share = await prisma.share.findUnique({

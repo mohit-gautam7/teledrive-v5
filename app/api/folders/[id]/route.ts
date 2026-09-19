@@ -16,7 +16,8 @@ async function requireOwnFolder(id: string, userId: string) {
   });
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     const body = renameSchema.parse(await request.json());
@@ -35,7 +36,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     await requireOwnFolder(params.id, user.id);

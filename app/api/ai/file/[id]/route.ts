@@ -30,7 +30,8 @@ const body = z.object({
   async: z.boolean().optional()
 });
 
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   if (!aiEnabled()) {
     return NextResponse.json({ error: "The AI features are not enabled on this server." }, { status: 404 });
   }
