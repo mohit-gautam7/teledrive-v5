@@ -12,6 +12,12 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # prisma.config.ts resolves env("DATABASE_URL") when it loads, so every
+    # Prisma command needs one — `generate` included, which never connects. A
+    # placeholder at job level, matching what the Dockerfile does, keeps that in
+    # one place rather than on each step that happens to trip over it.
+    env:
+      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
     steps:
       - uses: actions/checkout@v5
 
@@ -45,10 +51,9 @@ jobs:
 
       # A placeholder URL: the build only parses it, never connects. The real
       # one is injected at runtime.
+      # DATABASE_URL comes from the job env above; the build only parses it.
       - name: Build
         run: pnpm build
-        env:
-          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
 
   docker:
     # The deployment target is a container on ARM, so a green `pnpm build` on
@@ -74,10 +79,11 @@ jobs:
       # No `version:` here on purpose. package.json's `packageManager` field
       # already pins pnpm exactly, and setting both makes the action refuse to
       # run rather than pick one.
+      # No setup-node: the runner already has one, and `pnpm audit` reads the
+      # lockfile rather than node_modules. Adding it made the post-run cache
+      # step look for a pnpm store nothing had created, which failed the job
+      # after the audit itself had already passed.
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 20
       # Advisory: it reports but does not fail the run. Several of the current
       # findings are build-time-only and accepted in SECURITY_AUDIT.md; a red X
       # nobody can act on trains people to ignore the X. Dependabot opens the
