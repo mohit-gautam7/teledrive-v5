@@ -1,0 +1,29 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, because most CodeQL findings arrive as new queries against
+    # unchanged code rather than from a commit.
+    - cron: "17 3 * * 1"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # security-extended adds the query set that finds the classes that
+          # actually appeared in this audit — path traversal, SSRF, unsafe
+          # comparison — rather than only the default high-confidence subset.
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
