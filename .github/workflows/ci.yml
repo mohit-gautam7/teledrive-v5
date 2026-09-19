@@ -15,9 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # No `version:` here on purpose. package.json's `packageManager` field
+      # already pins pnpm exactly, and setting both makes the action refuse to
+      # run rather than pick one.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
 
       - uses: actions/setup-node@v5
         with:
@@ -70,9 +71,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # No `version:` here on purpose. package.json's `packageManager` field
+      # already pins pnpm exactly, and setting both makes the action refuse to
+      # run rather than pick one.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
       - uses: actions/setup-node@v5
         with:
           node-version: 20
