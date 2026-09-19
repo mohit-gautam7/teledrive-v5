@@ -29,7 +29,7 @@ three corrections the codemod cannot make (`NextRequest.ip` is gone; the
 `tsc --noEmit` clean, production build clean, and the runtime tree now reports
 **0 critical and 0 high**.
 
-### C2 — Supabase: every table in `public` readable and writable by anyone — FIX WRITTEN, NOT YET APPLIED
+### C2 — Supabase: every table in `public` readable and writable by anyone — FIXED AND VERIFIED
 
 This is the warning the Supabase advisor raised (`rls_disabled_in_public`), and
 it is worse than the wording suggests. Supabase exposes `public` through
@@ -56,13 +56,40 @@ The fix is `scripts/security-rls.sql`, applied and verified by
 4. The Supabase default privileges revoked, which is the part that makes the fix
    hold instead of needing re-applying after every migration.
 
-**Status: written and syntax-checked, not yet run.** The project was paused for
-the whole audit, so the before/after numbers this script prints do not exist
-yet. It must be run — and Supabase's advisor re-checked — once the project is back.
+**Applied 19 September 2026, after a verified backup.** The exposure was real
+and measured, not inferred: `anon` and `authenticated` held
+`SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER` on all 16 tables,
+and 13 of them had RLS off.
 
-Still to check by hand in the dashboard, because the API was unreachable:
-Storage bucket visibility, and whether any Edge Function or database function
-runs as `security definer`.
+Narrowed from the first draft after looking at what each table is. `profiles`
+and `user_state` belong to a Supabase starter, already carry RLS with per-user
+policies on `auth.uid()`, and were never part of the warning — so they are
+excluded, and `USAGE ON SCHEMA public` stays granted rather than being withdrawn
+over their heads.
+
+Verified from both sides:
+
+- **As an attacker**, with the anon key published in the browser bundle, against
+  the live REST API: `SELECT`, `INSERT` and `DELETE` on `File`, `User`,
+  `StorageConfig`, `Share`, `Chunk` and `Folder` all return **401 permission
+  denied**, and the `SECURITY DEFINER` function is no longer callable.
+- **As the app**, by serving the real drive against the hardened database:
+  listings, the folder tree, thumbnails and file downloads all unchanged. 9,298
+  files, 4,185 chunks and 28 folders still read correctly.
+
+Also checked, now the API was reachable: **no storage buckets exist** and
+`storage.objects` is empty; there are **no views** in `public`; and the one
+`SECURITY DEFINER` function, `handle_new_user`, has `SET search_path = public`
+— so it is not the mutable-search-path escalation the advisor usually flags.
+Its `EXECUTE` grant was revoked from `anon`/`authenticated` anyway; a trigger
+runs as its owner regardless.
+
+One residual: `supabase_admin`'s default privileges in `public` still grant to
+`anon`/`authenticated`, and `postgres` is not a member of that role so it cannot
+be changed from the application connection. It only matters if a table is ever
+created in `public` **by `supabase_admin`**; Prisma migrates as `postgres`,
+whose defaults were successfully revoked. Re-run
+`node scripts/security-rls.mjs --check` after any migration to confirm.
 
 ---
 
@@ -153,6 +180,53 @@ it is new.
 
 ---
 
+### M5 — `profiles` RLS policy recurses infinitely — PRE-EXISTING, NOT FIXED, NOT OURS
+
+Found while verifying the fix. A read of `public.profiles` through the API
+returns `42P17: infinite recursion detected in policy for relation "profiles"`,
+because `profiles_self_read` queries `profiles` to decide whether the caller is
+an admin:
+
+```sql
+USING (auth.uid() = id OR EXISTS (SELECT 1 FROM profiles p WHERE p.id = auth.uid() AND p.is_admin))
+```
+
+`user_state.state_read` has the same shape and the same problem.
+
+Left alone deliberately. It pre-dates this work, it is a Supabase starter's
+table that TeleDrive never touches, and it fails **closed** — so it is a broken
+feature, not an exposure. The standard fix is a `SECURITY DEFINER` helper that
+reads `profiles` outside the policy's own evaluation:
+
+```sql
+CREATE FUNCTION public.is_admin() RETURNS boolean
+  LANGUAGE sql SECURITY DEFINER SET search_path = public AS
+  $$ SELECT coalesce((SELECT is_admin FROM profiles WHERE id = auth.uid()), false) $$;
+```
+
+Worth doing only if something still uses those tables. If nothing does, dropping
+them is the smaller answer.
+
+### M6 — A dead `BOT_TOKEN` in the Windows user environment shadows `.env.local` — NEEDS YOUR ACTION
+
+Not a flaw in the application, but it cost real time twice during this work and
+it will do the same to you.
+
+There is a user-level Windows environment variable `BOT_TOKEN` holding a revoked
+token (bot id `8214694661`; `getMe` returns 401). Both Next.js and `dotenv` give
+a real environment variable precedence over a `.env` file, so **every local run
+silently uses the dead token instead of the one in `.env.local`**, and the only
+symptom is that downloads fail with `BotApiError: Unauthorized` while everything
+else looks fine.
+
+Remove it:
+
+```powershell
+[Environment]::SetEnvironmentVariable('BOT_TOKEN', $null, 'User')
+```
+
+Then open a new terminal — existing ones keep the old value.
+
 ## Audited and found sound
 
 Not everything looked at was broken. Recorded so the next audit need not re-derive it:
@@ -184,7 +258,7 @@ Not everything looked at was broken. Recorded so the next audit need not re-deri
 
 ## Not yet done
 
-- **Apply C2.** Blocked on the Supabase project being restored.
+- ~~**Apply C2.**~~ Done and verified, 19 September 2026.
 - **Rotate credentials.** Nothing leaked, so this is hygiene rather than
   incident response — but `BOT_TOKEN`, `JWT_SECRET`, `WEBHOOK_SECRET` and
   `SESSION_ENCRYPTION_KEY` have all sat in a local `.env.vercel` written for
@@ -192,6 +266,8 @@ Not everything looked at was broken. Recorded so the next audit need not re-deri
   rotating `SESSION_ENCRYPTION_KEY` **invalidates stored MTProto sessions** and
   every linked account must re-authorise. Decide deliberately, not by reflex.
 - **CodeQL and Dependabot.** Both want the GitHub CLI authenticated.
-- **Live verification.** Every fix above is verified by type check, build and
-  the unit checks in `scripts/`. None has been exercised against a running
-  deployment, because there is not one yet.
+- **Live verification.** C2 is verified against the production database and a
+  running app. H1–H4 are verified by type check, build and the unit checks in
+  `scripts/`, but not yet against a public deployment, because there is not one
+  yet — the webhook fail-closed path in particular deserves one request from
+  outside once the app is live.
