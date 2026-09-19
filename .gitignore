@@ -132,3 +132,12 @@ vercel-env.txt
 *.local.txt
 *.local.mjs
 *.local.bin
+
+# Database dumps written by the compose `backup` service. These hold file
+# metadata, share tokens and encrypted MTProto sessions — a map of the drive.
+# Never commit one.
+backups/
+*.dump
+
+# Local stack-test environment (placeholder secrets, still not for git)
+*.local.env

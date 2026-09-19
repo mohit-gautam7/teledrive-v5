@@ -11,7 +11,11 @@ RUN corepack enable
 # ── Dependencies ──────────────────────────────────────────────────────────────
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+# .npmrc comes too: pnpm 10 blocks build scripts by default, and without the
+# allowances it carries, Prisma never fetches its query engine. That failure is
+# silent at install time and surfaces later as `prisma generate` producing a
+# client with no engine to run.
+COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────
@@ -43,7 +47,8 @@ ENV HOSTNAME=0.0.0.0
 # Prisma's query engine dynamically links libssl. node:20-slim omits it, so the
 # engine cannot detect a version, warns on every boot, and falls back to a
 # guessed openssl-1.1.x build. ca-certificates comes along for outbound TLS to
-# Supabase and Telegram.
+# Telegram, and to the database when it is a managed one rather than the
+# container next door.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
