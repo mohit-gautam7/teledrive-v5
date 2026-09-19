@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMe, setWebhook } from "@/lib/telegram-bot";
 import { jsonError } from "@/lib/api-response";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
+import { timingSafeEqualStr } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 
@@ -15,8 +17,18 @@ export async function GET(request: NextRequest) {
     if (!secret) {
       return NextResponse.json({ error: "Set WEBHOOK_SECRET in the environment first." }, { status: 503 });
     }
-    const key = new URL(request.url).searchParams.get("key");
-    if (key !== secret) {
+    // Rate limited because this endpoint is an oracle for WEBHOOK_SECRET, and
+    // that secret is the only thing standing in front of /api/bot/webhook.
+    rateLimit(`bot-setup:${clientIp(request)}`, 5, 60_000);
+    rateLimit("bot-setup:global", 30, 60_000);
+
+    // The header is preferred: a query string lands in access logs, browser
+    // history and any Referer sent from the resulting page. The query parameter
+    // still works because docs/RENDER.md tells people to visit a URL, but it is
+    // no longer the only way to present the key.
+    const key =
+      request.headers.get("x-webhook-secret") ?? new URL(request.url).searchParams.get("key") ?? "";
+    if (!timingSafeEqualStr(key, secret)) {
       return NextResponse.json({ error: "Invalid key." }, { status: 403 });
     }
 
