@@ -1,0 +1,89 @@
+name: CI
+
+# Deliberately small. The job of this workflow is to catch what actually broke
+# things here — a type error after a framework upgrade, a build that only fails
+# in a clean checkout, a dependency advisory — not to be a platform.
+on:
+  push:
+    branches: [main, "rescue/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # prisma.config.ts resolves env("DATABASE_URL") when it loads, so every
+    # Prisma command needs one — `generate` included, which never connects. A
+    # placeholder at job level, matching what the Dockerfile does, keeps that in
+    # one place rather than on each step that happens to trip over it.
+    env:
+      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+    steps:
+      - uses: actions/checkout@v5
+
+      # No `version:` here on purpose. package.json's `packageManager` field
+      # already pins pnpm exactly, and setting both makes the action refuse to
+      # run rather than pick one.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # --frozen-lockfile is the point: it fails if package.json and the
+      # lockfile disagree, which is how a dependency silently changes version
+      # between a laptop and a deploy.
+      - run: pnpm install --frozen-lockfile
+
+      # Needed before tsc: the generated client is what gives the routes their
+      # types, and without it every database call is an error about a missing
+      # export rather than a real type problem.
+      - run: pnpm exec prisma generate
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Unit checks
+        run: |
+          node scripts/check-backoff.mjs
+          node scripts/check-dedupe.mjs
+
+      # DATABASE_URL comes from the job env above; the build only parses it.
+      - name: Build
+        run: pnpm build
+
+  docker:
+    # The deployment target is a container on ARM, so a green `pnpm build` on
+    # the runner is not evidence the thing that ships actually builds. This is
+    # the only job that tests the Dockerfile, including the .npmrc that Prisma's
+    # engine download depends on.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # No `version:` here on purpose. package.json's `packageManager` field
+      # already pins pnpm exactly, and setting both makes the action refuse to
+      # run rather than pick one.
+      # No setup-node: the runner already has one, and `pnpm audit` reads the
+      # lockfile rather than node_modules. Adding it made the post-run cache
+      # step look for a pnpm store nothing had created, which failed the job
+      # after the audit itself had already passed.
+      - uses: pnpm/action-setup@v4
+      # Advisory: it reports but does not fail the run. Several of the current
+      # findings are build-time-only and accepted in SECURITY_AUDIT.md; a red X
+      # nobody can act on trains people to ignore the X. Dependabot opens the
+      # PRs that actually get acted on.
+      - run: pnpm audit --audit-level moderate || true

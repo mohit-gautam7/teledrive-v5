@@ -2,8 +2,13 @@
 # large uploads and streamed downloads actually need. Debian slim rather than
 # Alpine: sharp ships prebuilt binaries for glibc arm64, and Oracle's Always
 # Free tier is ARM (Ampere A1).
+#
+# Node 24 rather than 20: the 20 line left LTS in April 2026 and no longer gets
+# security patches, which is not a base image to put on the public internet.
+# scripts/check-*.mjs also import .ts directly and need the type stripping that
+# arrived after 20.
 
-FROM node:20-slim AS base
+FROM node:24-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
@@ -11,7 +16,11 @@ RUN corepack enable
 # ── Dependencies ──────────────────────────────────────────────────────────────
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+# .npmrc comes too: pnpm 10 blocks build scripts by default, and without the
+# allowances it carries, Prisma never fetches its query engine. That failure is
+# silent at install time and surfaces later as `prisma generate` producing a
+# client with no engine to run.
+COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 
 # ── Build ─────────────────────────────────────────────────────────────────────
@@ -33,7 +42,7 @@ ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 RUN pnpm run build
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
-FROM node:20-slim AS runner
+FROM node:24-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -43,7 +52,8 @@ ENV HOSTNAME=0.0.0.0
 # Prisma's query engine dynamically links libssl. node:20-slim omits it, so the
 # engine cannot detect a version, warns on every boot, and falls back to a
 # guessed openssl-1.1.x build. ca-certificates comes along for outbound TLS to
-# Supabase and Telegram.
+# Telegram, and to the database when it is a managed one rather than the
+# container next door.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates \
  && rm -rf /var/lib/apt/lists/*

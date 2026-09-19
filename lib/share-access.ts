@@ -42,8 +42,8 @@ export function grantShareUnlock(response: NextResponse, token: string) {
   });
 }
 
-function hasUnlock(token: string) {
-  const raw = cookies().get(unlockCookieName(token))?.value;
+async function hasUnlock(token: string) {
+  const raw = (await cookies()).get(unlockCookieName(token))?.value;
   if (!raw) return false;
   try {
     const claim = jwt.verify(raw, String(requireEnv("JWT_SECRET"))) as { share?: string };
@@ -80,7 +80,7 @@ export async function loadSharedFile(token: string): Promise<
   // this returned 401 for *every* request on a password share, including the
   // one from a viewer who had just typed the right password. The unlock cookie
   // is what the viewer's successful POST leaves behind.
-  if (share.passwordHash && !hasUnlock(token)) {
+  if (share.passwordHash && !(await hasUnlock(token))) {
     return { error: "This share is password protected. Open the share page and enter it.", status: 401 };
   }
   return { file: share.file };

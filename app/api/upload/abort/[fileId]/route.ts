@@ -18,7 +18,8 @@ export const runtime = "nodejs";
  * Deliberately *not* called on user cancel: an aborted upload stays resumable,
  * and `/api/upload/init` garbage-collects it if it is never resumed.
  */
-export async function DELETE(_request: NextRequest, { params }: { params: { fileId: string } }) {
+export async function DELETE(_request: NextRequest, props: { params: Promise<{ fileId: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
 
