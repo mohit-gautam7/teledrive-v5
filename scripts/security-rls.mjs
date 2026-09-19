@@ -36,9 +36,19 @@ const client = new pg.Client({
   connectionTimeoutMillis: 30_000
 });
 
+/**
+ * `profiles` and `user_state` are excluded everywhere in this script, exactly as
+ * they are in the SQL. They are a Supabase starter's tables, already carrying
+ * RLS and per-user policies, and they were never part of the warning — see the
+ * header of security-rls.sql. Counting them as failures would make a correct
+ * database report as broken.
+ */
+const EXCLUDED = "'profiles','user_state'";
+
 const TABLES = `
   SELECT c.relname AS table, c.relrowsecurity AS rls,
-         (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid)::int AS policies
+         (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid)::int AS policies,
+         (c.relname IN (${EXCLUDED})) AS not_ours
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public' AND c.relkind IN ('r','p')
   ORDER BY 1`;
@@ -48,6 +58,7 @@ const GRANTS = `
   SELECT grantee, table_name, string_agg(DISTINCT privilege_type, ',' ORDER BY privilege_type) AS privileges
   FROM information_schema.role_table_grants
   WHERE table_schema = 'public' AND grantee IN ('anon','authenticated')
+    AND table_name NOT IN (${EXCLUDED})
   GROUP BY 1, 2 ORDER BY 1, 2`;
 
 const SCHEMA_USAGE = `
@@ -58,9 +69,12 @@ async function audit(label) {
   console.log(`\n──────── ${label} ────────`);
   const tables = await client.query(TABLES);
   console.table(tables.rows);
-  const without = tables.rows.filter(r => !r.rls).map(r => r.table);
+  const without = tables.rows.filter(r => !r.rls && !r.not_ours).map(r => r.table);
   console.log(without.length ? `RLS DISABLED on: ${without.join(", ")}` : "RLS enabled on every table in public.");
 
+  // Reported, not enforced: schema USAGE stays granted so the starter tables
+  // remain reachable by anything legitimately using them. It is safe precisely
+  // because no TeleDrive table grants either role anything to reach.
   const usage = await client.query(SCHEMA_USAGE);
   console.table(usage.rows);
 
@@ -69,7 +83,7 @@ async function audit(label) {
     console.log(`anon/authenticated still hold grants on ${grants.rows.length} table(s):`);
     console.table(grants.rows);
   } else {
-    console.log("anon and authenticated hold no privileges on any table in public.");
+    console.log("anon and authenticated hold no privileges on any TeleDrive table.");
   }
   return { exposed: without.length, grants: grants.rows.length };
 }
@@ -79,7 +93,9 @@ async function proveOwnerStillReads() {
   const rows = await client.query(`
     SELECT (SELECT count(*) FROM public."User")::int   AS users,
            (SELECT count(*) FROM public."File")::int   AS files,
-           (SELECT count(*) FROM public."Folder")::int AS folders`);
+           (SELECT count(*) FROM public."Folder")::int AS folders,
+           (SELECT count(*) FROM public."Chunk")::int  AS chunks,
+           (SELECT count(*) FROM public."File" WHERE "telegramFileId" IS NOT NULL)::int AS with_tg_id`);
   console.log("\nOwner-role read after hardening (this is the connection the app uses):");
   console.table(rows.rows);
 }
