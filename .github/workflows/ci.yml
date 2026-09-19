@@ -49,8 +49,6 @@ jobs:
           node scripts/check-backoff.mjs
           node scripts/check-dedupe.mjs
 
-      # A placeholder URL: the build only parses it, never connects. The real
-      # one is injected at runtime.
       # DATABASE_URL comes from the job env above; the build only parses it.
       - name: Build
         run: pnpm build
