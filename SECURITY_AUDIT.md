@@ -4,9 +4,13 @@ Scope: the whole repository at `15356ee`, its dependency tree, and the Supabase
 project `ucuyzmrbbyxtnmjkoclu` that holds production data. Fixes landed on
 `rescue/security-and-upgrade`; the pre-audit state is tagged `pre-rescue-2026-09-19`.
 
-Everything below was verified against the code or the database, not inferred
-from the shape of the project. Where something could not be verified — because
-the database was paused throughout the audit — it says so rather than guessing.
+Everything below was verified against the code or the live database, not
+inferred from the shape of the project. Where something is still unverified, it
+says so rather than guessing.
+
+The database was paused when the audit began and was resumed part-way through;
+findings written before that point were re-checked against the real database
+afterwards, and C2 was applied only after a restore-tested backup existed.
 
 ---
 
@@ -42,19 +46,27 @@ deletable by anyone who loaded the page.
 The fix is `scripts/security-rls.sql`, applied and verified by
 `node scripts/security-rls.mjs`:
 
-1. RLS on every table in `public`, found by a catalogue query rather than a
-   hand-kept list, so the next table Prisma adds is covered too.
+1. RLS on every TeleDrive table, found by a catalogue query with a two-name
+   exclusion list rather than a hand-kept list of what to include — the
+   inclusion side is the one that grows, and missing the next table Prisma adds
+   is exactly how this warning arose.
 2. No policies, deliberately. A policy only matters to a caller arriving through
    PostgREST, and the right number of those is zero — there is no
    `@supabase/supabase-js` in the dependency tree and no import of it anywhere
-   in the source. Supabase is used purely as hosted Postgres, reached by Prisma
-   as the table owner, and Postgres exempts a table's owner from its own RLS
-   unless `FORCE ROW LEVEL SECURITY` is set. The script does not set it, so
-   **the application is unaffected**.
-3. The grants revoked as well, including `USAGE ON SCHEMA public` — so a future
-   table created without RLS is not instantly exposed the way every table here was.
-4. The Supabase default privileges revoked, which is the part that makes the fix
-   hold instead of needing re-applying after every migration.
+   in the source. Three independently checked facts make this safe: the app
+   never speaks to PostgREST; Prisma connects as `postgres`, which has
+   `rolbypassrls = true`; and `postgres` owns all 16 tables with no `FORCE ROW
+   LEVEL SECURITY`. **The application is unaffected.**
+3. The grants revoked on those same tables, which is what actually closes the
+   hole — RLS answers the advisor, but a role holding no privilege on a table
+   cannot reach it at all.
+4. `postgres`'s default privileges in `public` revoked, which is the part that
+   makes the fix hold rather than need re-applying after every migration.
+
+`USAGE ON SCHEMA public` is **kept**, unlike the first draft. Withdrawing it
+would reach past the TeleDrive tables and break `profiles` and `user_state` for
+anything legitimately using them. It is safe to keep precisely because no
+TeleDrive table grants either role anything to reach.
 
 **Applied 19 September 2026, after a verified backup.** The exposure was real
 and measured, not inferred: `anon` and `authenticated` held
