@@ -27,17 +27,17 @@
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.453.0",
     "nanoid": "^5.1.16",
-    "next": "15.5.25",
+    "next": "15.5.29",
     "pg": "^8.20.0",
     "prisma": "6.19.0",
     "qrcode": "^1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.3.1",
     "telegram": "^2.26.22",
-    "zod": "^4.1.12"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.4",
