@@ -112,6 +112,41 @@ The database volume stays on your machine unless you pass `-v`. If you pointed
 `DATABASE_URL` at the hosted database, the local `db` container was never used
 and holds nothing.
 
+## Signing in locally
+
+Bot-code login does not work on a local machine out of the box, and the reason
+is worth knowing before you fight it.
+
+Telegram delivers messages one of two ways: it calls a **webhook** (needs a
+public HTTPS URL — localhost has none), or the app **polls** for updates. Dev
+mode can poll, which is why `ENABLE_BOT_POLLING` exists. But the two are
+mutually exclusive at Telegram's end, and polling starts by calling
+`deleteWebhook` so that `getUpdates` is allowed to work.
+
+So a local server with polling on **silently unregisters the production
+webhook**, and bot login on the live site stops working until it is registered
+again. That is not a bug in either one; it is Telegram allowing a bot exactly
+one delivery method.
+
+`ENABLE_BOT_POLLING=0` is therefore the right default, and local sign-in should
+use the owner key instead:
+
+```
+OWNER_LOGIN_KEY=<something long>
+OWNER_TELEGRAM_ID=<your Telegram user id>
+```
+
+`OWNER_TELEGRAM_ID` is the important half: it makes the owner key sign you in
+as *your existing account*, so you see your real files rather than a new empty
+drive. Then pick "Sign in with owner key" on the login page.
+
+If you do want to test the bot flow locally, turn polling on, accept that the
+live site's bot login is down meanwhile, and re-register the webhook afterwards:
+
+```bash
+curl -H "x-webhook-secret: $WEBHOOK_SECRET" https://<your-domain>/api/bot/setup
+```
+
 ## What this does not solve
 
 Downloads. Every byte anyone pulls out of the drive through the public site
