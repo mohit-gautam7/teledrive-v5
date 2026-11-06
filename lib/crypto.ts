@@ -22,3 +22,18 @@ export function decryptSecret(value?: string | null) {
     decipher.final()
   ]).toString("utf8");
 }
+
+/**
+ * Constant-time string comparison that tolerates a length mismatch.
+ *
+ * `crypto.timingSafeEqual` throws when the two buffers differ in length, so the
+ * usual guard is `a.length === b.length && timingSafeEqual(...)` — which leaks
+ * the secret's length through the early return, and throws on a caller that
+ * forgets the guard. Hashing both sides first makes the compared buffers the
+ * same size whatever came in, so there is one code path and no length oracle.
+ */
+export function timingSafeEqualStr(a: string, b: string) {
+  const left = crypto.createHash("sha256").update(a, "utf8").digest();
+  const right = crypto.createHash("sha256").update(b, "utf8").digest();
+  return crypto.timingSafeEqual(left, right);
+}

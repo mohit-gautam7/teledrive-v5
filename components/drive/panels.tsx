@@ -26,10 +26,11 @@ import {
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import { formatBytes } from "@/lib/utils";
-import { CHUNK_SIZE, MAX_FILE_SIZE, BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
+import { CHUNK_SIZE, CHUNK_CONCURRENCY, MAX_FILE_SIZE, BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
 import {
   ACCENTS,
   PAGE_SIZES,
+  UPLOAD_CONCURRENCIES,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
   resetPreferences,
@@ -543,6 +544,21 @@ export function SettingsPanel({ link, onLinkChanged }: { link: TelegramLink | nu
               Ignored until an account is linked — the bot is the only storage there is.
             </p>
           ) : null}
+        </div>
+
+        <div className="mt-5">
+          <Choice<number>
+            label="Files at once"
+            hint="Applies to the running queue, not just the next upload."
+            value={prefs.uploadConcurrency}
+            onChange={value => setPreference("uploadConcurrency", value)}
+            options={UPLOAD_CONCURRENCIES.map(n => ({ value: n as number, label: String(n) }))}
+          />
+          <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+            Each file already sends {CHUNK_CONCURRENCY} chunks in parallel, so this multiplies. Higher is faster on a
+            folder of small files and riskier on a slow connection: Telegram answers a flood by making the next wait
+            longer, so the fastest setting can finish a big queue slower than the default.
+          </p>
         </div>
       </section>
 

@@ -21,6 +21,23 @@ import type { SortDir, SortField, ThemeMode } from "@/components/drive/types";
 
 export type UploadBackendPreference = "auto" | "account" | "bot";
 
+/**
+ * How many files the queue sends at once.
+ *
+ * This multiplies with CHUNK_CONCURRENCY (3 by default), which is the parallelism
+ * *within* one file — so 2 here already means six requests in flight against a
+ * bot whose budget is roughly 30 messages a second. Two is the default because
+ * it is where per-file overhead (init, complete, thumbnail) stops dominating a
+ * queue of small files, while leaving enough headroom that a flood is unlikely.
+ *
+ * Raising it trades reliability for throughput, and the trade is real: Telegram
+ * answers a flood by making the next wait longer, so the fast setting can finish
+ * a large queue slower than the safe one. 8 is offered for fast connections
+ * uploading big files, where the per-file overhead is noise and the limit is
+ * bandwidth rather than message rate.
+ */
+export const UPLOAD_CONCURRENCIES = [1, 2, 4, 8] as const;
+
 export type Preferences = {
   theme: ThemeMode;
   accent: AccentName;
@@ -34,6 +51,8 @@ export type Preferences = {
   /** Force reduced motion even where the OS has not asked for it. */
   reduceMotion: boolean;
   uploadBackend: UploadBackendPreference;
+  /** Files uploaded at once. See UPLOAD_CONCURRENCIES. */
+  uploadConcurrency: number;
 };
 
 export const PAGE_SIZES = [24, 48, 100];
@@ -75,7 +94,8 @@ export const DEFAULTS: Preferences = {
   pageSize: 48,
   sidebarWidth: SIDEBAR_DEFAULT,
   reduceMotion: false,
-  uploadBackend: "auto"
+  uploadBackend: "auto",
+  uploadConcurrency: 2
 };
 
 export const PREFS_KEY = "teledrive:prefs";
@@ -103,7 +123,10 @@ export function normalise(raw: unknown): Preferences {
     reduceMotion: input.reduceMotion === true,
     uploadBackend: ["auto", "account", "bot"].includes(input.uploadBackend as string)
       ? (input.uploadBackend as UploadBackendPreference)
-      : DEFAULTS.uploadBackend
+      : DEFAULTS.uploadBackend,
+    uploadConcurrency: (UPLOAD_CONCURRENCIES as readonly number[]).includes(Number(input.uploadConcurrency))
+      ? Number(input.uploadConcurrency)
+      : DEFAULTS.uploadConcurrency
   };
 }
 

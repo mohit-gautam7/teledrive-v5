@@ -21,7 +21,8 @@ const MAX_FOLDERS = 500;
  * the Telegram messages the other still needs — `purgeTelegramCopies` checks for
  * a surviving row before touching Telegram.
  */
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
 

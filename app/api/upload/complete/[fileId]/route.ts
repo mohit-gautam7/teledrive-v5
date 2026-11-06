@@ -26,10 +26,8 @@ import { MTPROTO_PART_SIZE } from "@/lib/upload-config";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-export async function POST(
-  _request: NextRequest,
-  { params }: { params: { fileId: string } }
-) {
+export async function POST(_request: NextRequest, props: { params: Promise<{ fileId: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     const fileId = params.fileId;

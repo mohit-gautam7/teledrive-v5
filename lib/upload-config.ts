@@ -177,3 +177,33 @@ export const MTPROTO_PART_TTL_MS = (() => {
   const raw = Number(process.env.MTPROTO_PART_TTL_MINUTES);
   return Number.isFinite(raw) && raw > 0 ? raw * 60_000 : 2 * 60 * 60 * 1000;
 })();
+
+/**
+ * How long a server-named Retry-After is worth sleeping through.
+ *
+ * Telegram's FLOOD_WAIT is regularly measured in hours. A worker that honours
+ * one of those is indistinguishable from a hang, and it blocks every other file
+ * behind it — so past this ceiling the upload fails with the wait in the message
+ * and the queue moves on. Nothing is lost: the chunks already stored survive, so
+ * Resume continues rather than restarts.
+ */
+export const MAX_HONOURED_WAIT_MS = 90_000;
+
+/**
+ * `Retry-After`, in milliseconds, or null when the header is absent or junk.
+ *
+ * Both legal forms appear in the wild — delta-seconds from our own rate limiter,
+ * an HTTP date from intermediaries — so both are read. A past date or a negative
+ * delta means "now", not "never", hence the clamp at zero rather than a refusal:
+ * a stale date must not be mistaken for "no limit" and retried instantly.
+ */
+export function retryAfterMs(header: string | null): number | null {
+  if (!header) return null;
+  const trimmed = header.trim();
+  if (!trimmed) return null;
+  // Number("") is 0 and Number("  12  ") is 12, so the empty check above matters.
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+}

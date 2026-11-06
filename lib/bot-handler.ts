@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { sendMessageBot } from "@/lib/telegram-bot";
 import { safeName } from "@/lib/file-router";
@@ -26,8 +27,14 @@ type TgIncomingMessage = {
 
 type TgFilePayload = { file_id: string; file_size?: number };
 
+/**
+ * Math.random() is not a CSPRNG, and this value is a bearer credential: whoever
+ * presents it to /api/auth/bot-login becomes the account it was issued for. V8's
+ * xorshift state is recoverable from a handful of outputs, so codes issued to
+ * anyone were predictable by anyone who could make the bot issue a few.
+ */
 function sixDigitCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(crypto.randomInt(100_000, 1_000_000));
 }
 
 async function upsertUser(telegramId: string, name: string, username: string | null) {

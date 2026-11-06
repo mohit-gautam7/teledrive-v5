@@ -10,7 +10,8 @@ export const dynamic = "force-dynamic";
 
 /** Poll a queued AI job. Scoped to the caller, so one user cannot read another's
  *  result by guessing an id. */
-export async function GET(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(_request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   if (!aiEnabled()) {
     return NextResponse.json({ error: "The AI features are not enabled on this server." }, { status: 404 });
   }

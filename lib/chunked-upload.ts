@@ -1,6 +1,6 @@
 import { UploadAbortedError, fileFetch } from "@/lib/api-client";
 import { resumeKeyFor } from "@/lib/file-identity";
-import { CHUNK_SIZE, CHUNK_CONCURRENCY, type UploadBackend } from "@/lib/upload-config";
+import { CHUNK_SIZE, CHUNK_CONCURRENCY, MAX_HONOURED_WAIT_MS, retryAfterMs, type UploadBackend } from "@/lib/upload-config";
 
 const MAX_RETRIES = 5;
 
@@ -41,6 +41,8 @@ async function discardSession(fileId: string) {
 
 async function putChunk(fileId: string, index: number, blob: Blob, signal?: AbortSignal) {
   let lastErr: unknown;
+  /** Set when the server names a Retry-After; overrides the jittered backoff once. */
+  let waitOverride: number | null = null;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (signal?.aborted) throw new UploadAbortedError();
     try {
@@ -54,11 +56,32 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
       // 4xx other than 429 means this chunk will never succeed — fail fast.
       if (res.status < 500 && res.status !== 429) throw err;
       lastErr = err;
+      // A 429 here is usually Telegram's FLOOD_WAIT relayed by lib/api-response,
+      // and it carries the wait Telegram actually asked for. Backing off by our
+      // own guess instead means retrying into the same flood and extending it —
+      // Telegram lengthens the wait each time it is ignored. So when the server
+      // names a delay, that delay wins over the jittered schedule below.
+      if (res.status === 429) {
+        const named = retryAfterMs(res.headers.get("retry-after"));
+        if (named !== null) {
+          waitOverride = named;
+          // A long FLOOD_WAIT is measured in hours. Sleeping through it holds a
+          // worker hostage and looks identical to a hang, so surface it instead
+          // and let the queue move to the next file; Resume picks this one up.
+          if (named > MAX_HONOURED_WAIT_MS) {
+            throw new Error(
+              `Telegram is rate-limiting this account for ${Math.ceil(named / 60_000)} more minutes. ` +
+                `This upload is paused — retry it after that.`
+            );
+          }
+        }
+      }
     } catch (err) {
       if (isAbort(err)) throw new UploadAbortedError();
       lastErr = err;
     }
-    if (attempt < MAX_RETRIES - 1) await sleep(retryDelay(attempt));
+    if (attempt < MAX_RETRIES - 1) await sleep(waitOverride ?? retryDelay(attempt));
+    waitOverride = null;
   }
   throw lastErr instanceof Error ? lastErr : new Error(`Chunk ${index} failed.`);
 }

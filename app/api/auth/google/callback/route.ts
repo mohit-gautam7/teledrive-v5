@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { setSessionCookie, signSession, setPendingLinkCookie } from "@/lib/auth";
 import { exchangeGoogleCode, googleConfigured } from "@/lib/google-oauth";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 
   try {
     if (!googleConfigured()) return back(origin, { error: "Google sign-in is not configured." });
-    rateLimit(`google:${request.ip || "local"}`, 20, 60_000);
+    rateLimit(`google:${clientIp(request)}`, 20, 60_000);
 
     const code = request.nextUrl.searchParams.get("code");
     const state = request.nextUrl.searchParams.get("state");

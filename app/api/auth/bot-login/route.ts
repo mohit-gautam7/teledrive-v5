@@ -7,13 +7,24 @@ import {
   readPendingLink,
   clearPendingLinkCookie
 } from "@/lib/auth";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 import { jsonError } from "@/lib/api-response";
 
 export async function POST(request: NextRequest) {
   try {
     assertSameOrigin(request);
-    rateLimit(`bot-login:${request.ip || "local"}`, 10, 60_000);
+    rateLimit(`bot-login:${clientIp(request)}`, 10, 60_000);
+    // The per-IP bucket above is keyed on a header the caller controls, so on
+    // its own it bounds nothing: rotate the header, get a fresh allowance. That
+    // matters here more than anywhere else in the app, because the credential
+    // being guessed is six digits wide and any outstanding code from any user
+    // is a winning guess — the lookup below matches on the code alone.
+    //
+    // So a second bucket, keyed on the route rather than the caller. 60 wrong
+    // guesses a minute is far above what a real person typing a code from
+    // Telegram will ever produce, and far below what searching a million-wide
+    // space needs. It is deliberately counted only on failure, so one attacker
+    // cannot lock everybody else out by spending the budget.
 
     const { code } = await request.json();
     if (!code || typeof code !== "string" || !/^\d{6}$/.test(code)) {
@@ -25,6 +36,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!record) {
+      rateLimit("bot-login:wrong-code", 60, 60_000);
       return NextResponse.json({ error: "Code is invalid or expired. Message the bot again to get a new one." }, { status: 401 });
     }
 
@@ -41,7 +53,7 @@ export async function POST(request: NextRequest) {
     // If a third-party sign-in is waiting to be attached, this code proves the
     // Telegram account belongs to the same person — link them permanently so
     // next time that provider signs in on its own.
-    const pending = readPendingLink();
+    const pending = await readPendingLink();
     if (pending) {
       await prisma.oAuthAccount.upsert({
         where: { provider_providerId: { provider: pending.provider, providerId: pending.providerId } },

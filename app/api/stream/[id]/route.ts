@@ -7,7 +7,8 @@ import { jsonError } from "@/lib/api-response";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     // `request` is passed so requireUser can also accept the short-lived file
     // token from `?t=`. This route is loaded directly by an <img>, a <video> or

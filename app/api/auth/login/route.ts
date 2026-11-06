@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin, setSessionCookie, signSession, verifyTelegramAuth } from "@/lib/auth";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIp, rateLimit } from "@/lib/rate-limit";
 import { jsonError } from "@/lib/api-response";
 
 export async function POST(request: NextRequest) {
   try {
     assertSameOrigin(request);
-    rateLimit(`login:${request.ip || "local"}`, 15, 60_000);
+    rateLimit(`login:${clientIp(request)}`, 15, 60_000);
     const body = await request.json();
     if (!verifyTelegramAuth(body)) {
       return NextResponse.json({ error: "Telegram login verification failed. Check BotFather domain and BOT_TOKEN." }, { status: 401 });

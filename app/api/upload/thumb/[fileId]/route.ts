@@ -15,7 +15,8 @@ const MAX_THUMB_BYTES = 512 * 1024;
  * Store a browser-generated thumbnail for a file the user just uploaded, so the
  * grid never has to pay for lazy server-side generation.
  */
-export async function POST(request: NextRequest, { params }: { params: { fileId: string } }) {
+export async function POST(request: NextRequest, props: { params: Promise<{ fileId: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
 

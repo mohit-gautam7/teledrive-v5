@@ -23,7 +23,8 @@ async function ownedShare(id: string, userId: string) {
   });
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     rateLimit(`share-manage:${user.id}`, 60, 60_000);
@@ -53,7 +54,8 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     const user = await requireUser();
     const share = await ownedShare(params.id, user.id);

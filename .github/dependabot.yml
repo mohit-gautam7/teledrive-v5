@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Patch and minor bumps arrive as one PR per week rather than a dozen. A
+    # major is left on its own, because the Next 14 to 15 upgrade in this repo
+    # needed a codemod and three hand fixes — that is a PR to read, not merge.
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

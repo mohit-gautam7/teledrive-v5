@@ -97,10 +97,10 @@ const nextConfig = {
     // Inlined normalised, so the bundle and the CSP cannot disagree about it.
     NEXT_PUBLIC_FILE_ORIGIN: fileOrigin
   },
-  experimental: {
-    serverComponentsExternalPackages: ["telegram", "sharp"],
-    instrumentationHook: true,
-  },
+  // Next 15 promoted both of these out of `experimental`: the bundler must leave
+  // `telegram` (GramJS) and `sharp` as real Node requires, and instrumentation.ts
+  // now runs without a flag.
+  serverExternalPackages: ["telegram", "sharp"],
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   }

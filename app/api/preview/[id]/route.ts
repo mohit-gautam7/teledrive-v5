@@ -19,7 +19,8 @@ export const maxDuration = 60;
 // File bytes for a given id never change, so previews can cache forever.
 const IMMUTABLE = "private, max-age=31536000, immutable";
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   try {
     // `request` is passed so requireUser can also accept the short-lived file
     // token from `?t=`. This route is loaded directly by an <img>, a <video> or

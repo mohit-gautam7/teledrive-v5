@@ -48,7 +48,22 @@ type Hooks = {
 
 type Listener = () => void;
 
-const MAX_PARALLEL = 1;
+/**
+ * How many files may be in flight, read fresh on every pump.
+ *
+ * It was a hard 1. That is the safe number for a handful of large files and the
+ * wrong one for the case this queue exists to serve — a folder of several
+ * hundred small ones, where each file costs an init, a complete and a thumbnail
+ * round-trip that nothing overlaps.
+ *
+ * Read per pump rather than captured once so that changing the setting takes
+ * effect on the running queue: lowering it lets the extra workers drain and stop,
+ * raising it starts more on the next completion. Neither disturbs an upload
+ * already sending bytes.
+ */
+function maxParallel() {
+  return readPreferences().uploadConcurrency;
+}
 
 /** Trailing delay on writing the queue to localStorage. Progress ticks arrive
  *  dozens of times a second and each one used to mean a synchronous
@@ -295,7 +310,8 @@ class UploadManager {
 
   private async pump() {
     if (this.pausedGlobally) return;
-    while (this.running < MAX_PARALLEL) {
+    const limit = maxParallel();
+    while (this.running < limit) {
       const next = this.items.find(it => it.status === "pending" && it.file);
       if (!next) break;
       this.running++;
