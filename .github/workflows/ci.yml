@@ -24,7 +24,7 @@ jobs:
       # No `version:` here on purpose. package.json's `packageManager` field
       # already pins pnpm exactly, and setting both makes the action refuse to
       # run rather than pick one.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v5
         with:
@@ -81,7 +81,7 @@ jobs:
       # lockfile rather than node_modules. Adding it made the post-run cache
       # step look for a pnpm store nothing had created, which failed the job
       # after the audit itself had already passed.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       # Advisory: it reports but does not fail the run. Several of the current
       # findings are build-time-only and accepted in SECURITY_AUDIT.md; a red X
       # nobody can act on trains people to ignore the X. Dependabot opens the
