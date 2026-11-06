@@ -19,7 +19,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # No `version:` here on purpose. package.json's `packageManager` field
       # already pins pnpm exactly, and setting both makes the action refuse to
@@ -60,7 +60,7 @@ jobs:
     # engine download depends on.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
       - name: Build image
         uses: docker/build-push-action@v6
@@ -73,7 +73,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # No `version:` here on purpose. package.json's `packageManager` field
       # already pins pnpm exactly, and setting both makes the action refuse to
       # run rather than pick one.
