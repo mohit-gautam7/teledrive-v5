@@ -45,6 +45,15 @@
 -- For the same reason `USAGE ON SCHEMA public` stays granted: withdrawing it
 -- would reach past the TeleDrive tables and take those two with it.
 --
+-- One exception, found on a later audit: those two tables also carried TRUNCATE
+-- to `anon`. TRUNCATE is not gated by row-level security, so no policy on them
+-- could ever have closed it — `auth.uid() IS NULL` stops a SELECT and does
+-- nothing to a TRUNCATE. It was not reachable in practice, because PostgREST
+-- only ever issues SELECT/INSERT/UPDATE/DELETE, but a grant that no policy can
+-- restrain is the wrong thing to leave sitting behind a public key. REFERENCES
+-- and TRIGGER go with it: PostgREST never issues those either, so the revoke
+-- removes reach without removing function.
+--
 -- Idempotent. Safe to run repeatedly.
 
 BEGIN;
@@ -138,5 +147,10 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- ── Narrow the two non-TeleDrive tables, without disturbing their policies ──
+REVOKE TRUNCATE, REFERENCES, TRIGGER
+  ON TABLE public.profiles, public.user_state
+  FROM anon, authenticated;
 
 COMMIT;
