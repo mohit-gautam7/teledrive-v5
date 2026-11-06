@@ -8,7 +8,7 @@
 # scripts/check-*.mjs also import .ts directly and need the type stripping that
 # arrived after 20.
 
-FROM node:24-slim AS base
+FROM node:25-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
@@ -42,7 +42,7 @@ ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 RUN pnpm run build
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
-FROM node:24-slim AS runner
+FROM node:25-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
