@@ -666,3 +666,101 @@ button:not(:disabled),
   transition-duration: 1ms !important;
   scroll-behavior: auto !important;
 }
+
+/* ─── Depth ──────────────────────────────────────────────────────────────────
+   The 3D half of the motion system; lib/motion-3d.ts is the JS half and the
+   two must stay in step. Scope is deliberately narrow — see that file for why
+   a drive with thousands of tiles cannot afford depth everywhere. */
+
+/* One perspective for a whole grid, set on the container rather than per tile.
+   A `perspective` on each card would give each one its own stacking context
+   and its own containing block, which is both slower and wrong: the tiles
+   would each vanish towards their own centre instead of sharing a vanishing
+   point, so a row would splay rather than curve. */
+.depth-stage {
+  perspective: 1400px;
+  perspective-origin: 50% 40%;
+}
+
+/* Tiles that respond to the pointer. The custom properties are written by
+   useTilt straight onto the node, so a pointer move never re-renders React. */
+.tilt {
+  --sheen: -20%;
+  /* The transform itself is written inline by useTilt — a rule here would lose
+     to framer-motion, which sets `transform` inline on everything it animates.
+     What stays in CSS is the part framer does not touch. */
+  transform-style: preserve-3d;
+  /* Only the settle is transitioned. The move itself is driven frame by frame
+     and must not be smoothed, or the tile lags behind the cursor. */
+  transition: transform var(--dur-slow) var(--ease);
+}
+
+/* A tile mid-tilt is being pointed at; let it sit above its neighbours so the
+   lifted corner is not clipped by the next card along. */
+.tilt:hover {
+  z-index: 2;
+}
+
+/* The specular band that follows the pointer across the surface. Drawn as a
+   pseudo-element so it composites on its own layer and never touches the
+   tile's own background. */
+.tilt::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    120px circle at var(--sheen) 0%,
+    rgba(255, 255, 255, 0.07),
+    transparent 70%
+  );
+  transition: opacity var(--dur) var(--ease);
+}
+
+@media (hover: hover) {
+  .tilt:hover::after {
+    opacity: 1;
+  }
+}
+
+/* Touch pointers get none of it: a tilt that fires on tap reads as a bug, and
+   `hover: none` is the only reliable way to tell a finger from a mouse. */
+@media (hover: none) {
+  .tilt {
+    transition: none;
+  }
+  .tilt::after {
+    display: none;
+  }
+}
+
+/* The user's own reduced-motion preference is an attribute the app sets from
+   Settings; the media query covers the OS-level one. Both drop depth entirely
+   rather than softening it — a reduced rotation is still a rotation. */
+[data-reduce-motion="1"] .tilt,
+[data-reduce-motion="1"] .depth-stage {
+  perspective: none;
+  transform: none;
+  transition: none;
+  will-change: auto;
+}
+
+[data-reduce-motion="1"] .tilt::after {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tilt {
+    transform: none;
+    transition: none;
+    will-change: auto;
+  }
+  .tilt::after {
+    display: none;
+  }
+  .depth-stage {
+    perspective: none;
+  }
+}

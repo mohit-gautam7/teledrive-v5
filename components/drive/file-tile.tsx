@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import { popIn, stagger, useReducedMotion } from "@/lib/motion";
+import { DURATION_3D, EASE_3D, orbitEntrance, useTilt } from "@/lib/motion-3d";
 import { aiActionsFor, type AiAction } from "./ai";
 import { useAssetUrl } from "@/lib/use-file-auth";
 import { type DriveFile, telegramDeepLink } from "./types";
@@ -47,6 +48,7 @@ function FileTileBase({
   file,
   grid,
   index,
+  orbiting = false,
   inTrash,
   selected,
   selectionActive,
@@ -56,6 +58,8 @@ function FileTileBase({
   file: DriveFile;
   grid: boolean;
   index: number;
+  /** True while the folder holding this tile is opening — see lib/motion-3d. */
+  orbiting?: boolean;
   inTrash: boolean;
   selected: boolean;
   selectionActive: boolean;
@@ -63,6 +67,8 @@ function FileTileBase({
   actions: TileActions;
 }) {
   const reduceMotion = useReducedMotion();
+  const tilt = useTilt(!reduceMotion && grid);
+  const entrance = orbitEntrance(index, Boolean(reduceMotion));
   const [loaded, setLoaded] = useState(false);
   // Controlled so a right-click can open the same menu the ⋮ button opens.
   // Radix anchors it to the trigger rather than the pointer, which is a small
@@ -146,10 +152,25 @@ function FileTileBase({
 
   return (
     <motion.article
+      ref={tilt.ref as React.Ref<HTMLElement>}
       // Position only: a full layout animation would animate width and height
       // too, which is a reflow of the whole grid on every frame.
-      layout={reduceMotion ? false : "position"}
-      {...popIn(reduceMotion, stagger(index))}
+      //
+      // Off entirely while the arc runs. Layout projection writes its own
+      // matrix into `transform` every frame to keep the tile where it thinks
+      // it belongs, which overwrites the rotation mid-flight — the animation
+      // runs, and you see none of it.
+      layout={reduceMotion || orbiting ? false : "position"}
+      // Opening a folder replaces the flat pop with the arc. They are mutually
+      // exclusive by design: running both gives the tile two entrances at two
+      // durations, which reads as a stutter rather than a flourish.
+      {...(orbiting
+        ? {
+            initial: entrance.from,
+            animate: entrance.to,
+            transition: { duration: DURATION_3D.orbit, ease: EASE_3D, delay: entrance.delay }
+          }
+        : popIn(reduceMotion, stagger(index)))}
       draggable={!inTrash}
       // framer-motion types onDragStart as its own gesture event; this is the
       // native HTML5 one, hence the cast.
@@ -164,7 +185,7 @@ function FileTileBase({
         event.preventDefault();
         setMenuOpen(true);
       }}
-      className={cn("card group relative overflow-hidden p-3", !grid && "flex items-center gap-3")}
+      className={cn("card group relative overflow-hidden p-3", grid && "tilt", !grid && "flex items-center gap-3")}
       style={{
         borderColor: selected ? "var(--accent)" : undefined,
         background: selected ? "var(--accent-dim)" : undefined
