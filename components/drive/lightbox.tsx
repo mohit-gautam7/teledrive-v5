@@ -18,6 +18,7 @@ import {
 import { formatBytes } from "@/lib/utils";
 import { fadeIn, useReducedMotion } from "@/lib/motion";
 import { useAssetUrl } from "@/lib/use-file-auth";
+import { Filmstrip3D } from "./filmstrip-3d";
 import type { DriveFile } from "./types";
 
 const isImage = (f: DriveFile) =>
@@ -535,6 +536,11 @@ export function Lightbox({
           </button>
         ) : null}
       </div>
+
+      {/* The curved rail of neighbours. Above the counter rather than below it,
+          so the eye travels picture → rail → position rather than stepping over
+          a line of text to reach the thing it can click. */}
+      {viewable.length > 1 ? <Filmstrip3D files={viewable} currentId={file.id} onPick={onNavigate} /> : null}
 
       {viewable.length > 1 ? (
         <div

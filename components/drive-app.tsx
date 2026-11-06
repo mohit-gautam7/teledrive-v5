@@ -53,6 +53,8 @@ import {
 } from "@/lib/preferences";
 import { cn, formatBytes } from "@/lib/utils";
 import { SPRING, fadeIn, fadeUp, riseFromBottom, transition, useReducedMotion } from "@/lib/motion";
+import { useOrbitOnChange } from "@/lib/motion-3d";
+import { DepthCard } from "@/components/drive/depth-card";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
 import {
@@ -206,6 +208,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [link, setLink] = useState<TelegramLink | null>(null);
   const [dragDepth, setDragDepth] = useState(0);
   const [dropFolderId, setDropFolderId] = useState<string | null>(null);
+  /** True for one arc's duration after the folder changes — see lib/motion-3d. */
+  const orbiting = useOrbitOnChange(folderId);
 
   const maxBytes = link?.maxBytes ?? MAX_FILE_SIZE;
   const cacheUser = user.username || user.name;
@@ -1873,11 +1877,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                   ) : null}
                   {appView === "files" && folders.length ? (
                     // Full width on phones: two-up truncates the size line.
-                    <div className="mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="depth-stage mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                       {folders.map((folder, i) => (
-                        <div
+                        <DepthCard
                           key={folder.id}
-                          className={cn("card rise relative flex items-center gap-2.5 p-3", dropFolderId === folder.id && "drop-target")}
+                          index={i}
+                          orbiting={orbiting}
+                          // `rise` is the flat entrance and only applies when
+                          // the arc is not running; the two would stack into a
+                          // double animation on every folder open.
+                          className={cn(
+                            "card relative flex items-center gap-2.5 p-3",
+                            !orbiting && "rise",
+                            dropFolderId === folder.id && "drop-target"
+                          )}
                           style={{ ["--i" as string]: i }}
                           onDragOver={e => {
                             if (e.dataTransfer.types.includes("application/x-teledrive-files") || e.dataTransfer.types.includes("Files")) {
@@ -1992,7 +2005,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                               </DropdownMenu.Content>
                             </DropdownMenu.Portal>
                           </DropdownMenu.Root>
-                        </div>
+                        </DepthCard>
                       ))}
                     </div>
                   ) : null}
@@ -2001,13 +2014,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                   {loading ? (
                     <SkeletonGrid view={view} />
                   ) : files.length ? (
-                    <div className={view === "grid" ? "grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" : "space-y-2"}>
+                    <div
+                      className={
+                        view === "grid"
+                          ? "depth-stage grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+                          : "space-y-2"
+                      }
+                    >
                       <AnimatePresence mode="popLayout">
                         {files.map((file, index) => (
                           <FileTile
                             key={file.id}
                             file={file}
                             index={index}
+                            orbiting={orbiting && view === "grid"}
                             grid={view === "grid"}
                             inTrash={appView === "trash"}
                             selected={selected.has(file.id)}
