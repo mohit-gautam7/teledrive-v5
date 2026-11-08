@@ -25,6 +25,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
+import {
+  backupSupported,
+  chooseSource,
+  readBackupState,
+  resetWatermark,
+  writeBackupState,
+  type BackupState
+} from "@/lib/photo-backup";
 import { formatBytes } from "@/lib/utils";
 import { CHUNK_SIZE, CHUNK_CONCURRENCY, MAX_FILE_SIZE, BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
 import {
@@ -382,7 +390,142 @@ function Choice<T extends string | number>({
  * are all one object now (lib/preferences.ts), so anything added here is
  * remembered by the same mechanism without new plumbing.
  */
-export function SettingsPanel({ link, onLinkChanged }: { link: TelegramLink | null; onLinkChanged: () => void }) {
+/**
+ * Point the app at the camera roll once, and let every later visit pick up
+ * whatever is new.
+ *
+ * Shown only where it can actually work. Android Chrome 132+ and Samsung
+ * Internet have the File System Access API; Firefox and everything on iOS do
+ * not, and saying so is better than a button that opens nothing.
+ */
+function PhoneBackupCard({
+  user,
+  onBackupNow,
+  scanning
+}: {
+  user: string;
+  onBackupNow: (options: { everything: boolean }) => void;
+  scanning: boolean;
+}) {
+  const supported = backupSupported();
+  const [state, setState] = useState<BackupState | null>(null);
+
+  // Read after mount: localStorage does not exist during the server render,
+  // and reading it in useState would make the first client paint disagree.
+  useEffect(() => setState(readBackupState(user)), [user]);
+
+  if (!supported) {
+    return (
+      <section className="panel p-5">
+        <h2 className="display t-h2">Phone backup</h2>
+        <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+          This browser cannot read a folder on its own, so there is nothing to automate here. It needs the File System
+          Access API — Chrome or Samsung Internet on Android. On iPhone no browser has it, and the share sheet is the
+          way: open Photos, select, <strong>Share → TeleDrive</strong>.
+        </p>
+      </section>
+    );
+  }
+
+  const chosen = state?.folderName;
+  return (
+    <section className="panel p-5">
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="display t-h2">Phone backup</h2>
+        {chosen ? (
+          <button
+            onClick={() => {
+              const next = writeBackupState(user, { enabled: !state?.enabled });
+              setState(next);
+              toast.success(next.enabled ? "Backup on." : "Backup off.");
+            }}
+            className="btn btn-ghost"
+            style={{ minHeight: 34, fontSize: 12 }}
+          >
+            <Power className="h-3.5 w-3.5" /> {state?.enabled ? "On" : "Off"}
+          </button>
+        ) : null}
+      </div>
+
+      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        Choose your camera folder once. Every time you open TeleDrive after that, anything new in it is queued
+        automatically. Nothing is ever uploaded twice — each file is fingerprinted against the drive first.
+      </p>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          onClick={async () => {
+            const name = await chooseSource(user);
+            if (!name) return;
+            setState(readBackupState(user));
+            toast.success(`Watching "${name}".`);
+            onBackupNow({ everything: false });
+          }}
+          className="btn btn-ghost"
+          style={{ minHeight: 34, fontSize: 12 }}
+        >
+          <FolderIcon className="h-3.5 w-3.5" /> {chosen ? "Change folder" : "Choose folder"}
+        </button>
+
+        {chosen ? (
+          <>
+            <button
+              onClick={() => onBackupNow({ everything: false })}
+              disabled={scanning}
+              className="btn btn-ghost"
+              style={{ minHeight: 34, fontSize: 12 }}
+            >
+              {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Back
+              up now
+            </button>
+            <button
+              onClick={() => {
+                resetWatermark(user);
+                setState(readBackupState(user));
+                onBackupNow({ everything: true });
+              }}
+              disabled={scanning}
+              className="btn btn-ghost"
+              style={{ minHeight: 34, fontSize: 12 }}
+            >
+              <RotateCcw className="h-3.5 w-3.5" /> Re-check everything
+            </button>
+          </>
+        ) : null}
+      </div>
+
+      {chosen ? (
+        <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
+          Watching <strong className="mono">{chosen}</strong>
+          {state?.lastRunAt
+            ? ` · last checked ${new Date(state.lastRunAt).toLocaleString()} · ${state.lastCount} queued`
+            : " · not checked yet"}
+          . New files are found by modification date, so something copied in with an old timestamp is missed —{" "}
+          <strong>Re-check everything</strong> is for that.
+        </p>
+      ) : null}
+
+      <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        It runs when you open the app, not in the background: the upload queue lives in the page, so there is nothing
+        to upload with while the app is closed. Install TeleDrive to your home screen and opening it is one tap.
+      </p>
+    </section>
+  );
+}
+
+export function SettingsPanel({
+  link,
+  onLinkChanged,
+  backupUser,
+  onBackupNow,
+  backupScanning
+}: {
+  link: TelegramLink | null;
+  onLinkChanged: () => void;
+  backupUser: string;
+  onBackupNow: (options: { everything: boolean }) => void;
+  backupScanning: boolean;
+}) {
   const prefs = usePreferences();
 
   return (
@@ -520,6 +663,8 @@ export function SettingsPanel({ link, onLinkChanged }: { link: TelegramLink | nu
       </section>
 
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
+
+      <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
 
       <section className="panel p-5">
         <h2 className="display t-h2">Upload storage</h2>

@@ -82,10 +82,19 @@ function isNeverCached(path) {
   );
 }
 
+/**
+ * Dev servers serve `/_next/static/*` at *stable* paths — no content hash —
+ * and rebuild what is behind them on every edit. Pinning those is how you end
+ * up staring at a page that is three edits old wondering why your change did
+ * nothing. In a production build the same paths are content-hashed, so a new
+ * build is a new URL and cache-first is exactly right.
+ */
+const DEV = ['localhost', '127.0.0.1', '[::1]'].includes(self.location.hostname);
+
 /** Build output and icons: content-hashed or rarely changed, safe to pin. */
 function isShellAsset(path) {
+  if (path.startsWith('/_next/static/')) return !DEV;
   return (
-    path.startsWith('/_next/static/') ||
     path === '/manifest.json' ||
     path === '/offline.html' ||
     /^\/(icon|apple-touch-icon)[\w.-]*\.(png|svg|ico)$/.test(path)

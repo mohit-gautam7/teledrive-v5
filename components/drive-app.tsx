@@ -64,6 +64,7 @@ import {
   rememberDroppedHandles,
   type PickedFile
 } from "@/components/drive/dnd";
+import { markScanned, readBackupState, scanForNew } from "@/lib/photo-backup";
 import { clearPrivateCaches, takeSharedFiles } from "@/lib/shared-intake";
 import { Lightbox } from "@/components/drive/lightbox";
 import {
@@ -1047,6 +1048,72 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       });
   }, [startUploads]);
 
+  // ── Camera-roll backup ────────────────────────────────────────────────────
+
+  const [backupScanning, setBackupScanning] = useState(false);
+
+  /**
+   * Queue whatever is new in the watched folder.
+   *
+   * `prompt` separates the two callers that look identical and are not: a
+   * button press may raise the browser's permission dialog, the automatic
+   * run on open may not — without a user gesture the request is rejected,
+   * and a rejected request counts against asking again later.
+   */
+  const runBackup = useCallback(
+    async (options: { everything?: boolean; prompt: boolean; quiet?: boolean }) => {
+      setBackupScanning(true);
+      try {
+        const result = await scanForNew(cacheUser, { prompt: options.prompt });
+        if (!result.ok) {
+          if (options.quiet) return;
+          const message =
+            result.reason === "no-folder"
+              ? "No folder chosen yet — pick one in Settings."
+              : result.reason === "needs-permission"
+                ? "TeleDrive needs permission to read that folder again."
+                : result.reason === "unsupported"
+                  ? "This browser cannot read a folder on its own."
+                  : `Could not read the folder — ${result.detail ?? "unknown error"}`;
+          toast.error(message);
+          return;
+        }
+        if (!result.files.length) {
+          if (!options.quiet) toast.success("Nothing new to back up.");
+          markScanned(cacheUser, result.newest, 0);
+          return;
+        }
+        // The watermark moves now rather than on completion: the queue already
+        // survives reloads and resumes on its own, and the duplicate check
+        // stops anything being sent twice. Holding it back until every upload
+        // finished would re-scan the whole folder after any interruption.
+        markScanned(cacheUser, result.newest, result.files.length);
+        toast.success(`${result.files.length} new file${result.files.length === 1 ? "" : "s"} from your phone.`);
+        void startUploads(result.files);
+      } finally {
+        setBackupScanning(false);
+      }
+    },
+    [cacheUser, startUploads]
+  );
+
+  /** Button in Settings. A gesture, so it may ask for permission. */
+  const backupNow = useCallback(
+    (options: { everything: boolean }) => void runBackup({ ...options, prompt: true }),
+    [runBackup]
+  );
+
+  // On open, once, if a folder is being watched. Silent about every failure:
+  // an automatic check that cannot run is not news, and the Settings card
+  // already says what state it is in.
+  const backupRan = useRef(false);
+  useEffect(() => {
+    if (backupRan.current) return;
+    backupRan.current = true;
+    if (!readBackupState(cacheUser).enabled) return;
+    void runBackup({ prompt: false, quiet: true });
+  }, [cacheUser, runBackup]);
+
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   const clearSelection = useCallback(() => {
@@ -1876,7 +1943,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           <div key={`${appView}-${folderId ?? "root"}`}>
             <motion.div initial={fadeUp(reduceMotion).initial} animate={{ opacity: 1, y: 0 }} transition={transition}>
               {appView === "settings" ? (
-                <SettingsPanel link={link} onLinkChanged={refreshLink} />
+                <SettingsPanel
+                  link={link}
+                  onLinkChanged={refreshLink}
+                  backupUser={cacheUser}
+                  onBackupNow={backupNow}
+                  backupScanning={backupScanning}
+                />
               ) : appView === "about" ? (
                 <AboutPanel maxBytes={maxBytes} />
               ) : appView === "shared" ? (
