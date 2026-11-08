@@ -97,10 +97,6 @@ import {
  * nav prefetches the panel chunk on hover so the click rarely waits at all.
  */
 const panelsChunk = () => import("@/components/drive/panels");
-/** Pull the panel chunk down on the way to the click, not during it. */
-const warmPanels = () => {
-  void panelsChunk().catch(() => {});
-};
 const modalsChunk = () => import("@/components/drive/modals");
 
 const SettingsPanel = dynamic(() => panelsChunk().then(m => m.SettingsPanel), { ssr: false, loading: () => <PanelFallback rows={4} /> });
@@ -401,6 +397,28 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       setAiSearching(false);
     }
   }, [aiSearch, query]);
+
+  /*
+   * Fetch the click-only chunks once the main thread is free.
+   *
+   * Keeping them out of the first chunk is the point — the grid should not
+   * wait on Settings to parse. Leaving them unfetched until the click is not,
+   * for two reasons: offline, a chunk never fetched is a chunk the service
+   * worker never cached, so tapping a photo on a train would fail where it
+   * used to work; and online it turns a click into a round trip. An idle
+   * callback a moment after paint costs the user nothing and avoids both.
+   */
+  useEffect(() => {
+    const warm = () => {
+      void panelsChunk().catch(() => {});
+      void modalsChunk().catch(() => {});
+      void import("@/components/drive/lightbox").catch(() => {});
+    };
+    // Safari has no requestIdleCallback; a timeout is close enough here.
+    const idle = "requestIdleCallback" in window;
+    const id = idle ? window.requestIdleCallback(warm, { timeout: 4000 }) : window.setTimeout(warm, 2000);
+    return () => (idle ? window.cancelIdleCallback(id) : window.clearTimeout(id));
+  }, []);
 
   /** Warm a folder's listing so clicking it paints instantly. */
   const prefetchFolder = useCallback(
@@ -1725,7 +1743,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           }}
         />
 
-        <nav className="mt-4 flex-1 space-y-0.5 overflow-y-auto pb-3" onPointerEnter={warmPanels}>
+        <nav className="mt-4 flex-1 space-y-0.5 overflow-y-auto pb-3">
           {NAV.map(({ icon: Icon, label, view: navView }) => (
             <button key={navView} onClick={() => selectView(navView)} className="nav-item" data-active={appView === navView}>
               {appView === navView ? (
