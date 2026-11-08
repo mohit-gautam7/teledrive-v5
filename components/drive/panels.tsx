@@ -48,6 +48,7 @@ import {
 } from "@/lib/preferences";
 import { DURATION, EASE, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
 import { EmptyState } from "./bits";
+import { browserLinked, forgetDirectSession, linkBrowser, unlinkBrowser } from "@/lib/direct-upload";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
@@ -514,6 +515,213 @@ function PhoneBackupCard({
   );
 }
 
+/**
+ * Let this browser talk to Telegram itself instead of relaying through the host.
+ *
+ * Two separate switches, because they are two separate decisions:
+ *
+ *   1. Whether the account allows it at all (server-side, revocable anywhere).
+ *   2. Whether *this* browser has authorised itself with Telegram.
+ *
+ * The second one needs its own QR scan. It cannot reuse the session the server
+ * already holds: Telegram answers an auth key used from two places with
+ * AUTH_KEY_DUPLICATED and kills it, which would take the server's own uploads
+ * down with it. The upside of doing it properly is that the server's
+ * credential never reaches the browser at all, and this browser then shows up
+ * in Telegram under Settings - Devices like any other, to revoke whenever.
+ */
+function DirectUploadCard({ user }: { user: string }) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [linked, setLinked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState<string | null>(null);
+  const [askPassword, setAskPassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const passwordResolve = useRef<((value: string) => void) | null>(null);
+
+  useEffect(() => {
+    setLinked(browserLinked(user));
+    let alive = true;
+    // A 403 is the normal "switched off" answer, so the body is read either way.
+    fetch("/api/telegram/direct-session", { credentials: "same-origin", cache: "no-store" })
+      .then(res => res.json().catch(() => ({})))
+      .then((body: { enabled?: boolean }) => {
+        if (alive) setEnabled(Boolean(body?.enabled));
+      })
+      .catch(() => {
+        if (alive) setEnabled(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [user]);
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    try {
+      await apiFetch("/api/telegram/direct-session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: next })
+      });
+      setEnabled(next);
+      forgetDirectSession();
+      if (!next) {
+        // Switching the account off should not leave an authorised Telegram
+        // device behind on a browser that can no longer use it.
+        await unlinkBrowser(user);
+        setLinked(false);
+      }
+      toast.success(next ? "Direct upload is on for this account." : "Direct upload is off.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not change that setting.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connect() {
+    setBusy(true);
+    setQr(null);
+    try {
+      const name = await linkBrowser(user, {
+        onQr: url => setQr(url),
+        onPassword: () =>
+          new Promise<string>(resolve => {
+            passwordResolve.current = resolve;
+            setQr(null);
+            setAskPassword(true);
+          })
+      });
+      setLinked(true);
+      toast.success("This browser is connected as " + name + ".");
+    } catch (err) {
+      toast.error((err as Error)?.message || "Could not connect this browser to Telegram.");
+    } finally {
+      setBusy(false);
+      setQr(null);
+      setAskPassword(false);
+      setPassword("");
+      passwordResolve.current = null;
+    }
+  }
+
+  async function disconnect() {
+    setBusy(true);
+    try {
+      await unlinkBrowser(user);
+      setLinked(false);
+      toast.success("This browser is signed out of Telegram.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel p-5">
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="display t-h2">Direct upload</h2>
+        <button
+          onClick={() => void toggle(!enabled)}
+          disabled={busy || enabled === null}
+          className="btn btn-ghost"
+          style={{ minHeight: 34, fontSize: 12 }}
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}{" "}
+          {enabled === null ? "..." : enabled ? "On" : "Off"}
+        </button>
+      </div>
+
+      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        Normally a file travels twice: up to TeleDrive, then out to Telegram. With this on, your browser sends it to
+        Telegram itself and TeleDrive is told only where it landed &mdash; about a kilobyte instead of the whole file.
+        Large files get noticeably faster, and uploads stop counting against the host&apos;s bandwidth.
+      </p>
+
+      {enabled ? (
+        <div className="mt-4">
+          {linked ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className="chip"
+                style={{ color: "var(--emerald)", background: "rgba(52,211,153,0.1)", borderColor: "rgba(52,211,153,0.28)" }}
+              >
+                <Check className="h-3.5 w-3.5" /> This browser is connected
+              </span>
+              <button
+                onClick={() => void disconnect()}
+                disabled={busy}
+                className="btn btn-ghost"
+                style={{ minHeight: 34, fontSize: 12 }}
+              >
+                <Unlink className="h-3.5 w-3.5" /> Disconnect this browser
+              </button>
+            </div>
+          ) : askPassword ? (
+            <form
+              onSubmit={event => {
+                event.preventDefault();
+                passwordResolve.current?.(password);
+                setAskPassword(false);
+              }}
+              className="flex flex-wrap items-center gap-2"
+            >
+              <input
+                type="password"
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                placeholder="Telegram two-step password"
+                autoFocus
+                aria-label="Telegram two-step password"
+                className="field"
+                style={{ minHeight: 40, maxWidth: 280 }}
+              />
+              <button type="submit" className="btn btn-accent" style={{ minHeight: 34, fontSize: 12 }}>
+                <Lock className="h-3.5 w-3.5" /> Continue
+              </button>
+            </form>
+          ) : qr ? (
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="rounded-xl bg-white p-2">
+                <QrCanvas value={qr} />
+              </div>
+              <p className="t-xs max-w-[34ch] leading-relaxed" style={{ color: "var(--text-3)" }}>
+                On your phone: <strong>Telegram &rarr; Settings &rarr; Devices &rarr; Link Desktop Device</strong>,
+                then scan this. The code refreshes itself every few seconds, which is normal.
+              </p>
+            </div>
+          ) : (
+            <button
+              onClick={() => void connect()}
+              disabled={busy}
+              className="btn btn-accent"
+              style={{ minHeight: 34, fontSize: 12 }}
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Smartphone className="h-3.5 w-3.5" />}{" "}
+              Connect this browser
+            </button>
+          )}
+        </div>
+      ) : null}
+
+      <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        This browser needs its own Telegram sign-in &mdash; it cannot borrow the one TeleDrive uses, because Telegram
+        cuts off a login it sees in two places at once. One scan is enough; it is remembered on this device until you
+        disconnect, and you can revoke it any time from <strong>Telegram &rarr; Settings &rarr; Devices</strong>.
+      </p>
+      <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        The honest cost: while this browser is connected it stores a key that reaches your whole Telegram account, not
+        just TeleDrive &mdash; the same thing Telegram Web stores. On a shared computer, leave this off.
+      </p>
+      <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        It applies to files stored in your Telegram account. Smaller ones still go through the bot, and if a direct
+        upload fails for any reason the file is sent the ordinary way instead &mdash; nothing is ever lost to this
+        being on.
+      </p>
+    </section>
+  );
+}
+
 export function SettingsPanel({
   link,
   onLinkChanged,
@@ -665,6 +873,7 @@ export function SettingsPanel({
 
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
 
+      <DirectUploadCard user={backupUser} />
       <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
 
       <section className="panel p-5">

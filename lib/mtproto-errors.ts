@@ -68,6 +68,16 @@ const EXACT: Record<string, MappedError> = {
     message: "This Telegram session is no longer authorised. Link your account again."
   },
   AUTH_KEY_INVALID: { status: 401, message: "This Telegram session is invalid. Link your account again." },
+  // Telegram's answer to one auth key being used from two clients at once. It
+  // does not merely refuse the second one — it kills the session, so the first
+  // client starts failing too. Reached here by sharing a session string
+  // between the server and a browser, which is why direct upload gives the
+  // browser a login of its own instead.
+  AUTH_KEY_DUPLICATED: {
+    status: 401,
+    message:
+      "Telegram closed this session because the same login was used from two places at once. Link your account again."
+  },
   SESSION_REVOKED: {
     status: 401,
     message: "This session was revoked from your Telegram devices. Link your account again."
@@ -128,6 +138,7 @@ export function isDeadSession(error: unknown): boolean {
   return (
     code === "AUTH_KEY_UNREGISTERED" ||
     code === "AUTH_KEY_INVALID" ||
+    code === "AUTH_KEY_DUPLICATED" ||
     code === "SESSION_REVOKED" ||
     code === "SESSION_EXPIRED" ||
     code === "USER_DEACTIVATED"

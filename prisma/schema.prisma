@@ -204,6 +204,10 @@ model StorageConfig {
   mtprotoSession  String?
   mtprotoUserId   String?
   mtprotoPremium  Boolean  @default(false)
+  /// Opt-in: hand this session to the user's own browser so it uploads straight
+  /// to Telegram instead of relaying every byte through this host. Off by
+  /// default — it widens what an XSS on this origin could reach.
+  directUpload    Boolean  @default(false)
   /// Half-finished MTProto login: the connected session + phone_code_hash that
   /// step 2 (sign-in) needs. Cleared once authorisation completes.
   pendingSession  String?

@@ -356,6 +356,7 @@ class UploadManager {
       if (source.size > SINGLE_SHOT_LIMIT) {
         const result = await uploadFileInChunks({
           file: source,
+          user: this.user,
           folderId: target,
           // Read at send time, not at queue time, so changing the setting takes
           // effect on the next file rather than on the next reload.

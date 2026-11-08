@@ -67,6 +67,7 @@ import {
 } from "@/components/drive/dnd";
 import { markScanned, readBackupState, scanForNew } from "@/lib/photo-backup";
 import { clearPrivateCaches, takeSharedFiles } from "@/lib/shared-intake";
+import { forgetDirectSession } from "@/lib/direct-upload";
 import { AuthBadge, EmptyState, PanelFallback } from "@/components/drive/bits";
 import { AiSearchResults, AiSearchToggle, AskAiPanel, type AiAction } from "@/components/drive/ai";
 import { TransferPanel } from "@/components/drive/transfers";
@@ -1442,6 +1443,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       // shared phone, leaving them would show the next person this drive's
       // file names and previews before the login screen even appeared.
       clearPrivateCaches();
+    forgetDirectSession();
     } finally {
       window.location.href = "/";
     }
