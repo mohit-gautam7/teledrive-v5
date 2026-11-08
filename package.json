@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev.mjs",
     "build": "prisma generate && next build",
     "start": "next start",
     "check": "tsc --noEmit",
     "db:push": "prisma db push",
     "db:sync": "node scripts/apply-schema.mjs",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "dev:raw": "next dev"
   },
   "dependencies": {
     "@prisma/client": "6.19.0",

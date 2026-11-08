@@ -1,19 +1,68 @@
 import type { Metadata } from "next";
-import { Syne, Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { Toaster } from "sonner";
 import { ServiceWorkerRegister } from "@/components/sw-register";
 import "./globals.css";
 
 // Syne carries the brand voice in headlines; Inter does the reading work; the
 // mono face is reserved for sizes, counts and other metadata.
-const syne = Syne({ subsets: ["latin"], weight: ["600", "700", "800"], variable: "--font-display", display: "swap" });
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
-const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500"], variable: "--font-mono", display: "swap" });
+//
+// Self-hosted rather than `next/font/google`, because that loader fetches the
+// stylesheet from Google at *build* time and parses a woff2 URL out of it.
+// Google serves woff2 only to a user agent it recognises, and when it decides
+// it does not recognise Next's, it answers with TTF instead — at which point
+// the loader's match returns null and the whole build dies with
+// `TypeError: Cannot read properties of null (reading '1')`, nowhere near
+// anything you changed. A build should not depend on a third party's user
+// agent sniffing, so the files live here.
+//
+// Variable faces, latin and latin-ext only: the full set is mostly Cyrillic,
+// Greek and Vietnamese, which this UI never renders. 232 KB for all three.
+const syne = localFont({
+  src: [
+    { path: "./fonts/Syne-latin.woff2", style: "normal" },
+    { path: "./fonts/Syne-latin-ext.woff2", style: "normal" }
+  ],
+  weight: "400 800",
+  variable: "--font-display",
+  display: "swap",
+  fallback: ["ui-sans-serif", "system-ui", "sans-serif"]
+});
+const inter = localFont({
+  src: [
+    { path: "./fonts/Inter-latin.woff2", style: "normal" },
+    { path: "./fonts/Inter-latin-ext.woff2", style: "normal" }
+  ],
+  weight: "100 900",
+  variable: "--font-sans",
+  display: "swap",
+  fallback: ["ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"]
+});
+const jetbrainsMono = localFont({
+  src: [
+    { path: "./fonts/JetBrainsMono-latin.woff2", style: "normal" },
+    { path: "./fonts/JetBrainsMono-latin-ext.woff2", style: "normal" }
+  ],
+  weight: "100 800",
+  variable: "--font-mono",
+  display: "swap",
+  fallback: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"]
+});
 
 export const metadata: Metadata = {
   title: "TeleDrive — your personal cloud on Telegram",
   description: "A private cloud drive that stores every file in your own Telegram account.",
   manifest: "/manifest.json",
+  // iOS ignores the manifest's icons entirely and reads apple-touch-icon, so
+  // without this the home-screen icon is a screenshot of the page.
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/icon.svg", type: "image/svg+xml" }
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }]
+  },
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "TeleDrive" }
 };
 
