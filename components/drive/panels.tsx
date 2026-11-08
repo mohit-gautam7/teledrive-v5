@@ -47,6 +47,7 @@ import {
   type AccentName
 } from "@/lib/preferences";
 import { DURATION, EASE, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
+import { EmptyState } from "./bits";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
@@ -2130,19 +2131,6 @@ function Tag({ children, tone }: { children: React.ReactNode; tone?: "ok" | "dan
   return <span className="chip" style={style}>{children}</span>;
 }
 
-export function EmptyState({ icon, title, body, action }: { icon: React.ReactNode; title: string; body: string; action?: React.ReactNode }) {
-  return (
-    <div className="panel flex flex-col items-center px-6 py-14 text-center">
-      <span className="mb-5 grid h-14 w-14 place-items-center rounded-2xl" style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }}>
-        {icon}
-      </span>
-      <p className="display t-h2">{title}</p>
-      <p className="t-sm mt-2 max-w-[42ch] leading-relaxed" style={{ color: "var(--text-3)" }}>{body}</p>
-      {action ? <div className="mt-5">{action}</div> : null}
-    </div>
-  );
-}
-
 function PanelSkeleton({ rows }: { rows: number }) {
   return (
     <div className="space-y-2.5">
@@ -2153,8 +2141,3 @@ function PanelSkeleton({ rows }: { rows: number }) {
   );
 }
 
-export function AuthBadge({ status }: { status: "connected" | "pending" | "failed" }) {
-  if (status === "pending") return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: "var(--accent)" }} />;
-  if (status === "failed") return <AlertCircle className="h-3.5 w-3.5" style={{ color: "var(--danger)" }} />;
-  return <Check className="h-3.5 w-3.5" style={{ color: "var(--emerald)" }} />;
-}

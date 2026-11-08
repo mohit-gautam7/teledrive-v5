@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import dynamic from "next/dynamic";
 import { AnimatePresence, motion } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { toast } from "sonner";
@@ -66,16 +67,7 @@ import {
 } from "@/components/drive/dnd";
 import { markScanned, readBackupState, scanForNew } from "@/lib/photo-backup";
 import { clearPrivateCaches, takeSharedFiles } from "@/lib/shared-intake";
-import { Lightbox } from "@/components/drive/lightbox";
-import {
-  ConfirmModal,
-  DuplicateModal,
-  MoveModal,
-  NameModal,
-  PropertiesModal,
-  ShareModal
-} from "@/components/drive/modals";
-import { AboutPanel, AuthBadge, EmptyState, InsightsPanel, SettingsPanel, SharesPanel } from "@/components/drive/panels";
+import { AuthBadge, EmptyState, PanelFallback } from "@/components/drive/bits";
 import { AiSearchResults, AiSearchToggle, AskAiPanel, type AiAction } from "@/components/drive/ai";
 import { TransferPanel } from "@/components/drive/transfers";
 import { MEMORY_DOWNLOAD_LIMIT, browserDownload, canStreamToDisk, downloadWithProgress } from "@/lib/download-manager";
@@ -95,6 +87,31 @@ import {
   type TypeFilter,
   sampleRate
 } from "@/components/drive/types";
+
+/*
+ * Everything below here is reachable only by a click: a sidebar view, a file
+ * opened, a dialog. Statically imported, those four panels plus the lightbox
+ * and the six modals put roughly 3,200 lines of component code into the chunk
+ * the browser must parse before the file grid paints — on a phone, before
+ * anything is on screen. Split out, they arrive when the click does, and the
+ * nav prefetches the panel chunk on hover so the click rarely waits at all.
+ */
+const panelsChunk = () => import("@/components/drive/panels");
+const modalsChunk = () => import("@/components/drive/modals");
+
+const SettingsPanel = dynamic(() => panelsChunk().then(m => m.SettingsPanel), { ssr: false, loading: () => <PanelFallback rows={4} /> });
+const InsightsPanel = dynamic(() => panelsChunk().then(m => m.InsightsPanel), { ssr: false, loading: () => <PanelFallback rows={2} /> });
+const SharesPanel = dynamic(() => panelsChunk().then(m => m.SharesPanel), { ssr: false, loading: () => <PanelFallback rows={3} /> });
+const AboutPanel = dynamic(() => panelsChunk().then(m => m.AboutPanel), { ssr: false, loading: () => <PanelFallback rows={2} /> });
+
+const Lightbox = dynamic(() => import("@/components/drive/lightbox").then(m => m.Lightbox), { ssr: false });
+
+const ConfirmModal = dynamic(() => modalsChunk().then(m => m.ConfirmModal), { ssr: false });
+const DuplicateModal = dynamic(() => modalsChunk().then(m => m.DuplicateModal), { ssr: false });
+const MoveModal = dynamic(() => modalsChunk().then(m => m.MoveModal), { ssr: false });
+const NameModal = dynamic(() => modalsChunk().then(m => m.NameModal), { ssr: false });
+const PropertiesModal = dynamic(() => modalsChunk().then(m => m.PropertiesModal), { ssr: false });
+const ShareModal = dynamic(() => modalsChunk().then(m => m.ShareModal), { ssr: false });
 
 const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
   { icon: FolderIcon, label: "My Files", view: "files" },
@@ -380,6 +397,28 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       setAiSearching(false);
     }
   }, [aiSearch, query]);
+
+  /*
+   * Fetch the click-only chunks once the main thread is free.
+   *
+   * Keeping them out of the first chunk is the point — the grid should not
+   * wait on Settings to parse. Leaving them unfetched until the click is not,
+   * for two reasons: offline, a chunk never fetched is a chunk the service
+   * worker never cached, so tapping a photo on a train would fail where it
+   * used to work; and online it turns a click into a round trip. An idle
+   * callback a moment after paint costs the user nothing and avoids both.
+   */
+  useEffect(() => {
+    const warm = () => {
+      void panelsChunk().catch(() => {});
+      void modalsChunk().catch(() => {});
+      void import("@/components/drive/lightbox").catch(() => {});
+    };
+    // Safari has no requestIdleCallback; a timeout is close enough here.
+    const idle = "requestIdleCallback" in window;
+    const id = idle ? window.requestIdleCallback(warm, { timeout: 4000 }) : window.setTimeout(warm, 2000);
+    return () => (idle ? window.cancelIdleCallback(id) : window.clearTimeout(id));
+  }, []);
 
   /** Warm a folder's listing so clicking it paints instantly. */
   const prefetchFolder = useCallback(
