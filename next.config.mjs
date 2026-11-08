@@ -64,7 +64,7 @@ const csp = [
   // The file origin is added only when there is one. Without it, every upload
   // chunk and every streamed download to that host is blocked by the CSP — and
   // blocked silently, which is the worst way to discover a misconfigured split.
-  withFileOrigin("connect-src 'self'"),
+  withFileOrigin("connect-src 'self' wss://*.web.telegram.org"),
   "frame-src https://oauth.telegram.org https://telegram.org",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
@@ -101,6 +101,25 @@ const nextConfig = {
   // `telegram` (GramJS) and `sharp` as real Node requires, and instrumentation.ts
   // now runs without a flag.
   serverExternalPackages: ["telegram", "sharp"],
+  webpack(config, { isServer }) {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        net: false,
+        tls: false,
+        child_process: false,
+        os: false,
+        path: false,
+        zlib: false,
+        crypto: false,
+        stream: false,
+        http: false,
+        https: false
+      };
+    }
+    return config;
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   }

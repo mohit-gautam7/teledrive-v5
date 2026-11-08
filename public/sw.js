@@ -76,6 +76,8 @@ function isNeverCached(path) {
     path.startsWith('/api/stream/') ||
     path.startsWith('/api/public/') ||
     path.startsWith('/api/bot/') ||
+    // Hands out a Telegram credential. Nothing about it may be stored.
+    path.startsWith('/api/telegram/') ||
     path.startsWith('/api/cron/') ||
     path.startsWith('/api/share') ||
     path.startsWith('/api/ai/')

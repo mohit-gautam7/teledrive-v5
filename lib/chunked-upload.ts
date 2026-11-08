@@ -1,6 +1,7 @@
 import { UploadAbortedError, fileFetch } from "@/lib/api-client";
 import { resumeKeyFor } from "@/lib/file-identity";
 import { CHUNK_SIZE, CHUNK_CONCURRENCY, MAX_HONOURED_WAIT_MS, retryAfterMs, type UploadBackend } from "@/lib/upload-config";
+import { DirectUploadUnavailable, uploadDirect } from "@/lib/direct-upload";
 
 const MAX_RETRIES = 5;
 
@@ -96,6 +97,7 @@ export class DuplicateFileError extends Error {
 
 export async function uploadFileInChunks({
   file,
+  user,
   folderId,
   prefer,
   contentHash,
@@ -104,6 +106,9 @@ export async function uploadFileInChunks({
   signal,
 }: {
   file: File;
+  /** Which TeleDrive account this is, so the direct path can find the Telegram
+   *  session *this browser* authorised for them. */
+  user: string;
   folderId?: string | null;
   /** The user's storage choice from Settings. The server may decline it. */
   prefer?: string;
@@ -147,13 +152,60 @@ export async function uploadFileInChunks({
     fileId,
     totalChunks,
     received = [],
-    chunkSizeBytes
+    chunkSizeBytes,
+    backend
   } = (await initRes.json()) as {
     fileId: string;
     totalChunks: number;
     received?: number[];
     chunkSizeBytes?: number;
+    backend?: UploadBackend;
   };
+
+  // 1a. The short road, when it is open.
+  //
+  // `backend === "mtproto"` means the server was going to relay this file to
+  // the user's own Telegram account anyway — so the browser can do that itself
+  // and skip the host entirely. Only ever attempted on a *fresh* session:
+  // mixing direct parts with chunks a previous relay attempt already stored
+  // would finalise something truncated.
+  //
+  // Any failure short of a cancel falls through to the relay below, because a
+  // slower upload is always better than a failed one. That is the whole safety
+  // story for this feature.
+  if (backend === "mtproto" && received.length === 0) {
+    try {
+      const { messageId } = await uploadDirect({
+        user,
+        file,
+        caption: "\u{1F4C4} " + file.name,
+        onProgress,
+        signal
+      });
+      const res = await fileFetch(`/api/upload/direct/${fileId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId }),
+        signal
+      });
+      if (res.ok) {
+        const done = (await res.json().catch(() => ({}))) as { file?: UploadedFileMeta };
+        onProgress(file.size);
+        return { fileId, file: done.file ?? null };
+      }
+      // The server would not accept the message — most likely the verification
+      // in /api/upload/direct found the wrong document. Relay it instead.
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      console.warn("[upload] direct upload rejected, relaying instead:", body.error);
+    } catch (err) {
+      if (isAbort(err)) throw new UploadAbortedError();
+      if (!(err instanceof DirectUploadUnavailable)) {
+        console.warn("[upload] direct upload failed, relaying instead:", (err as Error)?.message);
+      }
+      // Reset the bar: whatever direct managed is not credited to the relay.
+      onProgress(0);
+    }
+  }
 
   // The server owns the chunk size. Taking it from the response rather than the
   // shared constant means an operator can change UPLOAD_CHUNK_MB without

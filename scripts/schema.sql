@@ -17,6 +17,7 @@ CREATE INDEX IF NOT EXISTS "File_userId_folderId_contentHash_idx"
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "mtprotoSession" TEXT;
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "mtprotoUserId"  TEXT;
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "mtprotoPremium" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "directUpload"   BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "pendingSession" TEXT;
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "pendingHash"    TEXT;
 ALTER TABLE "StorageConfig" ADD COLUMN IF NOT EXISTS "pendingPhone"   TEXT;

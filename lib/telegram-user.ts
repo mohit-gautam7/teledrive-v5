@@ -595,6 +595,35 @@ export async function finalizeBigFile(params: {
   return { messageId: message.id };
 }
 
+/**
+ * Confirm that `msgId` really is a document of `expectedSize` in this account's
+ * Saved Messages.
+ *
+ * Used when the *browser* did the upload and reports back which message it
+ * created. The claim is the user's own, so this is not a trust boundary in the
+ * usual sense — but an off-by-one or a crossed promise in the client would
+ * otherwise point a drive row at a different file of theirs, and the drive
+ * would serve the wrong bytes with no error anywhere. One cheap metadata call
+ * turns that silent corruption into a refused upload.
+ */
+export async function verifyStoredDocument(
+  session: string,
+  msgId: number,
+  expectedSize: number
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const client = await connect(session);
+  const messages = await client.getMessages("me", { ids: [msgId] });
+  const media = messages[0]?.media;
+  if (!(media instanceof Api.MessageMediaDocument) || !(media.document instanceof Api.Document)) {
+    return { ok: false, reason: `Message ${msgId} does not hold a document.` };
+  }
+  const size = Number(media.document.size);
+  if (size !== expectedSize) {
+    return { ok: false, reason: `Stored ${size} bytes, expected ${expectedSize}.` };
+  }
+  return { ok: true };
+}
+
 // ── Ranged download ──────────────────────────────────────────────────────────
 
 type DocumentRef = { id: bigInt.BigInteger; accessHash: bigInt.BigInteger; fileReference: Buffer; dcId: number };
