@@ -14,6 +14,16 @@ export const metadata: Metadata = {
   title: "TeleDrive — your personal cloud on Telegram",
   description: "A private cloud drive that stores every file in your own Telegram account.",
   manifest: "/manifest.json",
+  // iOS ignores the manifest's icons entirely and reads apple-touch-icon, so
+  // without this the home-screen icon is a screenshot of the page.
+  icons: {
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/icon.svg", type: "image/svg+xml" }
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }]
+  },
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "TeleDrive" }
 };
 

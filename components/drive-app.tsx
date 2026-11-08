@@ -64,6 +64,7 @@ import {
   rememberDroppedHandles,
   type PickedFile
 } from "@/components/drive/dnd";
+import { clearPrivateCaches, takeSharedFiles } from "@/lib/shared-intake";
 import { Lightbox } from "@/components/drive/lightbox";
 import {
   ConfirmModal,
@@ -1014,6 +1015,38 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     };
   }, [startUploads, folderId]);
 
+  // Photos sent here from the Android share sheet. The share target is a POST,
+  // which only the service worker can read, so it parks the files in a cache
+  // and redirects here with ?shared=1. Runs once: the ref guards against a
+  // second pass under StrictMode, which would otherwise drain an empty cache
+  // and report "nothing arrived" over the top of a real upload.
+  const sharedDrained = useRef(false);
+  useEffect(() => {
+    if (sharedDrained.current) return;
+    if (new URLSearchParams(window.location.search).get("shared") !== "1") return;
+    sharedDrained.current = true;
+
+    // Drop the marker now, so a reload does not look like a second share.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("shared");
+    window.history.replaceState(null, "", url.pathname + url.search);
+
+    const toastId = toast.loading("Receiving shared files…");
+    void takeSharedFiles()
+      .then(files => {
+        toast.dismiss(toastId);
+        if (!files.length) {
+          toast.error("Nothing arrived from the share sheet.");
+          return;
+        }
+        void startUploads(files.map(file => ({ file })));
+      })
+      .catch(error => {
+        toast.dismiss(toastId);
+        toast.error(`Could not read the shared files — ${error instanceof Error ? error.message : String(error)}`);
+      });
+  }, [startUploads]);
+
   // ── Mutations ─────────────────────────────────────────────────────────────
 
   const clearSelection = useCallback(() => {
@@ -1299,6 +1332,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       Object.keys(window.localStorage)
         .filter(k => k.startsWith("td:"))
         .forEach(k => window.localStorage.removeItem(k));
+      // Thumbnails and listings are cached per origin, not per account. On a
+      // shared phone, leaving them would show the next person this drive's
+      // file names and previews before the login screen even appeared.
+      clearPrivateCaches();
     } finally {
       window.location.href = "/";
     }
