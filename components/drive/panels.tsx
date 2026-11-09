@@ -724,21 +724,27 @@ function NativeBackupCard() {
             </label>
             <div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
               <span>Skip anything larger than</span>
-              <input
-                type="number"
-                min={0}
-                step={50}
-                inputMode="numeric"
-                defaultValue={status.maxFileSizeMb || ""}
-                placeholder="no limit"
-                onBlur={event => {
-                  const next = Math.max(0, Number(event.target.value) || 0);
-                  if (next !== status.maxFileSizeMb) void applyResult(() => nativeBackup.setOptions({ maxFileSizeMb: next }));
-                }}
-                className="field"
-                style={{ width: 110, height: 32 }}
-              />
-              <span>MB</span>
+              {/* The unit travels with the field. Left as separate flex children
+                  they wrap apart, and "MB" alone on the next line reads as a
+                  stray label rather than as part of the control. */}
+              <span className="inline-flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step={50}
+                  inputMode="numeric"
+                  defaultValue={status.maxFileSizeMb || ""}
+                  placeholder="no limit"
+                  onBlur={event => {
+                    const next = Math.max(0, Number(event.target.value) || 0);
+                    if (next !== status.maxFileSizeMb)
+                      void applyResult(() => nativeBackup.setOptions({ maxFileSizeMb: next }));
+                  }}
+                  className="field"
+                  style={{ width: 104, height: 32 }}
+                />
+                <span>MB</span>
+              </span>
             </div>
             <p className="t-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
               Raising the limit later does not go back for what it skipped &mdash; use <em>Re-check everything</em> for
