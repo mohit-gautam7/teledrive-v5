@@ -78,6 +78,7 @@ function FileTileBase({
   // Hoisted out of the JSX because it is a hook: the thumbnail source has to be
   // resolved unconditionally, whether or not this tile happens to be an image.
   const thumbSrc = useAssetUrl(`/api/preview/${file.id}?thumb=1`);
+  const [thumbFailed, setThumbFailed] = useState(false);
   const video = file.mimeType.startsWith("video/");
   const Icon = image ? ImageIcon : video ? VideoIcon : FileIcon;
   const deepLink = telegramDeepLink(file, mtprotoUserId);
@@ -197,7 +198,7 @@ function FileTileBase({
         style={{ background: "var(--surface)", cursor: selectionActive ? "pointer" : "zoom-in" }}
         onClick={() => (selectionActive ? actions.onToggleSelect() : actions.onPreview())}
       >
-        {image && !file.unreachable ? (
+        {image && !file.unreachable && !thumbFailed ? (
           <>
             {!loaded ? <span className="skeleton absolute inset-0" /> : null}
             <img
@@ -206,7 +207,13 @@ function FileTileBase({
               loading="lazy"
               decoding="async"
               onLoad={() => setLoaded(true)}
-              onError={() => setLoaded(true)}
+              // A format the server cannot turn into a thumbnail answers 415.
+              // Leaving the broken <img> in place drew an empty grey box with
+              // no hint of what the file even was; the icon at least names it.
+              onError={() => {
+                setLoaded(true);
+                setThumbFailed(true);
+              }}
               // Never gated on load state — an image that completes before
               // onLoad is attached would stay invisible. The skeleton sits
               // behind it and is removed once the image reports in.
