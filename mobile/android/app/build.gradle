@@ -49,6 +49,9 @@ dependencies {
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    // Lets a test fire the periodic job on demand instead of waiting two hours.
+    androidTestImplementation "androidx.work:work-testing:$workVersion"
+    androidTestImplementation "androidx.test:rules:1.6.1"
     implementation project(':capacitor-cordova-android-plugins')
 
     // Background backup (Track 3).
