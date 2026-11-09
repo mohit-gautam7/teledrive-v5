@@ -59,9 +59,24 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             return@withContext Result.success()
         }
 
+        // Resolve the destination before a single byte moves, and resolve it
+        // every run. Uploading with no folder scatters a camera roll across the
+        // drive root, and uploading into a folder the user has deleted makes
+        // the server answer 404 — which counts as permanent, so every photo
+        // would be skipped and the watermark would march past the lot of them.
+        val folderId = try {
+            client.ensureBackupFolder(prefs.folderId).also { prefs.folderId = it }
+        } catch (signedOut: NotSignedInException) {
+            finish("Signed out — open TeleDrive and sign in.")
+            return@withContext Result.success()
+        } catch (error: Throwable) {
+            Log.w(TAG, "could not resolve the backup folder", error)
+            return@withContext Result.retry()
+        }
+
         setForegroundSafely(0, pending.size)
 
-        val already = runCatching { client.findExisting(pending, prefs.folderId) }.getOrDefault(emptySet())
+        val already = runCatching { client.findExisting(pending, folderId) }.getOrDefault(emptySet())
         var stored = 0
         var skipped = 0
         var transientFailure = false
@@ -80,7 +95,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             }
 
             try {
-                client.upload(item, prefs.folderId) { }
+                client.upload(item, folderId) { }
                 stored++
                 prefs.raiseWatermark(item.addedAt)
             } catch (signedOut: NotSignedInException) {
