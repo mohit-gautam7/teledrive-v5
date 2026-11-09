@@ -70,7 +70,13 @@ export async function GET(request: NextRequest, props: { params: Promise<{ id: s
         const buf = await readEntireFile(file);
         if (buf) {
           const sharp = (await import("sharp")).default;
-          const out = await sharp(buf)
+          // failOn: "none" because sharp defaults to rejecting any image with a
+          // recoverable defect, and phone JPEGs are full of them — a truncated
+          // EXIF block or trailing bytes after the EOI marker is routine. The
+          // logs were full of "Warning treated as error due to failOn setting"
+          // for files that download byte-for-byte intact and open fine
+          // everywhere else. Decode what is there instead of refusing it.
+          const out = await sharp(buf, { failOn: "none" })
             .rotate()
             .resize(400, 400, { fit: "inside", withoutEnlargement: true })
             .webp({ quality: 72 })
@@ -97,8 +103,18 @@ export async function GET(request: NextRequest, props: { params: Promise<{ id: s
           });
         }
       } catch (err) {
-        console.warn("[preview] thumbnail failed, streaming full image:", (err as Error).message);
+        console.warn("[preview] thumbnail unavailable:", (err as Error).message);
       }
+
+      // No thumbnail could be made — HEIC is the common case, because this
+      // build of libvips has the HEIF container but no HEVC decoder.
+      //
+      // Falling through to the original used to "work" by streaming the whole
+      // file: several megabytes per tile, for bytes no browser will render as
+      // an <img>. A grid of fifty HEIC photos quietly pulled a couple of
+      // hundred megabytes to draw fifty broken boxes. 415 is both honest and
+      // free, and the tile shows its file-type icon instead.
+      return new NextResponse(null, { status: 415, headers: protectiveHeaders() });
     }
 
     const response = streamFileResponse(file, request.headers.get("range"), "inline");
