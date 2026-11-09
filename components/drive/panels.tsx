@@ -18,6 +18,8 @@ import {
   Power,
   RefreshCw,
   Smartphone,
+  SkipForward,
+  Square,
   RotateCcw,
   Sun,
   Trash2,
@@ -422,6 +424,7 @@ function NativeBackupCard() {
   const [status, setStatus] = useState<NativeBackupStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const available = nativeBackupAvailable();
+  const running = status?.running ?? false;
 
   const refresh = useCallback(async () => {
     const next = await nativeBackup.status();
@@ -433,10 +436,12 @@ function NativeBackupCard() {
     if (!available) return;
     void refresh();
     // The worker runs outside the page, so the page has to look again rather
-    // than be told. Ten seconds is enough to watch a run start and finish.
-    const timer = window.setInterval(() => void refresh(), 10_000);
+    // than be told. A progress bar refreshed every ten seconds is not a
+    // progress bar, so the idle poll speeds up while something is in flight.
+    const period = running ? 1_500 : 10_000;
+    const timer = window.setInterval(() => void refresh(), period);
     return () => window.clearInterval(timer);
-  }, [available, refresh]);
+  }, [available, refresh, running]);
 
   const applyResult = useCallback(
     async (action: () => Promise<NativeBackupStatus | null>, success?: string) => {
@@ -508,6 +513,63 @@ function NativeBackupCard() {
         </div>
       ) : null}
 
+      {/*
+        What is happening right now, by name.
+
+        "Running" on its own is indistinguishable from "stuck", which is the
+        usual reason people switch a backup off: there is no way to tell
+        patience from a bug. Naming the file and showing its bytes makes a slow
+        video obviously a slow video, and gives the two escapes — abandon this
+        one, or stop the run — somewhere to live.
+      */}
+      {status?.running && status.currentName ? (
+        <div className="mt-4 rounded-xl p-3" style={{ background: "var(--surface-2)" }}>
+          <div className="flex items-center justify-between gap-3">
+            <p className="t-sm min-w-0 truncate" style={{ color: "var(--text-1)" }} title={status.currentName}>
+              {status.currentName}
+            </p>
+            {status.currentTotal > 0 ? (
+              <span className="mono t-xs shrink-0" style={{ color: "var(--text-3)" }}>
+                {status.currentIndex} of {status.currentTotal}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--border-dim)" }}>
+            <div
+              className="h-full rounded-full transition-[width] duration-500"
+              style={{
+                width: `${status.currentSize > 0 ? Math.min(100, Math.round((status.currentSent / status.currentSize) * 100)) : 0}%`,
+                background: "var(--accent)"
+              }}
+            />
+          </div>
+
+          <p className="mono t-xs mt-1.5" style={{ color: "var(--text-3)" }}>
+            {formatBytes(status.currentSent)} of {formatBytes(status.currentSize)}
+          </p>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={() => void applyResult(nativeBackup.skipCurrent, "Skipping that one.")}
+              disabled={busy}
+              className="btn btn-ghost"
+              style={{ minHeight: 34, fontSize: 12 }}
+            >
+              <SkipForward className="h-3.5 w-3.5" /> Skip this file
+            </button>
+            <button
+              onClick={() => void applyResult(nativeBackup.stopRun, "Stopped. The next scheduled run still happens.")}
+              disabled={busy}
+              className="btn btn-ghost"
+              style={{ minHeight: 34, fontSize: 12 }}
+            >
+              <Square className="h-3.5 w-3.5" /> Stop this run
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {status && !status.mediaPermission ? (
         <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
           TeleDrive cannot see your photos yet. Turning backup on will ask for that permission.
@@ -519,10 +581,10 @@ function NativeBackupCard() {
           <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
             <input
               type="checkbox"
-              checked={status.wifiOnly}
-              onChange={event => void applyResult(() => nativeBackup.setOptions({ wifiOnly: event.target.checked }))}
+              checked={!status.wifiOnly}
+              onChange={event => void applyResult(() => nativeBackup.setOptions({ wifiOnly: !event.target.checked }))}
             />
-            Wi-Fi only
+            Use mobile data too (otherwise Wi-Fi only)
           </label>
           <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
             <input

@@ -71,6 +71,11 @@ class BackupPlugin : Plugin() {
                 .put("chargingOnly", prefs.chargingOnly)
                 .put("includeNonCamera", prefs.includeNonCamera)
                 .put("folderId", prefs.folderId)
+                .put("currentName", prefs.currentName)
+                .put("currentIndex", prefs.currentIndex)
+                .put("currentTotal", prefs.currentTotal)
+                .put("currentSent", prefs.currentSent)
+                .put("currentSize", prefs.currentSize)
                 .put("lastRunAt", prefs.lastRunAt)
                 .put("lastResult", prefs.lastResult)
                 .put("uploadedTotal", prefs.uploadedTotal)
@@ -128,6 +133,34 @@ class BackupPlugin : Plugin() {
      * the watermark and would otherwise never be seen. Nothing is uploaded
      * twice — the server's duplicate check catches what is already stored.
      */
+    /**
+     * Abandon the file being uploaded and carry on with the rest.
+     *
+     * The worker reads this between chunks, so it takes effect within a chunk
+     * rather than at the end of the file — which for a long video is the
+     * difference between a button that works and one that appears not to.
+     */
+    @PluginMethod
+    fun skipCurrent(call: PluginCall) {
+        prefs.control = BackupPrefs.CONTROL_SKIP
+        status(call)
+    }
+
+    /**
+     * End this run now, keeping the schedule.
+     *
+     * Distinct from switching backup off: the next scheduled run still
+     * happens. Both the flag and the cancel are needed — the flag stops a
+     * worker that is mid-file politely, and the cancel covers one that is
+     * between files and would otherwise keep going.
+     */
+    @PluginMethod
+    fun stopRun(call: PluginCall) {
+        prefs.control = BackupPrefs.CONTROL_STOP
+        runCatching { BackupScheduler.cancelRun(context) }
+        status(call)
+    }
+
     @PluginMethod
     fun rescanAll(call: PluginCall) {
         prefs.resetWatermark()
