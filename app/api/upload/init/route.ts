@@ -17,6 +17,7 @@ import {
 import { purgeTelegramCopies } from "@/lib/file-delete";
 import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 import { resolveOwnedFolder } from "@/lib/folder-tree";
+import { FILE_ORIGIN } from "@/lib/file-origin";
 import { findDuplicate } from "@/lib/duplicates";
 
 export const runtime = "nodejs";
@@ -178,7 +179,13 @@ export async function POST(request: NextRequest) {
       chunkSizeBytes: CHUNK_SIZE,
       backend: file.backend,
       received: [],
-      resumed: false
+      resumed: false,
+      // Where the chunks themselves should be sent. The browser learns this at
+      // build time from NEXT_PUBLIC_FILE_ORIGIN, but the Android backup is a
+      // native client with no bundle to inline it into, and it was posting
+      // every byte of the camera roll to this origin — the exact traffic the
+      // split exists to move. "" means same-origin, as it does everywhere else.
+      fileOrigin: FILE_ORIGIN
     });
   } catch (error) {
     return jsonError(error, "Could not initialise upload.");
