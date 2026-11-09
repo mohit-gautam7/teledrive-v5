@@ -121,35 +121,29 @@ html:not(.dark) {
     background: var(--bg-0);
     /* Belt and braces against horizontal scroll from decorative blurs. */
     overflow-x: hidden;
+    overflow-x: clip;
   }
 
-  /*
-    `overflow-x: clip` instead of `hidden`, wherever it is understood.
-
-    They look identical and are not: `hidden` is a scroll container that
-    merely refuses to scroll, and any `position: sticky` inside it sticks to
-    *it* rather than to the viewport. Since body never scrolls - html does -
-    the sticky header had nothing to stick to and slid away with the page.
-    Measured on a phone at scrollY 1710 with the header at y -1710, which is
-    exactly "not sticky at all". `clip` clips without becoming a scroll
-    container, so sticky behaves again and the horizontal guard stays.
-
-    It is a progressive enhancement: where `clip` is unknown the declaration
-    is dropped and the old `hidden` above still applies.
-  */
-  @supports (overflow-x: clip) {
-    html,
-    body {
-      overflow-x: clip;
-    }
-  }
 
 body {
   margin: 0;
   min-height: 100dvh;
   background: var(--bg-0);
   color: var(--text-1);
+  /*
+    These two lines are one declaration with a fallback, and the order is the
+    whole point: an engine that does not know `clip` ignores the second and
+    keeps `hidden`.
+
+    They are not interchangeable. `hidden` makes body a scroll container which
+    then never scrolls - html is what scrolls - so every `position: sticky`
+    inside resolved `top: 0` against a box that never moves, and the drive
+    header slid away with the page (measured at y=-1710 while scrollY was
+    1710). `clip` clips without becoming a scroll container, so sticky works
+    and the horizontal guard is unchanged.
+  */
   overflow-x: hidden;
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-family: var(--font-sans), system-ui, sans-serif;
