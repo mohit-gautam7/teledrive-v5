@@ -40,6 +40,15 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         if (!prefs.enabled) return@withContext Result.success()
 
+        // Another run already has it. Stepping aside rather than retrying: the
+        // run that holds the lock is doing this work, so there is nothing left
+        // undone for WorkManager to back off and repeat.
+        if (prefs.anotherRunIsActive()) {
+            Log.i(TAG, "another run is active, standing down")
+            return@withContext Result.success()
+        }
+        prefs.holdLock()
+
         val client = TeleDriveClient(applicationContext, BASE_URL)
 
         try {
@@ -47,15 +56,18 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         } catch (signedOut: NotSignedInException) {
             // Not a failure to retry: no amount of waiting signs a user in.
             // The schedule stays, so backup resumes by itself once they do.
+            prefs.releaseLock()
             finish("Signed out — open TeleDrive and sign in.")
             return@withContext Result.success()
         } catch (offline: IOException) {
+            prefs.releaseLock()
             return@withContext Result.retry()
         }
 
         val pending = scanner.scan(prefs, BATCH_LIMIT)
         if (pending.isEmpty()) {
             prefs.clearCurrent()
+            prefs.releaseLock()
             finish("Up to date.")
             return@withContext Result.success()
         }
@@ -71,10 +83,12 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 prefs.folderName = it.name
             }.id
         } catch (signedOut: NotSignedInException) {
+            prefs.releaseLock()
             finish("Signed out — open TeleDrive and sign in.")
             return@withContext Result.success()
         } catch (error: Throwable) {
             Log.w(TAG, "could not resolve the backup folder", error)
+            prefs.releaseLock()
             return@withContext Result.retry()
         }
 
@@ -108,6 +122,9 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
             try {
                 prefs.beginItem(item.name, index + 1, pending.size, item.size)
+                // Refreshed per item, so the claim lives exactly as long as the
+                // run keeps making progress.
+                prefs.holdLock()
                 client.upload(item, folderId) { sent ->
                     prefs.currentSent = sent
                     // Checked between chunks, so a request from the card lands
@@ -155,6 +172,9 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
         prefs.addUploaded(stored)
         prefs.clearCurrent()
+        // Released before the next batch is queued, or the chain would stand
+        // down against itself.
+        prefs.releaseLock()
         val summary = buildString {
             append("$stored saved")
             if (skipped > 0) append(", $skipped skipped")
