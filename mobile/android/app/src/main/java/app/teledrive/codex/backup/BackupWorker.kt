@@ -166,10 +166,26 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
         finish(summary)
 
+        // Keep going while there is more, the run was healthy, and this one
+        // actually moved: without the progress guard a batch that achieves
+        // nothing would queue another identical batch for ever.
+        //
+        // Deliberately not a loop inside one worker. Each batch is its own run,
+        // so the constraints are re-evaluated between them — losing Wi-Fi or
+        // dropping to a low battery ends the chain at the next boundary rather
+        // than part-way through a file — and no single run outstays the time a
+        // foreground service is allowed.
+        if (!stopped && !transientFailure && prefs.enabled && (stored + skipped) > 0) {
+            val remaining = runCatching { scanner.pendingCount(prefs) }.getOrDefault(0)
+            if (remaining > 0) {
+                Log.i(TAG, "$remaining still waiting; queueing the next batch")
+                runCatching { BackupScheduler.continueRun(applicationContext, prefs) }
+            }
+        }
+
         // Retry only when something was actually left undone by a fault. A run
-        // that merely hit the batch limit returns success; the next scheduled
-        // run picks up the rest, which keeps one huge backlog from monopolising
-        // the device.
+        // that merely hit the batch limit returns success; the chain above, or
+        // the next scheduled run, picks up the rest.
         if (!stopped && transientFailure && stored == 0) Result.retry() else Result.success()
     }
 

@@ -97,6 +97,29 @@ object BackupScheduler {
         WorkManager.getInstance(context).cancelUniqueWork(ONE_SHOT)
     }
 
+    /**
+     * Queue another batch straight after this one.
+     *
+     * A run handles one batch and stops, so a first backup of 750 photos would
+     * take fifteen scheduled runs — thirty hours of waiting two hours at a
+     * time — which is not a backup anyone would describe as working.
+     *
+     * APPEND_OR_REPLACE rather than REPLACE because the caller is the worker
+     * that currently owns this unique name: REPLACE would cancel the very run
+     * asking for the next one. Appending puts the new batch behind it, so the
+     * chain advances one batch at a time and never runs two at once.
+     *
+     * The constraints are rebuilt per batch, so Wi-Fi going away or the
+     * battery dropping stops the chain exactly as it stops a scheduled run.
+     */
+    fun continueRun(context: Context, prefs: BackupPrefs): Operation {
+        val request = OneTimeWorkRequestBuilder<BackupWorker>()
+            .setConstraints(constraints(prefs))
+            .build()
+        return WorkManager.getInstance(context)
+            .enqueueUniqueWork(ONE_SHOT, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+    }
+
     fun runNow(context: Context, prefs: BackupPrefs): Operation {
         val request = OneTimeWorkRequestBuilder<BackupWorker>()
             .setConstraints(
