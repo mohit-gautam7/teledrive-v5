@@ -2,6 +2,7 @@ package app.teledrive.codex.backup
 
 import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -11,11 +12,10 @@ import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import androidx.test.rule.GrantPermissionRule
 import java.util.concurrent.TimeUnit
 
 /**
@@ -37,18 +37,6 @@ import java.util.concurrent.TimeUnit
 @RunWith(AndroidJUnit4::class)
 class BackupScheduleTest {
 
-    /**
-     * Installing the test APK reinstalls the app, which revokes every runtime
-     * permission granted by hand. Without this the scanner tests fail with
-     * "no camera items" and look like a scanner bug rather than a missing
-     * grant — which is exactly how an hour gets wasted.
-     */
-    @get:Rule
-    val permissions: GrantPermissionRule =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-            GrantPermissionRule.grant(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
-        else GrantPermissionRule.grant(Manifest.permission.READ_EXTERNAL_STORAGE)
-
     private lateinit var context: Context
     private lateinit var prefs: BackupPrefs
 
@@ -56,6 +44,20 @@ class BackupScheduleTest {
     fun setUp() {
         context = InstrumentationRegistry.getInstrumentation().targetContext
         prefs = BackupPrefs(context)
+
+        grantMediaPermissionIfAllowed()
+        // Not an assertFalse: on a phone where the grant is refused the suite
+        // has nothing to say about the scanner, and saying it failed would be a
+        // lie about the code. The message names the one manual step instead.
+        // GrantPermissionRule used to do this, and had to go: it throws
+        // SecurityException on ColorOS / realme UI, which fails all four tests
+        // for a reason that has nothing to do with any of them.
+        Assume.assumeTrue(
+            "Photo access is not granted. This ROM forbids granting it automatically — " +
+                "open TeleDrive, switch Automatic backup on, allow photos, then run this again.",
+            hasMediaPermission()
+        )
+
         prefs.enabled = true
         prefs.resetWatermark()
 
@@ -131,6 +133,39 @@ class BackupScheduleTest {
 
         assertTrue("The scheduled worker never ran", prefs.lastRunAt > before)
         assertTrue("The worker should record what it did", prefs.lastResult.isNotBlank())
+    }
+
+    /* ── Permission plumbing ───────────────────────────────────────────────── */
+
+    private fun mediaPermissions(): List<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+        else listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+
+    private fun hasMediaPermission(): Boolean = mediaPermissions().all {
+        context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Grant the media permissions where the platform allows it.
+     *
+     * Installing the test APK reinstalls the app, which revokes every runtime
+     * permission granted by hand — so on an emulator or CI machine this is what
+     * keeps the scanner tests runnable. Vendor ROMs may refuse it outright:
+     * realme UI 16 strips GRANT_RUNTIME_PERMISSIONS from the shell uid, so both
+     * this and adb's own `pm grant` are denied. A refusal is therefore expected,
+     * not exceptional, and the assumption above handles it.
+     */
+    private fun grantMediaPermissionIfAllowed() {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        for (permission in mediaPermissions()) {
+            runCatching {
+                automation.executeShellCommand("pm grant ${context.packageName} $permission").close()
+            }
+        }
+        // executeShellCommand is asynchronous; the grant lands shortly after.
+        val deadline = System.currentTimeMillis() + 2000
+        while (!hasMediaPermission() && System.currentTimeMillis() < deadline) Thread.sleep(100)
     }
 
     /** Switching it off must leave nothing behind to wake the phone up. */

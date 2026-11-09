@@ -609,12 +609,18 @@ function NativeBackupCard() {
               <button
                 onClick={async () => {
                   const result = await nativeBackup.openStartupSettings();
-                  if (!result?.opened) toast.error("Could not open that screen — find TeleDrive in Android settings.");
+                  // Not an error when it falls back. Several ROMs - realme UI
+                  // 16 among them, measured - guard the auto-launch list with a
+                  // privileged permission, so no app can open it and the app
+                  // settings page is the closest honest destination. Saying
+                  // "failed" would read as a bug in TeleDrive; it is a locked
+                  // door, and the steps above are the way through it.
+                  if (!result?.opened) toast("Opened TeleDrive's app settings. This phone won't let apps jump to the auto-launch list — use the steps above.");
                 }}
                 className="btn btn-ghost"
                 style={{ minHeight: 34, fontSize: 12 }}
               >
-                <Smartphone className="h-3.5 w-3.5" /> Open auto-launch settings
+                <Smartphone className="h-3.5 w-3.5" /> Open app settings
               </button>
             ) : null}
             {!status.notificationPermission ? (

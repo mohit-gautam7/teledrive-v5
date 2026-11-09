@@ -113,10 +113,14 @@ export function vendorAdvice(vendor: string): { label: string; steps: string[] }
   const v = vendor.toLowerCase();
   if (v === "oppo" || v === "realme" || v === "oneplus") {
     return {
-      label: v === "oneplus" ? "OnePlus / OxygenOS" : "ColorOS",
+      label: v === "oneplus" ? "OnePlus / OxygenOS" : "ColorOS / realme UI",
       steps: [
-        "Allow auto-launch (sometimes called Startup manager or Auto-start) for TeleDrive.",
-        "In App info → Battery, choose Allow background activity or Don't optimise."
+        // Measured on realme UI 16: the auto-launch list refuses to open for
+        // any app, and for adb, because it is guarded by a privileged
+        // permission. Searching Settings is the one route that works, and it
+        // keeps working when the next firmware moves the screen again.
+        "Open Settings, search for “auto-launch” (also called Auto-start or Startup manager), and turn it on for TeleDrive. This ROM blocks apps from opening that screen for you.",
+        "In App info → Battery usage, choose Allow background activity or Don’t optimise."
       ]
     };
   }

@@ -64,7 +64,7 @@ class BackupPlugin : Plugin() {
                 .put("notificationPermission", hasNotificationPermission())
                 .put("batteryExempt", isBatteryExempt())
                 .put("vendor", vendorLabel())
-                .put("needsStartupPermission", startupSettingsIntent() != null)
+                .put("needsStartupPermission", startupCandidates().isNotEmpty())
                 .put("pending", pending ?: -1)
                 .put("running", runCatching { BackupScheduler.isActive(context) }.getOrDefault(false))
                 .put("wifiOnly", prefs.wifiOnly)
@@ -194,8 +194,17 @@ class BackupPlugin : Plugin() {
      */
     @PluginMethod
     fun openStartupSettings(call: PluginCall) {
-        val intent = startupSettingsIntent()
-        val opened = if (intent != null) launch(intent) else false
+        // Every candidate is tried, because resolution is not permission.
+        // Measured on realme UI 16 (Android 16): the old com.coloros.* names
+        // still resolve as aliases, so the previous resolveActivity check
+        // reported a screen that existed and then would not start, and the
+        // current com.oplus.battery screen is refused outright -
+        //   Permission Denial: ... requires oplus.permission.OPLUS_COMPONENT_SAFE
+        // which is signature|privileged, so no third-party app can ever hold
+        // it; even adb shell is denied. On such a ROM `opened` is false and the
+        // UI falls back to app settings plus written steps, which is the whole
+        // reason this reports a boolean instead of assuming success.
+        val opened = startupCandidates().any { launch(it) }
         if (!opened) launch(appDetailsIntent())
         call.resolve(JSObject().put("opened", opened).put("vendor", vendorLabel()))
     }
@@ -225,11 +234,17 @@ class BackupPlugin : Plugin() {
         return power.isIgnoringBatteryOptimizations(context.packageName)
     }
 
+    /**
+     * Try to open a screen, and report whether it actually opened.
+     *
+     * No resolveActivity pre-check. It was worse than useless here: under
+     * package-visibility filtering it hides screens that would start, and on
+     * ColorOS it cheerfully resolves aliases that then throw SecurityException
+     * on startActivity. Attempting the start and catching the throw is the only
+     * answer that matches what the user will see.
+     */
     private fun launch(intent: Intent): Boolean = runCatching {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        // resolveActivity first: a missing component throws, and on these ROMs
-        // half of these screens exist only on some firmware versions.
-        if (intent.resolveActivity(context.packageManager) == null) return false
         context.startActivity(intent)
         true
     }.getOrDefault(false)
@@ -240,46 +255,57 @@ class BackupPlugin : Plugin() {
     private fun vendorLabel(): String = Build.MANUFACTURER.lowercase()
 
     /**
-     * The autostart screen for this manufacturer, if one is known.
+     * The autostart screens to try for this manufacturer, best first.
      *
-     * These are undocumented component names that move between firmware
-     * versions, which is why every one is tried in turn and a failure is not an
-     * error — the UI falls back to telling the user where to look.
+     * These are undocumented and they move between firmware versions - Oppo
+     * renamed every com.coloros.* package to com.oplus.*, so a list written
+     * from older phones silently matches nothing on a current one. An
+     * action-based intent is preferred over a component name where the ROM
+     * publishes one: it survives the class being moved, and an implicit intent
+     * is not subject to package-visibility filtering.
+     *
+     * A non-empty list also means "this ROM needs the manual grant", which is
+     * true whether or not the deep link works, so it is what the UI is told.
      */
-    private fun startupSettingsIntent(): Intent? {
-        val candidates: List<Pair<String, String>> = when (vendorLabel()) {
-            "oppo", "realme" -> listOf(
-                "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
-                "com.coloros.safecenter" to "com.coloros.safecenter.startupapp.StartupAppListActivity",
-                "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
-                "com.coloros.oppoguardelf" to "com.coloros.powermanager.fuelgaue.PowerUsageModelActivity"
-            )
-            "oneplus" -> listOf(
-                "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
-                "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListAlias"
-            )
-            "vivo" -> listOf(
-                "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
-                "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"
-            )
-            "xiaomi", "redmi", "poco" -> listOf(
-                "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity"
-            )
-            "samsung" -> listOf(
-                "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity"
-            )
-            "huawei" -> listOf(
-                "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
-            )
-            else -> emptyList()
-        }
-
-        for ((pkg, cls) in candidates) {
-            val intent = Intent().setComponent(ComponentName(pkg, cls))
-            if (intent.resolveActivity(context.packageManager) != null) return intent
-        }
-        return null
+    private fun startupCandidates(): List<Intent> = when (vendorLabel()) {
+        "oppo", "realme" -> listOf(
+            // ColorOS 13+ / realme UI 4+: com.oplus.battery owns the list, and
+            // publishes an action for it. Verified on realme UI 16, Android 16.
+            action("com.oplus.battery.permission.startup.StartupAppListActivity"),
+            component("com.oplus.battery", "com.oplus.startupapp.view.StartupAppListActivity"),
+            // Older ColorOS, kept for phones that never got the rename.
+            component("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"),
+            component("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"),
+            component("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")
+        )
+        "oneplus" -> listOf(
+            // OnePlus on OxygenOS 13+ is ColorOS underneath, so the oplus
+            // screens come first and the OnePlus-only ones remain as fallback.
+            action("com.oplus.battery.permission.startup.StartupAppListActivity"),
+            component("com.oplus.battery", "com.oplus.startupapp.view.StartupAppListActivity"),
+            component("com.oneplus.security", "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity"),
+            component("com.oneplus.security", "com.oneplus.security.chainlaunch.view.ChainLaunchAppListAlias")
+        )
+        "vivo" -> listOf(
+            component("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"),
+            component("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")
+        )
+        "xiaomi", "redmi", "poco" -> listOf(
+            component("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")
+        )
+        "samsung" -> listOf(
+            component("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity")
+        )
+        "huawei", "honor" -> listOf(
+            component("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
+            component("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")
+        )
+        else -> emptyList()
     }
+
+    private fun action(name: String) = Intent(name)
+
+    private fun component(pkg: String, cls: String) = Intent().setComponent(ComponentName(pkg, cls))
 
     companion object {
         const val MEDIA_13 = "media"
