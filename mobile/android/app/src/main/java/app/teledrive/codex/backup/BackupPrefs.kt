@@ -168,6 +168,36 @@ class BackupPrefs(context: Context) {
     }
 
     /*
+     * One run at a time.
+     *
+     * The periodic job and the "back up now" job are separate unique work
+     * names, so WorkManager will happily run both at once. Two runs scan from
+     * the same watermark, offer the same photos, and each passes the server's
+     * duplicate check before the other has committed — which put two copies of
+     * the same file in the drive, 1.2 seconds apart, under the resume key of a
+     * single photo on the phone.
+     *
+     * A timestamp rather than a boolean, so a worker killed mid-run cannot
+     * leave the backup locked for ever: the claim simply expires. It is
+     * refreshed as each item starts, so a long upload holds it as long as it
+     * is making progress and no longer.
+     */
+    var lockUntil: Long
+        get() = prefs.getLong(KEY_LOCK_UNTIL, 0L)
+        set(value) = prefs.edit().putLong(KEY_LOCK_UNTIL, value).apply()
+
+    /** True when another run holds the lock right now. */
+    fun anotherRunIsActive(): Boolean = lockUntil > System.currentTimeMillis()
+
+    fun holdLock() {
+        lockUntil = System.currentTimeMillis() + LOCK_MS
+    }
+
+    fun releaseLock() {
+        prefs.edit().remove(KEY_LOCK_UNTIL).apply()
+    }
+
+    /*
      * A request from the UI to the worker, which is in another process-less
      * life of its own and cannot be called directly.
      *
@@ -216,6 +246,16 @@ class BackupPrefs(context: Context) {
         const val KEY_MAX_FILE_MB = "maxFileSizeMb"
         const val KEY_FOLDER_NAME = "folderName"
         const val KEY_INTERVAL_HOURS = "intervalHours"
+        const val KEY_LOCK_UNTIL = "lockUntil"
+
+        /**
+         * How long a claim survives without being refreshed.
+         *
+         * Longer than any single chunk upload can reasonably take, so a slow
+         * file is never mistaken for a dead worker, and short enough that a
+         * process killed by the system frees the backup within a few minutes.
+         */
+        const val LOCK_MS = 5 * 60 * 1000L
         const val KEY_LAST_RUN = "lastRunAt"
         const val KEY_LAST_RESULT = "lastResult"
         const val KEY_UPLOADED_TOTAL = "uploadedTotal"
