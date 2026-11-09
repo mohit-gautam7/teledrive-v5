@@ -1,4 +1,5 @@
 import { env, requireEnv } from "@/lib/env";
+import { webhookTarget } from "@/lib/webhook-target";
 
 /**
  * Thin Telegram Bot API client on native fetch.
@@ -279,4 +280,56 @@ export async function getMe() {
 
 export function botConfigured() {
   return Boolean(env.BOT_TOKEN);
+}
+
+export async function getWebhookInfo() {
+  return callBotApi<{ url: string }>("getWebhookInfo", {});
+}
+
+/**
+ * Put the webhook back whenever it has gone missing or stale.
+ *
+ * Telegram ties a webhook to the *token*, so revoking one in BotFather silently
+ * deletes the registration with it. The bot then keeps receiving messages and
+ * has nowhere to deliver them: /api/health stays green, getMe answers, and the
+ * only symptom is that nobody can log in. That happened once during a routine
+ * token rotation, and the only cure was remembering that /api/bot/setup exists
+ * — a manual step the route's own comment admits to ("Visit after each
+ * deployment").
+ *
+ * So the server checks at boot instead of trusting that someone remembered.
+ * getWebhookInfo is one cheap call, and setWebhook runs only when the answer
+ * disagrees with where this deployment actually lives. Which deployments may
+ * do this at all is webhookTarget's decision, not this function's.
+ *
+ * Memoised per instance: a cold start repairs, a warm one does nothing.
+ */
+let webhookCheck: Promise<void> | null = null;
+
+export function ensureWebhook(): Promise<void> {
+  if (!webhookCheck) webhookCheck = runWebhookCheck();
+  return webhookCheck;
+}
+
+async function runWebhookCheck(): Promise<void> {
+  const want = webhookTarget({
+    VERCEL: process.env.VERCEL,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    NODE_ENV: process.env.NODE_ENV,
+    NEXT_PUBLIC_APP_URL: env.NEXT_PUBLIC_APP_URL,
+    BOT_TOKEN: env.BOT_TOKEN,
+    WEBHOOK_SECRET: env.WEBHOOK_SECRET
+  });
+  if (!want) return;
+
+  try {
+    const info = await getWebhookInfo();
+    if (info.url === want) return;
+    await setWebhook(want, env.WEBHOOK_SECRET);
+    console.warn(`[webhook] re-registered: was ${info.url || "(none)"}, now ${want}`);
+  } catch (error) {
+    // Never block boot on this. The bot being down is bad; the site refusing
+    // to start because Telegram was briefly unreachable is worse.
+    console.error("[webhook] could not verify registration:", error);
+  }
 }

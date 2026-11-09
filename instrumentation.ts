@@ -11,6 +11,14 @@ export async function register() {
     startBotPolling();
   }
 
+  // A revoked token takes its webhook with it, so the registration is checked
+  // at boot rather than left to whoever remembers /api/bot/setup. Not awaited:
+  // one Telegram round trip should not sit in front of the first request.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { ensureWebhook } = await import("./lib/telegram-bot");
+    void ensureWebhook();
+  }
+
   // The job worker needs a process that outlives a request, so it is opt-in via
   // JOB_WORKER_ENABLED and stays off on serverless, where it would be started
   // and killed once per invocation.
