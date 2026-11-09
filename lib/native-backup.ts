@@ -32,6 +32,13 @@ export type NativeBackupStatus = {
   chargingOnly: boolean;
   includeNonCamera: boolean;
   folderId: string | null;
+  /** The file being uploaded right now, or "" between files. */
+  currentName: string;
+  /** 1-based position in this run's batch, for "7 of 50". */
+  currentIndex: number;
+  currentTotal: number;
+  currentSent: number;
+  currentSize: number;
   lastRunAt: number;
   lastResult: string;
   uploadedTotal: number;
@@ -51,6 +58,8 @@ type BackupPlugin = {
   runNow(): Promise<NativeBackupStatus>;
   rescanAll(): Promise<NativeBackupStatus>;
   setOptions(options: NativeBackupOptions): Promise<NativeBackupStatus>;
+  skipCurrent(): Promise<NativeBackupStatus>;
+  stopRun(): Promise<NativeBackupStatus>;
   requestNotificationPermission(): Promise<NativeBackupStatus>;
   requestBatteryExemption(): Promise<NativeBackupStatus>;
   openStartupSettings(): Promise<{ opened: boolean; vendor: string }>;
@@ -95,6 +104,8 @@ export const nativeBackup = {
   disable: () => call("disable"),
   runNow: () => call("runNow"),
   rescanAll: () => call("rescanAll"),
+  skipCurrent: () => call("skipCurrent"),
+  stopRun: () => call("stopRun"),
   setOptions: (options: NativeBackupOptions) => call("setOptions", options),
   requestNotificationPermission: () => call("requestNotificationPermission"),
   requestBatteryExemption: () => call("requestBatteryExemption"),

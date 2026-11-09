@@ -55,6 +55,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
         val pending = scanner.scan(prefs, BATCH_LIMIT)
         if (pending.isEmpty()) {
+            prefs.clearCurrent()
             finish("Up to date.")
             return@withContext Result.success()
         }
@@ -81,9 +82,17 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         var skipped = 0
         var transientFailure = false
         var transientReason: String? = null
+        var stopped = false
 
         for ((index, item) in pending.withIndex()) {
             if (isStopped) break
+            // Also checked here, not only between chunks: a stop asked for
+            // while the worker is between files would otherwise be ignored
+            // until the next chunk of the next file.
+            if (prefs.takeControl() == BackupPrefs.CONTROL_STOP) {
+                stopped = true
+                break
+            }
             setForegroundSafely(index, pending.size, item.name)
 
             if (already.contains(index)) {
@@ -95,9 +104,27 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             }
 
             try {
-                client.upload(item, folderId) { }
+                prefs.beginItem(item.name, index + 1, pending.size, item.size)
+                client.upload(item, folderId) { sent ->
+                    prefs.currentSent = sent
+                    // Checked between chunks, so a request from the card lands
+                    // within one chunk rather than at the end of a 2 GB video.
+                    when (prefs.takeControl()) {
+                        BackupPrefs.CONTROL_SKIP -> throw SkipRequested()
+                        BackupPrefs.CONTROL_STOP -> throw StopRequested()
+                    }
+                }
                 stored++
                 prefs.raiseWatermark(item.addedAt)
+            } catch (skip: SkipRequested) {
+                // The user does not want this one. Step over it for good, or
+                // the next run would offer it again and they would have to say
+                // so every couple of hours.
+                skipped++
+                prefs.raiseWatermark(item.addedAt)
+            } catch (stop: StopRequested) {
+                stopped = true
+                break
             } catch (signedOut: NotSignedInException) {
                 finish("Signed out mid-run — $stored saved before that.")
                 return@withContext Result.success()
@@ -124,9 +151,11 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
 
         prefs.addUploaded(stored)
+        prefs.clearCurrent()
         val summary = buildString {
             append("$stored saved")
             if (skipped > 0) append(", $skipped skipped")
+            if (stopped) append(" — stopped")
             if (transientFailure) {
                 append(" — paused, will retry")
                 transientReason?.let { append(" ($it)") }
@@ -138,8 +167,14 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         // that merely hit the batch limit returns success; the next scheduled
         // run picks up the rest, which keeps one huge backlog from monopolising
         // the device.
-        if (transientFailure && stored == 0) Result.retry() else Result.success()
+        if (!stopped && transientFailure && stored == 0) Result.retry() else Result.success()
     }
+
+    /** The card asked for this one file to be abandoned. */
+    private class SkipRequested : RuntimeException()
+
+    /** The card asked for the whole run to end now. */
+    private class StopRequested : RuntimeException()
 
     private fun finish(result: String) {
         prefs.lastRunAt = System.currentTimeMillis()

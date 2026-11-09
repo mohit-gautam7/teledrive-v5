@@ -74,6 +74,18 @@ object BackupScheduler {
     fun ensureScheduled(context: Context, prefs: BackupPrefs) =
         schedule(context, prefs, replaceExisting = false)
 
+    /**
+     * End a "Back up now" run, leaving the schedule alone.
+     *
+     * Only the one-shot is cancelled. Cancelling the periodic work would take
+     * the whole schedule with it, which is switching backup off, not stopping
+     * a run — so a periodic run is ended by the stop flag the worker reads
+     * between chunks instead.
+     */
+    fun cancelRun(context: Context) {
+        WorkManager.getInstance(context).cancelUniqueWork(ONE_SHOT)
+    }
+
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(PERIODIC)
         WorkManager.getInstance(context).cancelUniqueWork(ONE_SHOT)

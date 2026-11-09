@@ -66,6 +66,78 @@ class BackupPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_INCLUDE_NON_CAMERA, false)
         set(value) = prefs.edit().putBoolean(KEY_INCLUDE_NON_CAMERA, value).apply()
 
+    /* ── What the run is doing right now, for the UI to show ────────────────── */
+
+    /*
+     * Live progress, written as the bytes move.
+     *
+     * A backup that says only "running" is indistinguishable from one that is
+     * stuck, which is the single most common reason people switch this kind of
+     * feature off: there is no way to tell patience from a bug. These let the
+     * card name the file and show the bar.
+     */
+
+    var currentName: String
+        get() = prefs.getString(KEY_CUR_NAME, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CUR_NAME, value).apply()
+
+    /** 1-based position within this run's batch, for "7 of 50". */
+    var currentIndex: Int
+        get() = prefs.getInt(KEY_CUR_INDEX, 0)
+        set(value) = prefs.edit().putInt(KEY_CUR_INDEX, value).apply()
+
+    var currentTotal: Int
+        get() = prefs.getInt(KEY_CUR_TOTAL, 0)
+        set(value) = prefs.edit().putInt(KEY_CUR_TOTAL, value).apply()
+
+    var currentSent: Long
+        get() = prefs.getLong(KEY_CUR_SENT, 0L)
+        set(value) = prefs.edit().putLong(KEY_CUR_SENT, value).apply()
+
+    var currentSize: Long
+        get() = prefs.getLong(KEY_CUR_SIZE, 0L)
+        set(value) = prefs.edit().putLong(KEY_CUR_SIZE, value).apply()
+
+    fun beginItem(name: String, index: Int, total: Int, size: Long) {
+        prefs.edit()
+            .putString(KEY_CUR_NAME, name)
+            .putInt(KEY_CUR_INDEX, index)
+            .putInt(KEY_CUR_TOTAL, total)
+            .putLong(KEY_CUR_SENT, 0L)
+            .putLong(KEY_CUR_SIZE, size)
+            .apply()
+    }
+
+    /** Nothing is in flight any more; the card should stop showing a bar. */
+    fun clearCurrent() {
+        prefs.edit()
+            .remove(KEY_CUR_NAME)
+            .remove(KEY_CUR_INDEX)
+            .remove(KEY_CUR_TOTAL)
+            .remove(KEY_CUR_SENT)
+            .remove(KEY_CUR_SIZE)
+            .apply()
+    }
+
+    /*
+     * A request from the UI to the worker, which is in another process-less
+     * life of its own and cannot be called directly.
+     *
+     * SharedPreferences is the only channel both sides already share, and the
+     * worker reads it between chunks — so "skip" and "stop" land within a few
+     * megabytes rather than at the end of the file. Cleared by whoever acts on
+     * it, so a stale request cannot cancel a later run.
+     */
+    var control: String
+        get() = prefs.getString(KEY_CONTROL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_CONTROL, value).apply()
+
+    fun takeControl(): String {
+        val value = control
+        if (value.isNotEmpty()) control = ""
+        return value
+    }
+
     /* ── What the last run did, for the UI to show ──────────────────────────── */
 
     var lastRunAt: Long
@@ -84,7 +156,7 @@ class BackupPrefs(context: Context) {
         if (count > 0) uploadedTotal += count
     }
 
-    private companion object {
+    companion object {
         const val KEY_ENABLED = "enabled"
         const val KEY_WATERMARK = "watermark"
         const val KEY_WIFI_ONLY = "wifiOnly"
@@ -94,5 +166,13 @@ class BackupPrefs(context: Context) {
         const val KEY_LAST_RUN = "lastRunAt"
         const val KEY_LAST_RESULT = "lastResult"
         const val KEY_UPLOADED_TOTAL = "uploadedTotal"
+        const val KEY_CUR_NAME = "currentName"
+        const val KEY_CUR_INDEX = "currentIndex"
+        const val KEY_CUR_TOTAL = "currentTotal"
+        const val KEY_CUR_SENT = "currentSent"
+        const val KEY_CUR_SIZE = "currentSize"
+        const val KEY_CONTROL = "control"
+        const val CONTROL_SKIP = "skip"
+        const val CONTROL_STOP = "stop"
     }
 }
