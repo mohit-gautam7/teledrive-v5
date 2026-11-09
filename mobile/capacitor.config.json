@@ -1,0 +1,16 @@
+{
+  "appId": "app.teledrive.codex",
+  "appName": "TeleDrive",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "url": "https://teledrive-codex.vercel.app",
+    "cleartext": false,
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": false }
+  }
+}

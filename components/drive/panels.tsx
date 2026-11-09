@@ -26,6 +26,12 @@ import {
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import {
+  nativeBackup,
+  nativeBackupAvailable,
+  vendorAdvice,
+  type NativeBackupStatus
+} from "@/lib/native-backup";
+import {
   backupSupported,
   chooseSource,
   readBackupState,
@@ -400,6 +406,233 @@ function Choice<T extends string | number>({
  * Internet have the File System Access API; Firefox and everything on iOS do
  * not, and saying so is better than a button that opens nothing.
  */
+/**
+ * Background backup, which only exists inside the Android app.
+ *
+ * A web page stops running the moment it is closed, so the browser version of
+ * phone backup can only catch up when the user happens to open TeleDrive. The
+ * Android shell carries a native WorkManager job that runs on its own clock,
+ * and this card is its control panel.
+ *
+ * Rendered as nothing in a browser. The whole feature is behind
+ * nativeBackupAvailable(), so a normal visit never sees a setting it cannot use
+ * and never learns there is an app it is not running.
+ */
+function NativeBackupCard() {
+  const [status, setStatus] = useState<NativeBackupStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const available = nativeBackupAvailable();
+
+  const refresh = useCallback(async () => {
+    const next = await nativeBackup.status();
+    if (next) setStatus(next);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    if (!available) return;
+    void refresh();
+    // The worker runs outside the page, so the page has to look again rather
+    // than be told. Ten seconds is enough to watch a run start and finish.
+    const timer = window.setInterval(() => void refresh(), 10_000);
+    return () => window.clearInterval(timer);
+  }, [available, refresh]);
+
+  const applyResult = useCallback(
+    async (action: () => Promise<NativeBackupStatus | null>, success?: string) => {
+      setBusy(true);
+      try {
+        const next = await action();
+        if (next) {
+          setStatus(next);
+          if (success) toast.success(success);
+        } else {
+          toast.error("The app refused that. Check its permissions in Android settings.");
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    []
+  );
+
+  if (!available) return null;
+
+  const advice = status ? vendorAdvice(status.vendor) : null;
+  const lastRun = status?.lastRunAt ? new Date(status.lastRunAt) : null;
+
+  return (
+    <section className="panel p-5">
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="display t-h2">Automatic backup</h2>
+        <button
+          onClick={() =>
+            void applyResult(
+              status?.enabled ? nativeBackup.disable : nativeBackup.enable,
+              status?.enabled ? "Automatic backup is off." : "Automatic backup is on."
+            )
+          }
+          disabled={busy || !status}
+          className="btn btn-ghost"
+          style={{ minHeight: 34, fontSize: 12 }}
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}{" "}
+          {!status ? "..." : status.enabled ? "On" : "Off"}
+        </button>
+      </div>
+
+      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        New photos and videos are saved to TeleDrive on their own, every couple of hours, whether or not this app is
+        open. Nothing is uploaded twice &mdash; each one is checked against your drive first.
+      </p>
+
+      {status ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {status.running ? (
+            <span className="chip">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running now
+            </span>
+          ) : null}
+          {status.pending >= 0 ? (
+            <span className="chip">
+              <Clock className="h-3.5 w-3.5" />{" "}
+              {status.pending === 0 ? "Nothing waiting" : `${status.pending} waiting`}
+            </span>
+          ) : null}
+          {status.uploadedTotal > 0 ? (
+            <span className="chip">
+              <Check className="h-3.5 w-3.5" /> {status.uploadedTotal} saved so far
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {status && !status.mediaPermission ? (
+        <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
+          TeleDrive cannot see your photos yet. Turning backup on will ask for that permission.
+        </p>
+      ) : null}
+
+      {status?.enabled ? (
+        <div className="mt-4 space-y-2">
+          <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+            <input
+              type="checkbox"
+              checked={status.wifiOnly}
+              onChange={event => void applyResult(() => nativeBackup.setOptions({ wifiOnly: event.target.checked }))}
+            />
+            Wi-Fi only
+          </label>
+          <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+            <input
+              type="checkbox"
+              checked={status.chargingOnly}
+              onChange={event =>
+                void applyResult(() => nativeBackup.setOptions({ chargingOnly: event.target.checked }))
+              }
+            />
+            Only while charging
+          </label>
+          <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+            <input
+              type="checkbox"
+              checked={status.includeNonCamera}
+              onChange={event =>
+                void applyResult(() => nativeBackup.setOptions({ includeNonCamera: event.target.checked }))
+              }
+            />
+            Include screenshots and downloaded media, not just the camera
+          </label>
+        </div>
+      ) : null}
+
+      {status?.enabled ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => void applyResult(nativeBackup.runNow, "Looking for new photos now.")}
+            disabled={busy || status.running}
+            className="btn btn-accent"
+            style={{ minHeight: 34, fontSize: 12 }}
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Back up now
+          </button>
+          <button
+            onClick={() => void applyResult(nativeBackup.rescanAll, "Re-checking the whole camera roll.")}
+            disabled={busy}
+            className="btn btn-ghost"
+            style={{ minHeight: 34, fontSize: 12 }}
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Re-check everything
+          </button>
+        </div>
+      ) : null}
+
+      {lastRun ? (
+        <p className="t-xs mt-3" style={{ color: "var(--text-3)" }}>
+          Last run {lastRun.toLocaleString()} &mdash; {status?.lastResult || "no result recorded"}.
+        </p>
+      ) : null}
+
+      {/*
+        The part that actually decides whether background backup works. Android
+        itself is willing; the manufacturer's battery manager is the obstacle,
+        and there is no way to read its setting - only to open the screen.
+      */}
+      {status?.enabled && (!status.batteryExempt || status.needsStartupPermission) ? (
+        <div className="mt-4 rounded-xl p-3" style={{ background: "var(--surface-2)" }}>
+          <p className="t-sm" style={{ color: "var(--text-2)" }}>
+            <strong>One more step, or this will quietly stop.</strong>
+          </p>
+          <p className="t-xs mt-1 leading-relaxed" style={{ color: "var(--text-3)" }}>
+            {advice
+              ? `${advice.label} stops apps it thinks are idle from running in the background. TeleDrive needs to be excused:`
+              : "Android stops apps it thinks are idle from running in the background. TeleDrive needs to be excused:"}
+          </p>
+          {advice ? (
+            <ul className="t-xs mt-2 list-disc space-y-1 pl-5 leading-relaxed" style={{ color: "var(--text-3)" }}>
+              {advice.steps.map(step => (
+                <li key={step}>{step}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {!status.batteryExempt ? (
+              <button
+                onClick={() => void applyResult(nativeBackup.requestBatteryExemption)}
+                className="btn btn-ghost"
+                style={{ minHeight: 34, fontSize: 12 }}
+              >
+                <Power className="h-3.5 w-3.5" /> Allow background activity
+              </button>
+            ) : null}
+            {status.needsStartupPermission ? (
+              <button
+                onClick={async () => {
+                  const result = await nativeBackup.openStartupSettings();
+                  if (!result?.opened) toast.error("Could not open that screen — find TeleDrive in Android settings.");
+                }}
+                className="btn btn-ghost"
+                style={{ minHeight: 34, fontSize: 12 }}
+              >
+                <Smartphone className="h-3.5 w-3.5" /> Open auto-launch settings
+              </button>
+            ) : null}
+            {!status.notificationPermission ? (
+              <button
+                onClick={() => void applyResult(nativeBackup.requestNotificationPermission)}
+                className="btn btn-ghost"
+                style={{ minHeight: 34, fontSize: 12 }}
+              >
+                <AlertCircle className="h-3.5 w-3.5" /> Allow the upload notification
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function PhoneBackupCard({
   user,
   onBackupNow,
@@ -874,6 +1107,7 @@ export function SettingsPanel({
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
 
       <DirectUploadCard user={backupUser} />
+      <NativeBackupCard />
       <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
 
       <section className="panel p-5">
