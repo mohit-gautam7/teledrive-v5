@@ -483,7 +483,8 @@ function NativeBackupCard() {
 
       <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
         New photos and videos are saved to TeleDrive on their own, every couple of hours, whether or not this app is
-        open. Nothing is uploaded twice &mdash; each one is checked against your drive first.
+        open. They go into a folder called <strong>Camera backup</strong>, not loose in your drive. Nothing is uploaded
+        twice &mdash; each one is checked against your drive first.
       </p>
 
       {status ? (

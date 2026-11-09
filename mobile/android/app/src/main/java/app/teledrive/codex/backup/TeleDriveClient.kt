@@ -97,6 +97,51 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         }
     }
 
+    private data class FolderRow(val id: String, val name: String, val parentId: String?)
+
+    /**
+     * The folder every backed-up photo goes into, created once if absent.
+     *
+     * Without this the backup lands in the drive root and mixes a camera roll
+     * into everything else the user keeps there, which is both a mess and
+     * impossible to undo once a few hundred files have arrived.
+     *
+     * [known] is re-checked against the server every run rather than trusted.
+     * A folder the user has since deleted makes the server answer 404, which
+     * `ok()` classifies as permanent, which makes the worker skip the photo and
+     * move the watermark past it — so a deleted folder would silently consume
+     * the entire camera roll, one run at a time, and report success. One GET
+     * every couple of hours is a cheap price for that not happening.
+     */
+    fun ensureBackupFolder(known: String?): String {
+        val rows = listFolders()
+        if (known != null && rows.any { it.id == known }) return known
+        // Match by name only at the top level; a folder of the same name nested
+        // somewhere of the user's own making is theirs, not ours to write into.
+        rows.firstOrNull { it.parentId == null && it.name == BACKUP_FOLDER }?.let { return it.id }
+        return createFolder(BACKUP_FOLDER)
+    }
+
+    private fun listFolders(): List<FolderRow> {
+        http.newCall(request("/api/folders?flat=1").get().build()).execute().use { response ->
+            val array = ok(response, "Could not list folders").optJSONArray("folders") ?: return emptyList()
+            return (0 until array.length()).mapNotNull { i ->
+                val row = array.optJSONObject(i) ?: return@mapNotNull null
+                val id = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                FolderRow(id, row.optString("name"), row.optString("parentId").takeIf { it.isNotBlank() && it != "null" })
+            }
+        }
+    }
+
+    private fun createFolder(name: String): String {
+        http.newCall(request("/api/folders").post(json(JSONObject().put("name", name))).build())
+            .execute().use { response ->
+                val folder = ok(response, "Could not create the backup folder").optJSONObject("folder")
+                return folder?.optString("id")?.takeIf { it.isNotBlank() }
+                    ?: throw IOException("The server created no folder to upload into")
+            }
+    }
+
     /**
      * Ask which of these the drive already holds.
      *
@@ -222,6 +267,8 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
 
     private companion object {
         const val AUTH_COOKIE = "teledrive_session"
+        /** Where the camera roll lands, instead of all over the drive root. */
+        const val BACKUP_FOLDER = "Camera backup"
         val EMPTY: RequestBody = ByteArray(0).toRequestBody(null, 0, 0)
     }
 }
