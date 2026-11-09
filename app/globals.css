@@ -235,6 +235,17 @@ button:not(:disabled),
   background: var(--bg-1);
   border: 1px solid var(--border-dim);
   border-radius: var(--r-lg);
+  /*
+    Panels are grid items, and a grid item's default `min-width: auto` means
+    the column cannot shrink below the item's min-content width. One card with
+    a wide child therefore widens the whole column and clips every other card
+    on the page - measured on a phone as a 370px column inside a 329px grid,
+    and invisible because body clips rather than scrolls, so it reads as
+    missing text rather than as overflow.
+
+    A panel is a container; it has no business imposing a minimum.
+  */
+  min-width: 0;
 }
 
 .card {
