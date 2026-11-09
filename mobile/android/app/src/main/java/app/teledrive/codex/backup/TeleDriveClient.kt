@@ -61,6 +61,51 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         return cookies
     }
 
+    /**
+     * A request to the file origin, when the deployment has one.
+     *
+     * The session cookie cannot be used here: it is httpOnly and SameSite=Lax,
+     * so it is scoped to the app's own host and will not travel to a second
+     * one. /api/auth/file-token exists for exactly this — a one-hour credential
+     * carrying only the user id and a "files" scope, signed with the secret both
+     * deployments share, which the server refuses to accept as a session.
+     *
+     * With no file origin configured this is the ordinary cookie request, so a
+     * single-origin deployment behaves exactly as before.
+     */
+    private fun fileRequest(origin: String, path: String): Request.Builder {
+        if (origin.isBlank()) return request(path)
+        return Request.Builder()
+            .url(origin.trimEnd('/') + path)
+            .header("Authorization", "Bearer ${fileToken()}")
+            .header("User-Agent", "TeleDrive-Android-Backup/1.0")
+    }
+
+    /**
+     * Mint a file-scoped token, reused until it is nearly expired.
+     *
+     * One per hour rather than one per chunk: a 2 GB video is 500 chunks at
+     * 4 MB, and minting a token for each would be 500 pointless round trips to
+     * the very origin this is trying to take traffic away from.
+     */
+    @Synchronized
+    private fun fileToken(): String {
+        val now = System.currentTimeMillis()
+        cachedToken?.let { if (now < tokenExpiresAt) return it }
+        http.newCall(request("/api/auth/file-token").post(EMPTY).build()).execute().use { response ->
+            val token = ok(response, "Could not get a file token").optString("token")
+            if (token.isBlank()) throw IOException("The server issued no file token")
+            cachedToken = token
+            // The server signs it for an hour; stop five minutes early so a
+            // long upload cannot have one expire mid-file.
+            tokenExpiresAt = now + 55 * 60 * 1000L
+            return token
+        }
+    }
+
+    private var cachedToken: String? = null
+    private var tokenExpiresAt: Long = 0L
+
     private fun request(path: String): Request.Builder =
         Request.Builder()
             .url(baseUrl.trimEnd('/') + path)
@@ -172,7 +217,14 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
             }
     }
 
-    data class Session(val fileId: String, val totalChunks: Int, val chunkSize: Int, val received: Set<Int>)
+    data class Session(
+        val fileId: String,
+        val totalChunks: Int,
+        val chunkSize: Int,
+        val received: Set<Int>,
+        /** Absolute origin the chunks go to, or "" for this same host. */
+        val fileOrigin: String
+    )
 
     fun initUpload(item: MediaItem, folderId: String?): Session {
         val body = JSONObject()
@@ -193,12 +245,14 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
                 fileId = parsed.getString("fileId"),
                 totalChunks = parsed.getInt("totalChunks"),
                 chunkSize = parsed.getInt("chunkSizeBytes"),
-                received = received
+                received = received,
+                // Absent on an older deployment, which simply means same-origin.
+                fileOrigin = parsed.optString("fileOrigin")
             )
         }
     }
 
-    fun uploadChunk(fileId: String, index: Int, bytes: ByteArray, length: Int, name: String) {
+    fun uploadChunk(session: Session, index: Int, bytes: ByteArray, length: Int, name: String) {
         val part = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart(
@@ -207,21 +261,24 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
                 bytes.toRequestBody("application/octet-stream".toMediaType(), 0, length)
             )
             .build()
-        http.newCall(request("/api/upload/chunk/$fileId/$index").post(part).build()).execute().use { response ->
+        http.newCall(fileRequest(session.fileOrigin, "/api/upload/chunk/${session.fileId}/$index").post(part).build())
+            .execute().use { response ->
             ok(response, "Chunk $index of $name failed")
         }
     }
 
-    fun complete(fileId: String, name: String) {
-        http.newCall(request("/api/upload/complete/$fileId").post(EMPTY).build()).execute().use { response ->
+    fun complete(session: Session, name: String) {
+        http.newCall(fileRequest(session.fileOrigin, "/api/upload/complete/${session.fileId}").post(EMPTY).build())
+            .execute().use { response ->
             ok(response, "Could not finish $name")
         }
     }
 
     /** Abandon a session so the server does not keep a half-written row. */
-    fun abort(fileId: String) {
+    fun abort(session: Session) {
         runCatching {
-            http.newCall(request("/api/upload/abort/$fileId").delete().build()).execute().close()
+            http.newCall(fileRequest(session.fileOrigin, "/api/upload/abort/${session.fileId}").delete().build())
+                .execute().close()
         }
     }
 
@@ -244,16 +301,16 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
                     val read = ChunkReader.readFully(input, buffer)
                     if (read <= 0) break
                     if (!session.received.contains(index)) {
-                        uploadChunk(session.fileId, index, buffer, read, item.name)
+                        uploadChunk(session, index, buffer, read, item.name)
                     }
                     sent += read
                     onProgress(sent)
                     index++
                 }
             }
-            complete(session.fileId, item.name)
+            complete(session, item.name)
         } catch (permanent: PermanentUploadException) {
-            abort(session.fileId)
+            abort(session)
             throw permanent
         } catch (error: Throwable) {
             // Transient: leave the session alone so the next run resumes it.
