@@ -655,23 +655,41 @@ function NativeBackupCard() {
               </p>
             ) : (
               <div
-                className="mt-2 max-h-64 space-y-1.5 overflow-y-auto rounded-xl p-3"
+                className="mt-2 max-h-64 min-w-0 space-y-1.5 overflow-y-auto rounded-xl p-3"
                 style={{ background: "var(--surface-2)" }}
               >
+                {/*
+                  The count goes under the name, not beside it.
+
+                  Beside it, the count needed shrink-0 to stay readable, which
+                  made the row's minimum width larger than a phone screen. The
+                  settings panels share a column, so that one row stretched the
+                  column and clipped the right-hand edge off every card on the
+                  page - measured at 431px of content in a 361px viewport, and
+                  invisible because body clips rather than scrolls. Two block
+                  children inside a min-w-0 parent cannot do that.
+                */}
                 {albums.map(album => (
-                  <label key={album.path} className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+                  <label key={album.path} className="flex items-start gap-2 t-sm" style={{ color: "var(--text-2)" }}>
                     <input
                       type="checkbox"
+                      className="mt-1 shrink-0"
                       checked={selectedAlbums.includes(album.path)}
                       onChange={event => void toggleAlbum(album.path, event.target.checked)}
                     />
-                    <span className="min-w-0 flex-1 truncate" title={album.path}>
-                      {album.name}
-                    </span>
-                    <span className="mono t-xs shrink-0" style={{ color: "var(--text-3)" }}>
-                      {album.photos > 0 ? `${album.photos.toLocaleString()} photo${album.photos === 1 ? "" : "s"}` : ""}
-                      {album.photos > 0 && album.videos > 0 ? " · " : ""}
-                      {album.videos > 0 ? `${album.videos.toLocaleString()} video${album.videos === 1 ? "" : "s"}` : ""}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate" title={album.path}>
+                        {album.name}
+                      </span>
+                      <span className="mono t-xs block truncate" style={{ color: "var(--text-3)" }}>
+                        {album.photos > 0
+                          ? `${album.photos.toLocaleString()} photo${album.photos === 1 ? "" : "s"}`
+                          : ""}
+                        {album.photos > 0 && album.videos > 0 ? " · " : ""}
+                        {album.videos > 0
+                          ? `${album.videos.toLocaleString()} video${album.videos === 1 ? "" : "s"}`
+                          : ""}
+                      </span>
                     </span>
                   </label>
                 ))}
