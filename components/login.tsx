@@ -175,7 +175,7 @@ export default function Login() {
 
   return (
     <main className="app-bg grid-overlay relative min-h-[100dvh] w-full overflow-x-hidden">
-      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-[1240px] flex-col px-5 py-6 sm:px-8 lg:px-10">
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-[1240px] flex-col px-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-[calc(1.5rem+env(safe-area-inset-top))] sm:px-8 lg:px-10">
         {/* ── Masthead ── */}
         <motion.header
           className="flex items-center justify-between gap-4"

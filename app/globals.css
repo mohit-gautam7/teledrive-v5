@@ -123,6 +123,27 @@ html:not(.dark) {
     overflow-x: hidden;
   }
 
+  /*
+    `overflow-x: clip` instead of `hidden`, wherever it is understood.
+
+    They look identical and are not: `hidden` is a scroll container that
+    merely refuses to scroll, and any `position: sticky` inside it sticks to
+    *it* rather than to the viewport. Since body never scrolls - html does -
+    the sticky header had nothing to stick to and slid away with the page.
+    Measured on a phone at scrollY 1710 with the header at y -1710, which is
+    exactly "not sticky at all". `clip` clips without becoming a scroll
+    container, so sticky behaves again and the horizontal guard stays.
+
+    It is a progressive enhancement: where `clip` is unknown the declaration
+    is dropped and the old `hidden` above still applies.
+  */
+  @supports (overflow-x: clip) {
+    html,
+    body {
+      overflow-x: clip;
+    }
+  }
+
 body {
   margin: 0;
   min-height: 100dvh;
@@ -622,6 +643,35 @@ button:not(:disabled),
     padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
 }
+
+/*
+  Display cutouts and gesture bars, on every device that has them.
+
+  The page asks for `viewport-fit=cover`, and Android 15+ makes edge-to-edge
+  compulsory for the app shell, so the viewport genuinely extends under the
+  status bar and the gesture pill. Measured on a realme UI 16 phone: 40px at
+  the top and 16px at the bottom of real, occupied screen. Anything that does
+  not account for them is simply printed underneath the clock.
+
+  These are deliberately not inside a width media query. A tablet in landscape
+  has a side cutout and no narrow breakpoint, and `env()` is 0 everywhere that
+  has no cutout, so the utilities cost nothing on a desktop browser.
+*/
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-x {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/*
+  Elements that already carry a Tailwind padding class are NOT served by these.
+  Two declarations for the same side means one of them silently loses, and the
+  loser is invisible until someone looks at a phone. Those elements fold the
+  inset into their own padding with calc() instead, so each side is set once.
+*/
 
 /* Toasts must never overflow a narrow screen. */
 @media (max-width: 640px) {

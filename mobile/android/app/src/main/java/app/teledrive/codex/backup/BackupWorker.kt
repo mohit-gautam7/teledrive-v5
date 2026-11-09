@@ -3,6 +3,7 @@ package app.teledrive.codex.backup
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.util.Log
 import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -64,6 +65,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         var stored = 0
         var skipped = 0
         var transientFailure = false
+        var transientReason: String? = null
 
         for ((index, item) in pending.withIndex()) {
             if (isStopped) break
@@ -92,6 +94,15 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             } catch (error: Throwable) {
                 // Network died, server hiccuped, phone lost Wi-Fi. Stop the run
                 // and let WorkManager back off; the watermark is still correct.
+                //
+                // Both of these matter and neither was here before: without the
+                // log there is no way to find out afterwards what stopped a run,
+                // and without the reason in the summary the card says "paused,
+                // will retry" for ever while the user has no idea whether to
+                // wait, reconnect, or report a bug.
+                Log.w(TAG, "upload of ${item.name} failed, pausing the run", error)
+                transientReason = error.message?.take(80)?.ifBlank { null }
+                    ?: error.javaClass.simpleName
                 transientFailure = true
                 break
             }
@@ -101,7 +112,10 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val summary = buildString {
             append("$stored saved")
             if (skipped > 0) append(", $skipped skipped")
-            if (transientFailure) append(" — paused, will retry")
+            if (transientFailure) {
+                append(" — paused, will retry")
+                transientReason?.let { append(" ($it)") }
+            }
         }
         finish(summary)
 
@@ -159,6 +173,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
     companion object {
         const val BASE_URL = "https://teledrive-codex.vercel.app"
+        const val TAG = "TeleDriveBackup"
         const val CHANNEL = "teledrive-backup"
         const val NOTIFICATION_ID = 4821
 

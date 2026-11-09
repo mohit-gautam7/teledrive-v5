@@ -1670,7 +1670,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       {/* ── Sidebar ── */}
       <aside
         className={cn(
-          "frost fixed inset-y-0 left-0 z-50 flex w-[82vw] flex-col px-4 py-5 lg:translate-x-0",
+          // inset-y-0 spans the cutout and the gesture bar too, so the top
+          // padding carries the inset rather than printing the first row
+          // underneath the clock.
+          "frost fixed inset-y-0 left-0 z-50 flex w-[82vw] flex-col px-4 pb-5 pt-[calc(1.25rem+env(safe-area-inset-top))] lg:translate-x-0",
           // The transition is dropped mid-drag: animating width while the
           // pointer sets it makes the edge lag behind the cursor.
           !resizing && "transition-transform duration-300",
@@ -1824,7 +1827,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
       {/* ── Main ── */}
       <div className="lg:pl-[var(--sidebar-w)]">
-        <header className="frost sticky top-0 z-30" style={{ borderBottom: "1px solid var(--border-dim)" }}>
+        <header className="frost safe-top safe-x sticky top-0 z-30" style={{ borderBottom: "1px solid var(--border-dim)" }}>
           <div className="flex h-14 items-center gap-2 px-3 sm:px-5">
             <button className="icon-btn lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
               <Menu className="h-4 w-4" />
@@ -1877,7 +1880,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           {uploading || revalidating ? <div className="progress-bar h-[2px] w-full" /> : null}
         </header>
 
-        <main className="mx-auto w-full max-w-[1400px] px-4 py-5 sm:px-6 sm:py-7">
+        <main className="mx-auto w-full max-w-[1400px] px-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pt-7">
           {/* Title row */}
           <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
