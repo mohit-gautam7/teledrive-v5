@@ -30,8 +30,17 @@ export type NativeBackupStatus = {
   running: boolean;
   wifiOnly: boolean;
   chargingOnly: boolean;
-  includeNonCamera: boolean;
+  /** Device albums chosen, as MediaStore relative paths. Empty = camera only. */
+  albums: string[];
+  includePhotos: boolean;
+  includeVideos: boolean;
+  /** Skip anything bigger than this. 0 means no limit. */
+  maxFileSizeMb: number;
+  /** Hours between scheduled runs. */
+  intervalHours: number;
   folderId: string | null;
+  /** The destination folder's name, so the card can show it without a lookup. */
+  folderName: string;
   /** The file being uploaded right now, or "" between files. */
   currentName: string;
   /** 1-based position in this run's batch, for "7 of 50". */
@@ -47,8 +56,24 @@ export type NativeBackupStatus = {
 export type NativeBackupOptions = {
   wifiOnly?: boolean;
   chargingOnly?: boolean;
-  includeNonCamera?: boolean;
+  albums?: string[];
+  includePhotos?: boolean;
+  includeVideos?: boolean;
+  maxFileSizeMb?: number;
+  intervalHours?: number;
   folderId?: string | null;
+  folderName?: string;
+};
+
+/** One folder on the phone that holds photos or videos. */
+export type NativeAlbum = {
+  /** MediaStore relative path, e.g. "DCIM/Camera/". The stable identifier. */
+  path: string;
+  /** Just the last segment, which is what people call it. */
+  name: string;
+  photos: number;
+  videos: number;
+  selected: boolean;
 };
 
 type BackupPlugin = {
@@ -57,6 +82,7 @@ type BackupPlugin = {
   disable(): Promise<NativeBackupStatus>;
   runNow(): Promise<NativeBackupStatus>;
   rescanAll(): Promise<NativeBackupStatus>;
+  albums(): Promise<{ albums: NativeAlbum[] }>;
   setOptions(options: NativeBackupOptions): Promise<NativeBackupStatus>;
   skipCurrent(): Promise<NativeBackupStatus>;
   stopRun(): Promise<NativeBackupStatus>;
@@ -104,6 +130,7 @@ export const nativeBackup = {
   disable: () => call("disable"),
   runNow: () => call("runNow"),
   rescanAll: () => call("rescanAll"),
+  albums: () => call("albums"),
   skipCurrent: () => call("skipCurrent"),
   stopRun: () => call("stopRun"),
   setOptions: (options: NativeBackupOptions) => call("setOptions", options),

@@ -1,0 +1,62 @@
+# Keep the free tiers from going to sleep.
+#
+# Render's free plan stops a service after ~15 minutes idle, and the next
+# request then waits 30-60 seconds for a cold start. That is survivable for a
+# page load and genuinely disruptive mid-upload, which is where the file routes
+# now live.
+#
+# The ping goes to /api/health rather than /, because health also runs
+# `select 1` against Postgres. Supabase's free tier pauses a database after
+# about a week idle, so one request keeps both awake - the doc's "one ping
+# covers both".
+#
+# GitHub's scheduler is best-effort: it queues schedules under load and can run
+# several minutes late, and it disables them altogether on a repository with no
+# activity for 60 days. Both are acceptable here - a late ping only means a cold
+# start somebody has to wait through, not lost data.
+name: Keep warm
+
+on:
+  schedule:
+    # Every 10 minutes. The sleep timer is ~15, so a missed run still leaves room.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# Never let a slow cold start pile up behind the next scheduled run.
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake Render and the database behind it
+        env:
+          # Overridable without editing this file: set a repository variable
+          # named RENDER_URL if the service ever moves.
+          TARGET: ${{ vars.RENDER_URL || 'https://teledrive-v5.onrender.com' }}
+        run: |
+          set -u
+          for attempt in 1 2 3; do
+            # -m 90 because a cold start legitimately takes up to a minute, and
+            # a timeout here would report a sleeping service as a dead one.
+            code=$(curl -sS -o /tmp/body -m 90 -w '%{http_code}' "$TARGET/api/health" || echo "000")
+            echo "attempt $attempt -> HTTP $code"
+            head -c 300 /tmp/body 2>/dev/null || true
+            echo
+            # Any HTTP answer means the service is awake, which is this job's
+            # only purpose. A 503 from a degraded dependency is still a wake,
+            # and failing on it would mean an alert every ten minutes for
+            # something this job cannot fix.
+            if [ "$code" != "000" ]; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::No HTTP response from $TARGET after three attempts - the service may be suspended or the URL wrong."
+          exit 1

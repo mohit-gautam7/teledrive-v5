@@ -158,13 +158,18 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
      * the entire camera roll, one run at a time, and report success. One GET
      * every couple of hours is a cheap price for that not happening.
      */
-    fun ensureBackupFolder(known: String?): String {
+    data class Destination(val id: String, val name: String)
+
+    fun ensureBackupFolder(known: String?): Destination {
         val rows = listFolders()
-        if (known != null && rows.any { it.id == known }) return known
+        // A folder the user chose themselves wins, and keeps its own name - the
+        // point of letting them choose is that it is not called Camera backup.
+        if (known != null) rows.firstOrNull { it.id == known }?.let { return Destination(it.id, it.name) }
         // Match by name only at the top level; a folder of the same name nested
         // somewhere of the user's own making is theirs, not ours to write into.
-        rows.firstOrNull { it.parentId == null && it.name == BACKUP_FOLDER }?.let { return it.id }
-        return createFolder(BACKUP_FOLDER)
+        rows.firstOrNull { it.parentId == null && it.name == BACKUP_FOLDER }
+            ?.let { return Destination(it.id, it.name) }
+        return Destination(createFolder(BACKUP_FOLDER), BACKUP_FOLDER)
     }
 
     private fun listFolders(): List<FolderRow> {

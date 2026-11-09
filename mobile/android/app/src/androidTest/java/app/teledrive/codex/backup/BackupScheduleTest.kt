@@ -13,6 +13,7 @@ import androidx.work.testing.WorkManagerTestInitHelper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -39,6 +40,19 @@ class BackupScheduleTest {
 
     private lateinit var context: Context
     private lateinit var prefs: BackupPrefs
+    private var savedAlbums: Set<String> = emptySet()
+    private var savedMaxMb: Int = 0
+    private var savedPhotos: Boolean = true
+    private var savedVideos: Boolean = true
+
+    @After
+    fun restorePreferences() {
+        if (!::prefs.isInitialized) return
+        prefs.albums = savedAlbums
+        prefs.maxFileSizeMb = savedMaxMb
+        prefs.includePhotos = savedPhotos
+        prefs.includeVideos = savedVideos
+    }
 
     @Before
     fun setUp() {
@@ -60,6 +74,17 @@ class BackupScheduleTest {
 
         prefs.enabled = true
         prefs.resetWatermark()
+        // These tests write the user's real preferences, so the originals are
+        // kept and put back in @After. Without that, running the suite would
+        // quietly reconfigure the backup on the phone it ran against.
+        savedAlbums = prefs.albums
+        savedMaxMb = prefs.maxFileSizeMb
+        savedPhotos = prefs.includePhotos
+        savedVideos = prefs.includeVideos
+        prefs.albums = emptySet()
+        prefs.maxFileSizeMb = 0
+        prefs.includePhotos = true
+        prefs.includeVideos = true
 
         WorkManagerTestInitHelper.initializeTestWorkManager(
             context,
@@ -133,6 +158,90 @@ class BackupScheduleTest {
 
         assertTrue("The scheduled worker never ran", prefs.lastRunAt > before)
         assertTrue("The worker should record what it did", prefs.lastResult.isNotBlank())
+    }
+
+    /**
+     * The album list is the one thing the new settings cannot work without.
+     *
+     * An empty list renders an empty box, which reads as "this phone has no
+     * photos" rather than "the query failed" — so the failure is silent and
+     * looks like a fact about the device.
+     */
+    @Test
+    fun albumsAreListedWithCounts() {
+        val albums = MediaScanner(context).albums()
+        assertTrue("No albums found at all", albums.isNotEmpty())
+        assertTrue("Every album must hold something", albums.all { it.photos + it.videos > 0 })
+        assertTrue("Every album must have a path", albums.all { it.path.isNotBlank() })
+        assertTrue("Every album must have a name", albums.all { it.name.isNotBlank() })
+        // Sorted biggest first, because a list of forty folders is only usable
+        // if the one you want is near the top.
+        val totals = albums.map { it.photos + it.videos }
+        assertEquals("Albums must come back biggest first", totals.sortedDescending(), totals)
+    }
+
+    /** Choosing albums must actually narrow the scan, not just the display. */
+    @Test
+    fun onlyChosenAlbumsAreScanned() {
+        val scanner = MediaScanner(context)
+        val albums = scanner.albums()
+        assertTrue("Needs at least one album", albums.isNotEmpty())
+
+        val pick = albums.first()
+        prefs.albums = setOf(pick.path)
+        prefs.resetWatermark()
+
+        val items = scanner.scan(prefs, 200)
+        assertTrue("Scan returned nothing for a non-empty album", items.isNotEmpty())
+        assertTrue(
+            "Everything scanned must be in the chosen album",
+            items.all { it.relativePath.equals(pick.path, ignoreCase = true) }
+        )
+    }
+
+    /**
+     * The size cap drops items at the scan, not at upload.
+     *
+     * Worth pinning: the cap existing but never applied would be discovered
+     * only by someone's data plan.
+     */
+    @Test
+    fun theSizeCapExcludesAnythingBigger() {
+        val scanner = MediaScanner(context)
+        prefs.resetWatermark()
+        val everything = scanner.scan(prefs, 200)
+        assertTrue("Needs some camera items", everything.isNotEmpty())
+
+        val smallest = everything.minOf { it.size }
+        // A cap just under the smallest item must exclude all of them.
+        prefs.maxFileSizeMb = ((smallest - 1) / (1024 * 1024)).toInt()
+        if (prefs.maxFileSizeMb > 0) {
+            val capped = scanner.scan(prefs, 200)
+            assertTrue(
+                "Nothing above the cap may survive the scan",
+                capped.all { it.size <= prefs.maxFileSizeMb.toLong() * 1024L * 1024L }
+            )
+        }
+
+        // 0 is "no limit", not "exclude everything" - the opposite mistake is
+        // a backup that silently stops the moment someone clears the field.
+        prefs.maxFileSizeMb = 0
+        assertEquals("Zero must mean no limit", everything.size, scanner.scan(prefs, 200).size)
+    }
+
+    /** Switching a media type off must stop it being queried at all. */
+    @Test
+    fun switchingOffPhotosLeavesOnlyVideos() {
+        val scanner = MediaScanner(context)
+        prefs.resetWatermark()
+        prefs.includePhotos = false
+        prefs.includeVideos = true
+
+        val items = scanner.scan(prefs, 200)
+        assertTrue(
+            "An image came back with photos switched off",
+            items.none { it.mimeType.startsWith("image/", ignoreCase = true) }
+        )
     }
 
     /* ── Permission plumbing ───────────────────────────────────────────────── */

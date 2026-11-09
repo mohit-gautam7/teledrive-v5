@@ -31,6 +31,7 @@ import {
   nativeBackup,
   nativeBackupAvailable,
   vendorAdvice,
+  type NativeAlbum,
   type NativeBackupStatus
 } from "@/lib/native-backup";
 import {
@@ -423,8 +424,21 @@ function Choice<T extends string | number>({
 function NativeBackupCard() {
   const [status, setStatus] = useState<NativeBackupStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  // null means "not asked yet", which is a different thing from "none found"
+  // and the card says so rather than showing an empty box either way.
+  const [albums, setAlbums] = useState<NativeAlbum[] | null>(null);
+  const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
   const available = nativeBackupAvailable();
   const running = status?.running ?? false;
+  const enabled = status?.enabled ?? false;
+
+  // An empty selection in prefs means "not chosen yet", and the native side
+  // falls back to the camera folders - so the UI shows that same fallback
+  // rather than a box of unticked boxes that does not match what will happen.
+  const selectedAlbums =
+    status && status.albums.length > 0
+      ? status.albums
+      : (albums ?? []).filter(a => a.selected).map(a => a.path);
 
   const refresh = useCallback(async () => {
     const next = await nativeBackup.status();
@@ -442,6 +456,42 @@ function NativeBackupCard() {
     const timer = window.setInterval(() => void refresh(), period);
     return () => window.clearInterval(timer);
   }, [available, refresh, running]);
+
+  // Albums and drive folders are only needed while the options are on screen,
+  // and both are far too expensive for the 1.5s status poll: one walks every
+  // MediaStore row, the other is a network round trip.
+  useEffect(() => {
+    if (!available || !enabled) return;
+    let cancelled = false;
+    void (async () => {
+      const result = await nativeBackup.albums();
+      if (!cancelled) setAlbums(result?.albums ?? []);
+      const folders = await apiFetch<{ folders: { id: string; name: string; parentId: string | null }[] }>(
+        "/api/folders?flat=1"
+      ).catch(() => null);
+      if (!cancelled && folders) {
+        setDriveFolders(folders.folders.map(f => ({ id: f.id, name: f.name })));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [available, enabled]);
+
+  const toggleAlbum = useCallback(
+    async (path: string, checked: boolean) => {
+      const next = checked ? [...new Set([...selectedAlbums, path])] : selectedAlbums.filter(p => p !== path);
+      if (next.length === 0) {
+        // The native side refuses an empty set, because empty already means
+        // "not chosen yet" there. Saying so beats a checkbox that springs back.
+        toast.error("Keep at least one album, or turn backup off.");
+        return;
+      }
+      const result = await nativeBackup.setOptions({ albums: next });
+      if (result) setStatus(result);
+    },
+    [selectedAlbums]
+  );
 
   const applyResult = useCallback(
     async (action: () => Promise<NativeBackupStatus | null>, success?: string) => {
@@ -478,18 +528,27 @@ function NativeBackupCard() {
             )
           }
           disabled={busy || !status}
-          className="btn btn-ghost"
+          role="switch"
+          aria-checked={status?.enabled ?? false}
+          aria-label="Automatic backup"
+          className={status?.enabled ? "btn btn-accent" : "btn btn-ghost"}
           style={{ minHeight: 34, fontSize: 12 }}
         >
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}{" "}
-          {!status ? "..." : status.enabled ? "On" : "Off"}
+          {/*
+            The label names the action, not the state. Reading "On" next to a
+            power icon tells you what is happening and leaves you guessing how
+            to stop it - which is exactly the complaint this answers. A plain
+            verb cannot be misread, and the pressed styling carries the state.
+          */}
+          {!status ? "…" : status.enabled ? "Turn off" : "Turn on"}
         </button>
       </div>
 
       <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
         New photos and videos are saved to TeleDrive on their own, every couple of hours, whether or not this app is
-        open. They go into a folder called <strong>Camera backup</strong>, not loose in your drive. Nothing is uploaded
-        twice &mdash; each one is checked against your drive first.
+        open. They go into <strong>{status?.folderName || "Camera backup"}</strong>, not loose in your drive. Nothing is
+        uploaded twice &mdash; each one is checked against your drive first.
       </p>
 
       {status ? (
@@ -577,35 +636,171 @@ function NativeBackupCard() {
       ) : null}
 
       {status?.enabled ? (
-        <div className="mt-4 space-y-2">
-          <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-            <input
-              type="checkbox"
-              checked={!status.wifiOnly}
-              onChange={event => void applyResult(() => nativeBackup.setOptions({ wifiOnly: !event.target.checked }))}
-            />
-            Use mobile data too (otherwise Wi-Fi only)
-          </label>
-          <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-            <input
-              type="checkbox"
-              checked={status.chargingOnly}
-              onChange={event =>
-                void applyResult(() => nativeBackup.setOptions({ chargingOnly: event.target.checked }))
-              }
-            />
-            Only while charging
-          </label>
-          <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-            <input
-              type="checkbox"
-              checked={status.includeNonCamera}
-              onChange={event =>
-                void applyResult(() => nativeBackup.setOptions({ includeNonCamera: event.target.checked }))
-              }
-            />
-            Include screenshots and downloaded media, not just the camera
-          </label>
+        <div className="mt-5 space-y-5">
+          {/* ── Which albums ───────────────────────────────────────────── */}
+          <div>
+            <p className="t-sm" style={{ color: "var(--text-1)" }}>
+              Albums to back up
+            </p>
+            <p className="t-xs mt-0.5" style={{ color: "var(--text-3)" }}>
+              Counts are what is on the phone, not what is left to upload.
+            </p>
+            {albums === null ? (
+              <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
+                <Loader2 className="inline h-3 w-3 animate-spin" /> Reading your albums…
+              </p>
+            ) : albums.length === 0 ? (
+              <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
+                No albums found. Grant photo access, then reopen this page.
+              </p>
+            ) : (
+              <div
+                className="mt-2 max-h-64 space-y-1.5 overflow-y-auto rounded-xl p-3"
+                style={{ background: "var(--surface-2)" }}
+              >
+                {albums.map(album => (
+                  <label key={album.path} className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedAlbums.includes(album.path)}
+                      onChange={event => void toggleAlbum(album.path, event.target.checked)}
+                    />
+                    <span className="min-w-0 flex-1 truncate" title={album.path}>
+                      {album.name}
+                    </span>
+                    <span className="mono t-xs shrink-0" style={{ color: "var(--text-3)" }}>
+                      {album.photos > 0 ? `${album.photos.toLocaleString()} photo${album.photos === 1 ? "" : "s"}` : ""}
+                      {album.photos > 0 && album.videos > 0 ? " · " : ""}
+                      {album.videos > 0 ? `${album.videos.toLocaleString()} video${album.videos === 1 ? "" : "s"}` : ""}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── What kind, and how big ─────────────────────────────────── */}
+          <div className="space-y-2">
+            <p className="t-sm" style={{ color: "var(--text-1)" }}>
+              What to include
+            </p>
+            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+              <input
+                type="checkbox"
+                checked={status.includePhotos}
+                onChange={event =>
+                  void applyResult(() => nativeBackup.setOptions({ includePhotos: event.target.checked }))
+                }
+              />
+              Photos
+            </label>
+            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+              <input
+                type="checkbox"
+                checked={status.includeVideos}
+                onChange={event =>
+                  void applyResult(() => nativeBackup.setOptions({ includeVideos: event.target.checked }))
+                }
+              />
+              Videos
+            </label>
+            <div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+              <span>Skip anything larger than</span>
+              <input
+                type="number"
+                min={0}
+                step={50}
+                inputMode="numeric"
+                defaultValue={status.maxFileSizeMb || ""}
+                placeholder="no limit"
+                onBlur={event => {
+                  const next = Math.max(0, Number(event.target.value) || 0);
+                  if (next !== status.maxFileSizeMb) void applyResult(() => nativeBackup.setOptions({ maxFileSizeMb: next }));
+                }}
+                className="field"
+                style={{ width: 110, height: 32 }}
+              />
+              <span>MB</span>
+            </div>
+            <p className="t-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
+              Raising the limit later does not go back for what it skipped &mdash; use <em>Re-check everything</em> for
+              that.
+            </p>
+          </div>
+
+          {/* ── When ───────────────────────────────────────────────────── */}
+          <div className="space-y-2">
+            <p className="t-sm" style={{ color: "var(--text-1)" }}>
+              When to run
+            </p>
+            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+              <input
+                type="checkbox"
+                checked={!status.wifiOnly}
+                onChange={event => void applyResult(() => nativeBackup.setOptions({ wifiOnly: !event.target.checked }))}
+              />
+              Use mobile data too (otherwise Wi-Fi only)
+            </label>
+            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+              <input
+                type="checkbox"
+                checked={status.chargingOnly}
+                onChange={event =>
+                  void applyResult(() => nativeBackup.setOptions({ chargingOnly: event.target.checked }))
+                }
+              />
+              Only while charging
+            </label>
+            <div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+              <span>Check for new photos every</span>
+              <select
+                value={status.intervalHours}
+                onChange={event =>
+                  void applyResult(() => nativeBackup.setOptions({ intervalHours: Number(event.target.value) }))
+                }
+                className="field"
+                style={{ width: 130, height: 32 }}
+              >
+                <option value={1}>hour</option>
+                <option value={2}>2 hours</option>
+                <option value={6}>6 hours</option>
+                <option value={12}>12 hours</option>
+                <option value={24}>day</option>
+              </select>
+            </div>
+            <p className="t-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
+              Android decides the exact moment &mdash; it batches work to save battery, so a run can arrive late.
+            </p>
+          </div>
+
+          {/* ── Where it lands ─────────────────────────────────────────── */}
+          <div>
+            <p className="t-sm" style={{ color: "var(--text-1)" }}>
+              Save into
+            </p>
+            <select
+              value={status.folderId ?? ""}
+              onChange={event => {
+                const id = event.target.value;
+                const picked = driveFolders.find(f => f.id === id);
+                void applyResult(() =>
+                  nativeBackup.setOptions({
+                    folderId: id || null,
+                    folderName: picked ? picked.name : "Camera backup"
+                  })
+                );
+              }}
+              className="field mt-1.5"
+              style={{ height: 36 }}
+            >
+              <option value="">Camera backup (made automatically)</option>
+              {driveFolders.map(folder => (
+                <option key={folder.id} value={folder.id}>
+                  {folder.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       ) : null}
 
