@@ -9,10 +9,10 @@
     "apk": "cd android && gradlew.bat assembleDebug"
   },
   "dependencies": {
-    "@capacitor/android": "7.4.4",
-    "@capacitor/core": "7.4.4"
+    "@capacitor/android": "^7.6.9",
+    "@capacitor/core": "^7.6.9"
   },
   "devDependencies": {
-    "@capacitor/cli": "7.4.4"
+    "@capacitor/cli": "^7.6.9"
   }
 }
