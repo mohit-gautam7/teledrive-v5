@@ -1,6 +1,7 @@
 package app.teledrive.codex.backup
 
 import android.content.Context
+import android.util.Log
 import android.webkit.CookieManager
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -60,6 +61,46 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         if (!cookies.contains(AUTH_COOKIE)) throw NotSignedInException()
         return cookies
     }
+
+    /**
+     * Send a heavy request to the file origin, falling back to the app's own
+     * origin when that origin cannot be reached.
+     *
+     * Measured on a campus guest network: 100% packet loss to Render's
+     * addresses while the app's origin answered normally, so every chunk hit a
+     * 30-second connect timeout and the backup stalled indefinitely — pausing
+     * and retrying for ever against a host that network will never deliver to.
+     *
+     * Falling back costs the primary origin's bandwidth, which is the whole
+     * thing the split exists to save. That is still the right trade: a backup
+     * that works on an expensive path beats one that does not work at all, and
+     * the cheap path is tried first on every run. The flag lives on this
+     * client, and the worker builds a new one per run, so a network that was
+     * merely having a bad minute is retried at the next batch rather than
+     * written off.
+     */
+    private fun callWithFallback(
+        origin: String,
+        path: String,
+        what: String,
+        build: (Request.Builder) -> Request.Builder
+    ): JSONObject {
+        if (origin.isNotBlank() && !fileOriginUnreachable) {
+            try {
+                http.newCall(build(fileRequest(origin, path)).build()).execute().use { return ok(it, what) }
+            } catch (unreachable: IOException) {
+                // Only a transport failure or a 5xx lands here; ok() throws its
+                // own types for auth and for anything the server refuses
+                // outright, and those must not be retried somewhere else.
+                Log.w(TAG, "file origin unreachable, using the app origin for the rest of this run", unreachable)
+                fileOriginUnreachable = true
+            }
+        }
+        http.newCall(build(request(path)).build()).execute().use { return ok(it, what) }
+    }
+
+    @Volatile
+    private var fileOriginUnreachable = false
 
     /**
      * A request to the file origin, when the deployment has one.
@@ -266,24 +307,25 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
                 bytes.toRequestBody("application/octet-stream".toMediaType(), 0, length)
             )
             .build()
-        http.newCall(fileRequest(session.fileOrigin, "/api/upload/chunk/${session.fileId}/$index").post(part).build())
-            .execute().use { response ->
-            ok(response, "Chunk $index of $name failed")
-        }
+        callWithFallback(
+            session.fileOrigin,
+            "/api/upload/chunk/${session.fileId}/$index",
+            "Chunk $index of $name failed"
+        ) { it.post(part) }
     }
 
     fun complete(session: Session, name: String) {
-        http.newCall(fileRequest(session.fileOrigin, "/api/upload/complete/${session.fileId}").post(EMPTY).build())
-            .execute().use { response ->
-            ok(response, "Could not finish $name")
+        callWithFallback(session.fileOrigin, "/api/upload/complete/${session.fileId}", "Could not finish $name") {
+            it.post(EMPTY)
         }
     }
 
     /** Abandon a session so the server does not keep a half-written row. */
     fun abort(session: Session) {
         runCatching {
-            http.newCall(fileRequest(session.fileOrigin, "/api/upload/abort/${session.fileId}").delete().build())
-                .execute().close()
+            callWithFallback(session.fileOrigin, "/api/upload/abort/${session.fileId}", "Could not abandon the upload") {
+                it.delete()
+            }
         }
     }
 
@@ -328,6 +370,7 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
             ?: throw PermanentUploadException("${item.name} could not be opened — it may have been deleted.")
 
     private companion object {
+        const val TAG = "TeleDriveBackup"
         const val AUTH_COOKIE = "teledrive_session"
         /** Where the camera roll lands, instead of all over the drive root. */
         const val BACKUP_FOLDER = "Camera backup"
