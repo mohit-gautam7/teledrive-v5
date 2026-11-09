@@ -40,7 +40,8 @@ object BackupScheduler {
      * "it just happens" actually feels like, and the flex window lets Android
      * align the run with whatever else wakes the device.
      */
-    private const val INTERVAL_HOURS = 2L
+    /** Used when a preference has never been written. */
+    private const val DEFAULT_INTERVAL_HOURS = 2
 
     /**
      * Install or replace the repeating job.
@@ -53,9 +54,14 @@ object BackupScheduler {
      */
     @JvmOverloads
     fun schedule(context: Context, prefs: BackupPrefs, replaceExisting: Boolean = true) {
+        // The flex window is a third of the period, so a long interval keeps a
+        // sensible amount of slack for the system to batch the wake-up with
+        // other work instead of waking the radio on its own.
+        val hours = prefs.intervalHours.toLong().coerceAtLeast(1L)
+        val flexMinutes = (hours * 60 / 3).coerceAtLeast(15L)
         val request = PeriodicWorkRequestBuilder<BackupWorker>(
-            INTERVAL_HOURS, TimeUnit.HOURS,
-            30, TimeUnit.MINUTES
+            hours, TimeUnit.HOURS,
+            flexMinutes, TimeUnit.MINUTES
         )
             .setConstraints(constraints(prefs))
             // A failed run waits 15 minutes, then half an hour, then an hour.

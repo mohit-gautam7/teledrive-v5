@@ -66,7 +66,10 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         // the server answer 404 — which counts as permanent, so every photo
         // would be skipped and the watermark would march past the lot of them.
         val folderId = try {
-            client.ensureBackupFolder(prefs.folderId).also { prefs.folderId = it }
+            client.ensureBackupFolder(prefs.folderId).also {
+                prefs.folderId = it.id
+                prefs.folderName = it.name
+            }.id
         } catch (signedOut: NotSignedInException) {
             finish("Signed out — open TeleDrive and sign in.")
             return@withContext Result.success()

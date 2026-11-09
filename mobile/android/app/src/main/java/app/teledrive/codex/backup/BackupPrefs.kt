@@ -61,10 +61,58 @@ class BackupPrefs(context: Context) {
         get() = prefs.getString(KEY_FOLDER, null)
         set(value) = prefs.edit().putString(KEY_FOLDER, value).apply()
 
-    /** Also back up screenshots, WhatsApp media and the rest of Pictures/. */
-    var includeNonCamera: Boolean
-        get() = prefs.getBoolean(KEY_INCLUDE_NON_CAMERA, false)
-        set(value) = prefs.edit().putBoolean(KEY_INCLUDE_NON_CAMERA, value).apply()
+    /**
+     * Which device albums to back up, as MediaStore relative paths
+     * ("DCIM/Camera/", "Pictures/Screenshots/").
+     *
+     * Empty means "not chosen yet", and the scanner falls back to the camera
+     * folders. It deliberately does not mean "none": a user who has not opened
+     * the settings yet should still get their camera roll, and a backup that
+     * silently covers nothing is the worst of the possible defaults.
+     *
+     * Paths rather than MediaStore bucket ids because a path survives a rescan
+     * and reads the same in the UI, the prefs and the logs.
+     */
+    var albums: Set<String>
+        get() = prefs.getStringSet(KEY_ALBUMS, emptySet())?.toSet() ?: emptySet()
+        set(value) = prefs.edit().putStringSet(KEY_ALBUMS, value).apply()
+
+    /** Back up photos. Off means images are never even queried. */
+    var includePhotos: Boolean
+        get() = prefs.getBoolean(KEY_INCLUDE_PHOTOS, true)
+        set(value) = prefs.edit().putBoolean(KEY_INCLUDE_PHOTOS, value).apply()
+
+    /** Back up videos. The usual reason to switch this off is a data plan. */
+    var includeVideos: Boolean
+        get() = prefs.getBoolean(KEY_INCLUDE_VIDEOS, true)
+        set(value) = prefs.edit().putBoolean(KEY_INCLUDE_VIDEOS, value).apply()
+
+    /**
+     * Skip anything larger than this many megabytes. 0 means no limit.
+     *
+     * Excluded files are dropped by the scan rather than skipped by the worker,
+     * so raising the cap later does not go back for them — the watermark has
+     * moved on. "Re-check everything" is the way back, and the card says so.
+     */
+    var maxFileSizeMb: Int
+        get() = prefs.getInt(KEY_MAX_FILE_MB, 0)
+        set(value) = prefs.edit().putInt(KEY_MAX_FILE_MB, value.coerceAtLeast(0)).apply()
+
+    /**
+     * Hours between scheduled runs.
+     *
+     * Clamped to WorkManager's own floor of 15 minutes expressed in hours, so a
+     * value from an older build or a hand-edited preference cannot produce a
+     * schedule the platform silently rewrites behind our back.
+     */
+    var intervalHours: Int
+        get() = prefs.getInt(KEY_INTERVAL_HOURS, 2).coerceIn(1, 24)
+        set(value) = prefs.edit().putInt(KEY_INTERVAL_HOURS, value.coerceIn(1, 24)).apply()
+
+    /** The destination folder's name, so the card can show it without a lookup. */
+    var folderName: String
+        get() = prefs.getString(KEY_FOLDER_NAME, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_FOLDER_NAME, value).apply()
 
     /* ── What the run is doing right now, for the UI to show ────────────────── */
 
@@ -162,7 +210,12 @@ class BackupPrefs(context: Context) {
         const val KEY_WIFI_ONLY = "wifiOnly"
         const val KEY_CHARGING_ONLY = "chargingOnly"
         const val KEY_FOLDER = "folderId"
-        const val KEY_INCLUDE_NON_CAMERA = "includeNonCamera"
+        const val KEY_ALBUMS = "albums"
+        const val KEY_INCLUDE_PHOTOS = "includePhotos"
+        const val KEY_INCLUDE_VIDEOS = "includeVideos"
+        const val KEY_MAX_FILE_MB = "maxFileSizeMb"
+        const val KEY_FOLDER_NAME = "folderName"
+        const val KEY_INTERVAL_HOURS = "intervalHours"
         const val KEY_LAST_RUN = "lastRunAt"
         const val KEY_LAST_RESULT = "lastResult"
         const val KEY_UPLOADED_TOTAL = "uploadedTotal"

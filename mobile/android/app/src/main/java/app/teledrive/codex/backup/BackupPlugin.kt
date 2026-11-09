@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
+import org.json.JSONArray
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
@@ -69,7 +70,12 @@ class BackupPlugin : Plugin() {
                 .put("running", runCatching { BackupScheduler.isActive(context) }.getOrDefault(false))
                 .put("wifiOnly", prefs.wifiOnly)
                 .put("chargingOnly", prefs.chargingOnly)
-                .put("includeNonCamera", prefs.includeNonCamera)
+                .put("albums", JSONArray(prefs.albums.toList()))
+                .put("includePhotos", prefs.includePhotos)
+                .put("includeVideos", prefs.includeVideos)
+                .put("maxFileSizeMb", prefs.maxFileSizeMb)
+                .put("intervalHours", prefs.intervalHours)
+                .put("folderName", prefs.folderName)
                 .put("folderId", prefs.folderId)
                 .put("currentName", prefs.currentName)
                 .put("currentIndex", prefs.currentIndex)
@@ -161,6 +167,34 @@ class BackupPlugin : Plugin() {
         status(call)
     }
 
+    /**
+     * Every album on the device, with how much is in each.
+     *
+     * Separate from status() because it walks a cursor over every row: cheap
+     * enough when the settings card opens, wasteful at the 1.5-second poll
+     * rate status() runs at during a backup.
+     */
+    @PluginMethod
+    fun albums(call: PluginCall) {
+        if (!hasMediaPermission()) {
+            call.reject("Photo access is needed before TeleDrive can list your albums.")
+            return
+        }
+        val chosen = prefs.albums
+        val list = JSONArray()
+        runCatching { MediaScanner(context).albums() }.getOrDefault(emptyList()).forEach { album ->
+            list.put(
+                JSObject()
+                    .put("path", album.path)
+                    .put("name", album.name)
+                    .put("photos", album.photos)
+                    .put("videos", album.videos)
+                    .put("selected", if (chosen.isEmpty()) album.path.startsWith("DCIM/", true) else chosen.contains(album.path))
+            )
+        }
+        call.resolve(JSObject().put("albums", list))
+    }
+
     @PluginMethod
     fun rescanAll(call: PluginCall) {
         prefs.resetWatermark()
@@ -172,7 +206,18 @@ class BackupPlugin : Plugin() {
     fun setOptions(call: PluginCall) {
         call.getBoolean("wifiOnly")?.let { prefs.wifiOnly = it }
         call.getBoolean("chargingOnly")?.let { prefs.chargingOnly = it }
-        call.getBoolean("includeNonCamera")?.let { prefs.includeNonCamera = it }
+        call.getBoolean("includePhotos")?.let { prefs.includePhotos = it }
+        call.getBoolean("includeVideos")?.let { prefs.includeVideos = it }
+        call.getInt("maxFileSizeMb")?.let { prefs.maxFileSizeMb = it }
+        call.getInt("intervalHours")?.let { prefs.intervalHours = it }
+        if (call.data.has("folderName")) prefs.folderName = call.getString("folderName") ?: ""
+        call.getArray("albums")?.let { array ->
+            // An explicit empty array would read as "not chosen yet" and
+            // silently restore the camera default, so it is refused: switching
+            // every album off is what turning backup off is for.
+            val chosen = (0 until array.length()).mapNotNull { array.optString(it)?.takeIf(String::isNotBlank) }
+            if (chosen.isNotEmpty()) prefs.albums = chosen.toSet()
+        }
         if (call.data.has("folderId")) prefs.folderId = call.getString("folderId")
         // Constraints are baked into the enqueued work, so a changed setting
         // only takes effect once the schedule is rebuilt.

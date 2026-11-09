@@ -6,6 +6,9 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 
+/** A device album: a folder MediaStore holds photos or videos in. */
+data class Album(val path: String, val name: String, val photos: Int, val videos: Int)
+
 /** One item from the camera roll, as much as MediaStore will tell us up front. */
 data class MediaItem(
     val uri: Uri,
@@ -32,32 +35,90 @@ data class MediaItem(
 class MediaScanner(private val context: Context) {
 
     /**
-     * Where a camera actually writes. Anything else — Screenshots, WhatsApp,
-     * Downloads, Telegram's own cache — is somebody else's copy of a file, and
-     * backing it up by default would silently triple a user's storage.
+     * Where a camera writes, used when the user has not chosen albums yet.
+     *
+     * Anything else — Screenshots, WhatsApp, Downloads, Telegram's own cache —
+     * is usually somebody else's copy of a file, and backing all of it up by
+     * default would silently multiply a user's storage. So the default stays
+     * narrow and the choice is theirs to widen.
      */
     private val cameraPaths = listOf("DCIM/")
 
     fun scan(prefs: BackupPrefs, limit: Int): List<MediaItem> {
-        // Doubled because camera filtering happens after the query, so the
-        // raw cursors must over-fetch. coerceAtMost keeps Int.MAX_VALUE from
+        // Doubled because album filtering happens after the query, so the raw
+        // cursors must over-fetch. coerceAtMost keeps Int.MAX_VALUE from
         // wrapping negative, which silently returned an empty list.
         val rawCap = if (limit >= MAX_SCAN / 2) MAX_SCAN else limit * 2
         val since = prefs.watermark
         val items = ArrayList<MediaItem>()
         // Images and videos live in separate collections; both are queried and
         // the results merged, because a sorted union of two cursors is simpler
-        // to reason about than MediaStore.Files with a media-type filter.
-        queryInto(items, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, since, rawCap)
-        queryInto(items, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, since, rawCap)
+        // to reason about than MediaStore.Files with a media-type filter. A
+        // type the user has switched off is simply never queried.
+        if (prefs.includePhotos) queryInto(items, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, since, rawCap)
+        if (prefs.includeVideos) queryInto(items, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, since, rawCap)
 
-        val filtered =
-            if (prefs.includeNonCamera) items
-            else items.filter { item -> cameraPaths.any { item.relativePath.startsWith(it, ignoreCase = true) } }
+        val chosen = prefs.albums
+        val maxBytes = prefs.maxFileSizeMb.toLong() * 1024L * 1024L
+
+        val filtered = items.filter { item ->
+            val inAlbum =
+                if (chosen.isEmpty()) cameraPaths.any { item.relativePath.startsWith(it, ignoreCase = true) }
+                else chosen.any { item.relativePath.equals(it, ignoreCase = true) }
+            // A size cap means "do not back this up", so the item is dropped
+            // here rather than skipped later. The consequence is that raising
+            // the cap afterwards does not retrieve what it excluded, because
+            // the watermark has moved past it — which is what "Re-check
+            // everything" is for, and why the card says so beside the field.
+            val withinSize = maxBytes <= 0L || item.size <= maxBytes
+            inAlbum && withinSize
+        }
 
         // Oldest first, so a partial run still leaves a correct watermark.
         return filtered.sortedBy { it.addedAt }.take(limit.coerceAtMost(MAX_SCAN))
     }
+
+    /**
+     * Every album on the device holding photos or videos, with counts.
+     *
+     * One column, every row: MediaStore answers this quickly even on a phone
+     * with forty thousand photos, and it is asked only while the settings card
+     * is open. The counts are what make the list usable — "Camera 3,122" and
+     * "Screenshots 814" tell you what you are signing up for, where a bare list
+     * of folder names does not.
+     */
+    fun albums(): List<Album> {
+        val counts = LinkedHashMap<String, IntArray>()
+        countInto(counts, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, 0)
+        countInto(counts, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, 1)
+        return counts.entries
+            .map { (path, c) -> Album(path = path, name = albumName(path), photos = c[0], videos = c[1]) }
+            .sortedWith(compareByDescending<Album> { it.photos + it.videos }.thenBy { it.name.lowercase() })
+    }
+
+    private fun countInto(into: MutableMap<String, IntArray>, collection: Uri, slot: Int) {
+        val column =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.MediaColumns.RELATIVE_PATH
+            else MediaStore.MediaColumns.DATA
+        val cursor = runCatching {
+            context.contentResolver.query(collection, arrayOf(column), null, null, null)
+        }.getOrNull() ?: return
+        cursor.use {
+            val col = it.getColumnIndex(column)
+            if (col < 0) return
+            var seen = 0
+            while (it.moveToNext() && seen < MAX_ALBUM_ROWS) {
+                seen++
+                val path = normalisePath(it.getString(col).orEmpty())
+                if (path.isBlank()) continue
+                into.getOrPut(path) { IntArray(2) }[slot]++
+            }
+        }
+    }
+
+    /** "DCIM/Camera/" becomes "Camera" — the last real segment is its name. */
+    private fun albumName(path: String): String =
+        path.trim('/').substringAfterLast('/').ifBlank { "Internal storage" }
 
     /**
      * How many are waiting. Counts up to [MAX_SCAN] and stops — the UI says
@@ -109,12 +170,7 @@ class MediaScanner(private val context: Context) {
                 // finished writing. Uploading it would store an empty file and
                 // move the watermark past the real one.
                 if (size <= 0L) continue
-                val rawPath = if (pathCol >= 0) it.getString(pathCol).orEmpty() else ""
-                // Pre-Q gives an absolute path; normalise it to the same
-                // "DCIM/Camera/" shape RELATIVE_PATH uses so one filter works.
-                val relative =
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) rawPath
-                    else rawPath.substringAfter("/0/", rawPath).substringBeforeLast('/') + "/"
+                val relative = normalisePath(if (pathCol >= 0) it.getString(pathCol).orEmpty() else "")
 
                 into.add(
                     MediaItem(
@@ -130,6 +186,16 @@ class MediaScanner(private val context: Context) {
         }
     }
 
+    /**
+     * Pre-Q gives an absolute path; normalise it to the same "DCIM/Camera/"
+     * shape RELATIVE_PATH uses, so one album filter works on every version.
+     */
+    private fun normalisePath(raw: String): String {
+        if (raw.isBlank()) return ""
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return raw
+        return raw.substringAfter("/0/", raw).substringBeforeLast('/') + "/"
+    }
+
     /** The file's real length, or -1 if it cannot be read at all. */
     private fun measure(uri: Uri): Long =
         runCatching {
@@ -139,5 +205,8 @@ class MediaScanner(private val context: Context) {
     private companion object {
         /** Ceiling on one scan, so neither memory nor the UI's count runs away. */
         const val MAX_SCAN = 2000
+
+        /** Ceiling on the album counting pass. One column, but still a cursor. */
+        const val MAX_ALBUM_ROWS = 60_000
     }
 }
