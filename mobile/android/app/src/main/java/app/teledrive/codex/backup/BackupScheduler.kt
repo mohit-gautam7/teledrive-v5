@@ -104,11 +104,20 @@ object BackupScheduler {
     }
 
     /** Is a run happening or waiting right now? For the UI's status line. */
+    /**
+     * Is a run happening *now* — not merely scheduled.
+     *
+     * ENQUEUED used to count, which made "Running now" show for the entire two
+     * hours between runs, and the card cannot tell a stuck upload from an idle
+     * schedule if both look the same. It also decides how often the page polls,
+     * so counting ENQUEUED meant polling every 1.5 seconds around the clock for
+     * a worker that was not running.
+     */
     fun isActive(context: Context): Boolean {
         val manager = WorkManager.getInstance(context)
         val states = (manager.getWorkInfosForUniqueWork(PERIODIC).get() +
             manager.getWorkInfosForUniqueWork(ONE_SHOT).get())
-        return states.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
+        return states.any { it.state == WorkInfo.State.RUNNING }
     }
 
     private fun constraints(prefs: BackupPrefs) = Constraints.Builder()
