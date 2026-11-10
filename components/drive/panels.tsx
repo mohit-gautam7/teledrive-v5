@@ -1212,7 +1212,8 @@ function DirectUploadCard({ user }: { user: string }) {
       <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
         Normally a file travels twice: up to TeleDrive, then out to Telegram. With this on, your browser sends it to
         Telegram itself and TeleDrive is told only where it landed &mdash; about a kilobyte instead of the whole file.
-        Large files get noticeably faster, and uploads stop counting against the host&apos;s bandwidth.
+        While this is on, all manual uploads use your linked account and file bytes bypass the host.
+        If direct upload fails, the queue stops that file rather than silently relaying it.
       </p>
 
       {enabled ? (
@@ -1316,7 +1317,7 @@ function DirectUploadCard({ user }: { user: string }) {
 
       <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
         This browser needs its own Telegram sign-in &mdash; it cannot borrow the one TeleDrive uses, because Telegram
-        cuts off a login it sees in two places at once. One scan is enough; it is remembered on this device until you
+        cuts off a login it sees in two places at once. Sign in once by phone code or QR; it is remembered on this device until you
         disconnect, and you can revoke it any time from <strong>Telegram &rarr; Settings &rarr; Devices</strong>.
       </p>
       <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
@@ -1324,9 +1325,9 @@ function DirectUploadCard({ user }: { user: string }) {
         just TeleDrive &mdash; the same thing Telegram Web stores. On a shared computer, leave this off.
       </p>
       <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        It applies to files stored in your Telegram account. Smaller ones still go through the bot, and if a direct
-        upload fails for any reason the file is sent the ordinary way instead &mdash; nothing is ever lost to this
-        being on.
+        This protects manual browser uploads, including small files. Android automatic background backup uses the file
+        server, not this browser connection. Downloads and thumbnails also use the file server; metadata requests still
+        reach the website. Telegram&apos;s file-size and rate limits, and your internet data allowance, still apply.
       </p>
     </section>
   );

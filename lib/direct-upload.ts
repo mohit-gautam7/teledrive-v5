@@ -32,16 +32,9 @@
  */
 
 import type { TelegramClient } from "telegram";
+import { DIRECT_MAX_BYTES, uploadDirectParts } from "@/lib/direct-parts";
 
-export type DirectConfig = { enabled: boolean; apiId: number; apiHash: string };
-
-/** Parallel part uploads. GramJS calls anything above 16 unstable, and a phone
- *  on mobile data is happier well below that; the gain flattens early. */
-const WORKERS = 4;
-
-/** Telegram allows at most 4000 parts and GramJS sends 512 KiB ones — the same
- *  2 GB ceiling the relay path has. */
-const MAX_DIRECT_BYTES = 4000 * 512 * 1024;
+export type DirectConfig = { enabled: boolean; apiId: number; apiHash: string; telegramUserId?: string };
 
 /** Drop the socket after a quiet spell rather than holding one open all day. */
 const IDLE_DISCONNECT_MS = 2 * 60_000;
@@ -99,19 +92,23 @@ export function browserLinked(user: string): boolean {
 export function directConfig(): Promise<DirectConfig | null> {
   if (!configPromise) {
     configPromise = (async () => {
-      try {
-        const res = await fetch("/api/telegram/direct-session", {
-          credentials: "same-origin",
-          cache: "no-store"
-        });
-        if (!res.ok) return null;
-        const body = (await res.json()) as Partial<DirectConfig>;
-        if (!body?.enabled || !body.apiId || !body.apiHash) return null;
-        return { enabled: true, apiId: body.apiId, apiHash: body.apiHash };
-      } catch {
-        return null;
+      const res = await fetch("/api/telegram/direct-session", {
+        credentials: "same-origin",
+        cache: "no-store"
+      });
+      if (res.status === 403) {
+        const body = await res.json();
+        if (body.enabled === false) return null;
       }
-    })();
+      if (!res.ok) throw new DirectUploadUnavailable("Could not check direct upload. No file bytes were sent. Try again.");
+      const body = (await res.json()) as Partial<DirectConfig>;
+      if (!body?.enabled || !body.apiId || !body.apiHash) throw new DirectUploadUnavailable("Direct upload configuration is incomplete.");
+      return { enabled: true, apiId: body.apiId, apiHash: body.apiHash, telegramUserId: body.telegramUserId };
+    })().catch(error => {
+      configPromise = null;
+      if (error instanceof DirectUploadUnavailable) throw error;
+      throw new DirectUploadUnavailable("Could not reach direct-upload settings. No file bytes were sent. Retry when connected.");
+    });
   }
   return configPromise;
 }
@@ -166,7 +163,14 @@ async function connected(user: string): Promise<TelegramClient> {
       if (!config) throw new DirectUploadUnavailable("Direct upload is not enabled for this account.");
       const session = storedSession(user);
       if (!session) throw new DirectUploadUnavailable("This browser is not connected to Telegram yet.");
-      return buildClient(session, config);
+      const client = await buildClient(session, config);
+      try {
+        assertDirectAccount(config, (await client.getMe()).id.toString());
+        return client;
+      } catch (error) {
+        await client.disconnect().catch(() => {});
+        throw error;
+      }
     })();
     // A failed connect must not stay memoised, or the tab never retries.
     pending.catch(() => {
@@ -182,6 +186,12 @@ export class DirectUploadUnavailable extends Error {
   constructor(reason: string) {
     super(reason);
     this.name = "DirectUploadUnavailable";
+  }
+}
+
+export function assertDirectAccount(config: DirectConfig, actualUserId: string) {
+  if (config.telegramUserId && config.telegramUserId !== actualUserId) {
+    throw new DirectUploadUnavailable("This browser is signed into a different Telegram account. Connect the same account linked to your drive.");
   }
 }
 
@@ -253,6 +263,7 @@ export async function linkBrowser(user: string, handlers: QrHandlers): Promise<s
   try {
     const me = await signInBrowser(client, config, handlers);
     if (!("firstName" in me)) throw new Error("Telegram did not return an account.");
+    assertDirectAccount(config, me.id.toString());
 
     const { StringSession } = await import("telegram/sessions");
     rememberSession(user, (client.session as InstanceType<typeof StringSession>).save());
@@ -313,28 +324,25 @@ export async function uploadDirect({
   onProgress: (loadedBytes: number) => void;
   signal?: AbortSignal;
 }): Promise<{ messageId: number }> {
-  if (file.size > MAX_DIRECT_BYTES) {
+  if (file.size > DIRECT_MAX_BYTES) {
     throw new DirectUploadUnavailable("File is past Telegram's 4000-part ceiling for one upload.");
   }
   const client = await connected(user);
   const { Api } = await import("telegram");
-
-  // GramJS cancels an upload by setting `isCanceled` on the callback it was
-  // handed, which is why this is a function with a property rather than a
-  // bare arrow passed inline.
-  const report: ((progress: number) => void) & { isCanceled?: boolean } = (progress: number) => {
-    // Held just under the total until the message exists, so the bar never
-    // sits at a finished 100% while sendFile is still in flight.
-    onProgress(Math.min(Math.round(progress * file.size), Math.max(0, file.size - 1)));
-  };
-  const onAbort = () => {
-    report.isCanceled = true;
-  };
-  if (signal?.aborted) onAbort();
-  signal?.addEventListener("abort", onAbort, { once: true });
+  const { generateRandomLong } = await import("telegram/Helpers");
+  const fileId = generateRandomLong();
+  const large = file.size > 10 * 1024 * 1024;
 
   try {
-    const handle = await client.uploadFile({ file, workers: WORKERS, onProgress: report });
+    const parts = await uploadDirectParts(file, async (index, bytes, count) => {
+      touchIdle();
+      return client.invoke(large
+        ? new Api.upload.SaveBigFilePart({ fileId, filePart: index, fileTotalParts: count, bytes })
+        : new Api.upload.SaveFilePart({ fileId, filePart: index, bytes }));
+    }, onProgress, signal);
+    const handle = large
+      ? new Api.InputFileBig({ id: fileId, parts, name: file.name })
+      : new Api.InputFile({ id: fileId, parts, name: file.name, md5Checksum: "" });
     touchIdle();
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
@@ -345,7 +353,7 @@ export async function uploadDirect({
       attributes: [new Api.DocumentAttributeFilename({ fileName: file.name })]
     });
     touchIdle();
-    onProgress(file.size);
+    onProgress(Math.max(0, file.size - 1));
     return { messageId: message.id };
   } catch (err) {
     // The stored session has been revoked, from Telegram → Devices or by a
@@ -357,7 +365,5 @@ export async function uploadDirect({
       forgetDirectSession();
     }
     throw err;
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
   }
 }

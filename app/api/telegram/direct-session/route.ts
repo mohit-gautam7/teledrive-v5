@@ -41,7 +41,7 @@ export async function GET() {
 
     const config = await prisma.storageConfig.findUnique({
       where: { userId: user.id },
-      select: { directUpload: true }
+      select: { directUpload: true, mtprotoUserId: true }
     });
 
     if (!config?.directUpload) {
@@ -60,6 +60,7 @@ export async function GET() {
     return NextResponse.json(
       {
         enabled: true,
+        telegramUserId: config.mtprotoUserId,
         apiId: Number(process.env.API_ID),
         apiHash: String(process.env.API_HASH)
       },

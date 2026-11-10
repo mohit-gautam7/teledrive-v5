@@ -50,10 +50,17 @@ export async function POST(request: NextRequest, props: { params: Promise<{ file
     const msgId = Number(messageId);
 
     const file = await prisma.file.findFirst({
-      where: { id: params.fileId, userId: user.id, uploadStatus: "uploading", backend: "mtproto" }
+      where: { id: params.fileId, userId: user.id, isDeleted: false, backend: "mtproto" }
     });
     if (!file) {
       return NextResponse.json({ error: "Upload session not found." }, { status: 404 });
+    }
+    // A lost response must not make a successful confirmation look like failure.
+    if (file.uploadStatus === "complete" && file.telegramMessageId === String(msgId)) {
+      return NextResponse.json({ file: toPublicFile(file) });
+    }
+    if (file.uploadStatus !== "uploading") {
+      return NextResponse.json({ error: "Upload session is already closed." }, { status: 409 });
     }
 
     const config = await prisma.storageConfig.findUnique({

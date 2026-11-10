@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { signInBrowser } from "../lib/direct-upload.ts";
+import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier === "@/lib/direct-parts") return next(new URL("../lib/direct-parts.ts", import.meta.url).href, context);
+  return next(specifier, context);
+}});
+const { signInBrowser, assertDirectAccount, directConfig, forgetDirectSession } = await import("../lib/direct-upload.ts");
 
 const config = { enabled: true, apiId: 1, apiHash: "test-only" };
 const account = { firstName: "Test" };
@@ -40,4 +45,16 @@ assert.equal(await signInBrowser(client, config, {
   }
 }), account);
 assert.equal(qrCalls, 1);
+assert.doesNotThrow(() => assertDirectAccount({ ...config, telegramUserId: "1" }, "1"));
+assert.throws(() => assertDirectAccount({ ...config, telegramUserId: "1" }, "2"), /different Telegram account/);
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => { throw new Error("network offline"); };
+await assert.rejects(directConfig(), /No file bytes were sent/);
+globalThis.fetch = async () => Response.json({ enabled: false }, { status: 403 });
+assert.equal(await directConfig(), null, "a failed status lookup must be retried, not remembered as off");
+forgetDirectSession();
+globalThis.fetch = async () => new Response("down", { status: 503 });
+await assert.rejects(directConfig(), /No file bytes were sent/);
+forgetDirectSession();
+globalThis.fetch = originalFetch;
 console.log("direct login: phone code, 2FA, error handling, signup prevention and QR passed");
