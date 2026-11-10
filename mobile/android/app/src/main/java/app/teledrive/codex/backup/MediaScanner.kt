@@ -45,37 +45,32 @@ class MediaScanner(private val context: Context) {
     private val cameraPaths = listOf("DCIM/")
 
     fun scan(prefs: BackupPrefs, limit: Int): List<MediaItem> {
-        // Doubled because album filtering happens after the query, so the raw
-        // cursors must over-fetch. coerceAtMost keeps Int.MAX_VALUE from
-        // wrapping negative, which silently returned an empty list.
-        val rawCap = if (limit >= MAX_SCAN / 2) MAX_SCAN else limit * 2
+        val cap = limit.coerceIn(1, MAX_SCAN)
         val since = prefs.watermark
+        val chosen = prefs.albums
+        val maxBytes = prefs.maxFileSizeMb.toLong() * 1024L * 1024L
+
+        val inAlbum: (String) -> Boolean = { path ->
+            if (chosen.isEmpty()) cameraPaths.any { path.startsWith(it, ignoreCase = true) }
+            else chosen.any { path.equals(it, ignoreCase = true) }
+        }
+        // A size cap means "do not back this up", so the item is dropped here
+        // rather than skipped later. The consequence is that raising the cap
+        // afterwards does not retrieve what it excluded, because the watermark
+        // has moved past it — which is what "Re-check everything" is for, and
+        // why the card says so beside the field.
+        val withinSize: (Long) -> Boolean = { size -> maxBytes <= 0L || size <= maxBytes }
+
         val items = ArrayList<MediaItem>()
         // Images and videos live in separate collections; both are queried and
         // the results merged, because a sorted union of two cursors is simpler
         // to reason about than MediaStore.Files with a media-type filter. A
         // type the user has switched off is simply never queried.
-        if (prefs.includePhotos) queryInto(items, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, since, rawCap)
-        if (prefs.includeVideos) queryInto(items, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, since, rawCap)
-
-        val chosen = prefs.albums
-        val maxBytes = prefs.maxFileSizeMb.toLong() * 1024L * 1024L
-
-        val filtered = items.filter { item ->
-            val inAlbum =
-                if (chosen.isEmpty()) cameraPaths.any { item.relativePath.startsWith(it, ignoreCase = true) }
-                else chosen.any { item.relativePath.equals(it, ignoreCase = true) }
-            // A size cap means "do not back this up", so the item is dropped
-            // here rather than skipped later. The consequence is that raising
-            // the cap afterwards does not retrieve what it excluded, because
-            // the watermark has moved past it — which is what "Re-check
-            // everything" is for, and why the card says so beside the field.
-            val withinSize = maxBytes <= 0L || item.size <= maxBytes
-            inAlbum && withinSize
-        }
+        if (prefs.includePhotos) queryInto(items, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, since, cap, inAlbum, withinSize)
+        if (prefs.includeVideos) queryInto(items, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, since, cap, inAlbum, withinSize)
 
         // Oldest first, so a partial run still leaves a correct watermark.
-        return filtered.sortedBy { it.addedAt }.take(limit.coerceAtMost(MAX_SCAN))
+        return items.sortedBy { it.addedAt }.take(cap)
     }
 
     /**
@@ -126,7 +121,25 @@ class MediaScanner(private val context: Context) {
      */
     fun pendingCount(prefs: BackupPrefs): Int = scan(prefs, MAX_SCAN).size
 
-    private fun queryInto(into: MutableList<MediaItem>, collection: Uri, since: Long, cap: Int) {
+    /**
+     * Collect up to [cap] items from one collection that pass both filters.
+     *
+     * The filters run inside the cursor loop, and the cap counts what passed.
+     * They used to run afterwards, on the first hundred rows of the collection
+     * whatever album they were in — so on a phone whose oldest hundred images
+     * were WhatsApp pictures, the scan found four camera photos, raised the
+     * watermark to the last of them, looked at the next hundred rows, found no
+     * camera photos among those, and announced "Up to date" with fifteen
+     * still waiting. A cap applied before a filter is a cap on the wrong thing.
+     */
+    private fun queryInto(
+        into: MutableList<MediaItem>,
+        collection: Uri,
+        since: Long,
+        cap: Int,
+        inAlbum: (String) -> Boolean,
+        withinSize: (Long) -> Boolean
+    ) {
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -153,8 +166,15 @@ class MediaScanner(private val context: Context) {
             val addedCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
             val pathCol = it.getColumnIndex(projection[5])
 
-            while (it.moveToNext() && into.size < cap) {
+            // Counted per collection: sharing the list's size let a full page
+            // of images leave no room for any video at all.
+            var taken = 0
+            while (it.moveToNext() && taken < cap) {
                 val name = it.getString(nameCol) ?: continue
+                // The album test comes first because it is free; measuring a
+                // file's size can mean opening it.
+                val relative = normalisePath(if (pathCol >= 0) it.getString(pathCol).orEmpty() else "")
+                if (!inAlbum(relative)) continue
                 val uri = Uri.withAppendedPath(collection, it.getLong(idCol).toString())
 
                 // SIZE is NULL more often than the documentation suggests —
@@ -170,7 +190,8 @@ class MediaScanner(private val context: Context) {
                 // finished writing. Uploading it would store an empty file and
                 // move the watermark past the real one.
                 if (size <= 0L) continue
-                val relative = normalisePath(if (pathCol >= 0) it.getString(pathCol).orEmpty() else "")
+                if (!withinSize(size)) continue
+                taken++
 
                 into.add(
                     MediaItem(
