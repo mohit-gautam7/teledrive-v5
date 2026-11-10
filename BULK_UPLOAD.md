@@ -16,6 +16,9 @@ session; it never borrows the server's login key.
 - In direct mode, a failed connection stops the file with an error. It never
   silently switches the file bytes to a host upload. Turn Direct upload off
   explicitly if you want the normal relay instead.
+- A direct connection failure pauses the remaining browser queue, preventing a
+  large folder from repeatedly hitting the website while offline. Resume after
+  reconnecting; nothing switches itself to the relay.
 - Files are read in 512 KiB slices, with two parts in flight per file, rather
   than loading an entire large file into the phone's memory.
 - If Telegram has received a file but drive confirmation fails, a local receipt

@@ -166,7 +166,7 @@ export async function uploadFileInChunks({
   };
 
   if (directOnly && (backend !== "mtproto" || received.length > 0)) {
-    throw new Error("This upload cannot use direct mode. Link your Telegram account in Settings first. No file bytes were relayed.");
+    throw new DirectUploadUnavailable("This upload cannot use direct mode. Link your Telegram account in Settings first. No file bytes were relayed.");
   }
   if (backend === "mtproto" && received.length === 0) {
     try {
@@ -199,7 +199,7 @@ export async function uploadFileInChunks({
     } catch (err) {
       if (isAbort(err)) throw new UploadAbortedError();
       if (directOnly || readDirectReceipt(user, fileId) !== null) {
-        throw new Error(`${(err as Error)?.message || "Direct upload failed."} No file bytes were relayed. Retry when connected.`);
+        throw new DirectUploadUnavailable(`${(err as Error)?.message || "Direct upload failed."} No file bytes were relayed. Retry when connected.`);
       }
       if (!(err instanceof DirectUploadUnavailable)) {
         console.warn("[upload] direct upload failed, relaying instead:", (err as Error)?.message);

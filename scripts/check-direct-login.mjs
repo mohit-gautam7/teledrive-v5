@@ -49,7 +49,7 @@ assert.doesNotThrow(() => assertDirectAccount({ ...config, telegramUserId: "1" }
 assert.throws(() => assertDirectAccount({ ...config, telegramUserId: "1" }, "2"), /different Telegram account/);
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async () => { throw new Error("network offline"); };
-await assert.rejects(directConfig(), /network offline/);
+await assert.rejects(directConfig(), /No file bytes were sent/);
 globalThis.fetch = async () => Response.json({ enabled: false }, { status: 403 });
 assert.equal(await directConfig(), null, "a failed status lookup must be retried, not remembered as off");
 forgetDirectSession();

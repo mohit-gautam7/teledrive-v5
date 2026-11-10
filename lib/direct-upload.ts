@@ -104,8 +104,11 @@ export function directConfig(): Promise<DirectConfig | null> {
       const body = (await res.json()) as Partial<DirectConfig>;
       if (!body?.enabled || !body.apiId || !body.apiHash) throw new DirectUploadUnavailable("Direct upload configuration is incomplete.");
       return { enabled: true, apiId: body.apiId, apiHash: body.apiHash, telegramUserId: body.telegramUserId };
-    })();
-    configPromise.catch(() => { configPromise = null; });
+    })().catch(error => {
+      configPromise = null;
+      if (error instanceof DirectUploadUnavailable) throw error;
+      throw new DirectUploadUnavailable("Could not reach direct-upload settings. No file bytes were sent. Retry when connected.");
+    });
   }
   return configPromise;
 }

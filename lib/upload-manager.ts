@@ -6,7 +6,7 @@ import { DuplicateFileError, uploadFileInChunks } from "@/lib/chunked-upload";
 import { resumeKeyFor } from "@/lib/file-identity";
 import type { QueuedUpload, SkippedUpload } from "@/lib/duplicate-plan";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
-import { browserLinked, directConfig } from "@/lib/direct-upload";
+import { browserLinked, directConfig, DirectUploadUnavailable } from "@/lib/direct-upload";
 import { readPreferences } from "@/lib/preferences";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import {
@@ -356,7 +356,7 @@ class UploadManager {
       let created: DriveFile | null = null;
       const directOnly = Boolean(await directConfig());
       if (directOnly && !browserLinked(this.user)) {
-        throw new Error("Direct upload is on, but this browser is not connected. Open Settings → Direct upload and sign in. No file bytes were relayed.");
+        throw new DirectUploadUnavailable("Direct upload is on, but this browser is not connected. Open Settings → Direct upload and sign in. No file bytes were relayed.");
       }
       this.patch(item.id, { transport: directOnly ? "direct" : "relay" });
       if (directOnly || source.size > SINGLE_SHOT_LIMIT) {
@@ -415,6 +415,7 @@ class UploadManager {
         return;
       }
       this.fail(item.id, error);
+      if (error instanceof DirectUploadUnavailable) this.pauseAll();
     } finally {
       this.controllers.delete(item.id);
     }
