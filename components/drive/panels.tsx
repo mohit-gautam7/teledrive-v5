@@ -1087,9 +1087,17 @@ function DirectUploadCard({ user }: { user: string }) {
   const [linked, setLinked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [qr, setQr] = useState<string | null>(null);
+  const [phoneMode, setPhoneMode] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [codeDelivery, setCodeDelivery] = useState<string | null>(null);
+  const codeResolve = useRef<((value: string) => void) | null>(null);
+  const inputReject = useRef<((reason: Error) => void) | null>(null);
   const [askPassword, setAskPassword] = useState(false);
   const [password, setPassword] = useState("");
   const passwordResolve = useRef<((value: string) => void) | null>(null);
+
+  useEffect(() => () => { inputReject.current?.(new Error("Login cancelled.")); }, []);
 
   useEffect(() => {
     setLinked(browserLinked(user));
@@ -1132,14 +1140,26 @@ function DirectUploadCard({ user }: { user: string }) {
     }
   }
 
-  async function connect() {
+  async function connect(withPhone = false) {
+    if (withPhone && !/^\+[1-9]\d{6,14}$/.test(phone.trim())) {
+      toast.error("Enter your phone number with its country code, for example +91…");
+      return;
+    }
     setBusy(true);
     setQr(null);
     try {
       const name = await linkBrowser(user, {
+        phoneNumber: withPhone ? phone.trim() : undefined,
+        onCode: viaApp => new Promise<string>((resolve, reject) => {
+          inputReject.current = reject;
+          codeResolve.current = resolve;
+          setCode("");
+          setCodeDelivery(viaApp ? "Enter the code from Telegram's service chat." : "Enter the code Telegram sent to your phone.");
+        }),
         onQr: url => setQr(url),
         onPassword: () =>
-          new Promise<string>(resolve => {
+          new Promise<string>((resolve, reject) => {
+            inputReject.current = reject;
             passwordResolve.current = resolve;
             setQr(null);
             setAskPassword(true);
@@ -1154,6 +1174,11 @@ function DirectUploadCard({ user }: { user: string }) {
       setQr(null);
       setAskPassword(false);
       setPassword("");
+      setCode("");
+      setCodeDelivery(null);
+      setPhone("");
+      codeResolve.current = null;
+      inputReject.current = null;
       passwordResolve.current = null;
     }
   }
@@ -1209,6 +1234,21 @@ function DirectUploadCard({ user }: { user: string }) {
                 <Unlink className="h-3.5 w-3.5" /> Disconnect this browser
               </button>
             </div>
+          ) : codeDelivery ? (
+            <form onSubmit={event => {
+              event.preventDefault();
+              codeResolve.current?.(code.trim());
+              codeResolve.current = null;
+              setCodeDelivery(null);
+              setCode("");
+            }} className="flex flex-wrap items-center gap-2">
+              <p className="t-sm w-full">{codeDelivery} This is not the TeleDrive bot login code.</p>
+              <input aria-label="Telegram login code" autoComplete="one-time-code" inputMode="numeric"
+                required value={code} onChange={event => setCode(event.target.value)} className="field"
+                style={{ minHeight: 40, maxWidth: 280 }} />
+              <button type="submit" className="btn btn-accent">Continue</button>
+              <button type="button" className="btn btn-ghost" onClick={() => inputReject.current?.(new Error("Login cancelled."))}>Cancel</button>
+            </form>
           ) : askPassword ? (
             <form
               onSubmit={event => {
@@ -1231,6 +1271,7 @@ function DirectUploadCard({ user }: { user: string }) {
               <button type="submit" className="btn btn-accent" style={{ minHeight: 34, fontSize: 12 }}>
                 <Lock className="h-3.5 w-3.5" /> Continue
               </button>
+              <button type="button" className="btn btn-ghost" onClick={() => inputReject.current?.(new Error("Login cancelled."))}>Cancel</button>
             </form>
           ) : qr ? (
             <div className="flex flex-wrap items-center gap-4">
@@ -1241,24 +1282,34 @@ function DirectUploadCard({ user }: { user: string }) {
                 On your phone: <strong>Telegram &rarr; Settings &rarr; Devices &rarr; Link Desktop Device</strong>,
                 then scan this. The code refreshes itself every few seconds, which is normal.
               </p>
-              {/* A phone cannot scan its own screen. The QR is only a tg://login
-                  link drawn as a picture, so on the device that has Telegram the
-                  link itself does the same job: Telegram opens and asks to
-                  confirm the new device. */}
-              <a href={qr} className="btn btn-accent" style={{ minHeight: 34, fontSize: 12 }}>
-                <Smartphone className="h-3.5 w-3.5" /> Telegram is on this phone &mdash; open it
-              </a>
+              <p className="t-xs">Using just this phone? Reload Settings and choose “Sign in on this phone” instead.</p>
             </div>
+          ) : phoneMode ? (
+            <form onSubmit={event => { event.preventDefault(); void connect(true); }} className="flex flex-wrap items-center gap-2">
+              <p className="t-sm w-full">Use your existing Telegram number. No QR scan needed.</p>
+              <input type="tel" autoComplete="tel" aria-label="Telegram phone number" placeholder="+91 phone number"
+                required disabled={busy} value={phone} onChange={event => setPhone(event.target.value)}
+                className="field" style={{ minHeight: 40, maxWidth: 280 }} />
+              <button type="submit" disabled={busy} className="btn btn-accent">
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Send Telegram code
+              </button>
+              <button type="button" disabled={busy} className="btn btn-ghost" onClick={() => setPhoneMode(false)}>Back</button>
+            </form>
           ) : (
-            <button
-              onClick={() => void connect()}
-              disabled={busy}
-              className="btn btn-accent"
-              style={{ minHeight: 34, fontSize: 12 }}
-            >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Smartphone className="h-3.5 w-3.5" />}{" "}
-              Connect this browser
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => setPhoneMode(true)} disabled={busy} className="btn btn-accent">
+                <Smartphone className="h-3.5 w-3.5" /> Sign in on this phone
+              </button>
+              <button
+                onClick={() => void connect()}
+                disabled={busy}
+                className="btn btn-accent"
+                style={{ minHeight: 34, fontSize: 12 }}
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Smartphone className="h-3.5 w-3.5" />}{" "}
+                Scan QR from another device
+              </button>
+            </div>
           )}
         </div>
       ) : null}
@@ -2647,11 +2698,10 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
             {/* Rendered from the tg:// login URL Telegram returned. */}
             <QrCanvas value={qrUrl} />
           </div>
-          {/* Same link the QR encodes, for when Telegram is on this very phone. */}
           <div className="mt-3">
-            <a href={qrUrl} className="btn btn-accent" style={{ minHeight: 34, fontSize: 12 }}>
-              <Smartphone className="h-3.5 w-3.5" /> Telegram is on this phone &mdash; open it
-            </a>
+            <button className="btn btn-accent" onClick={() => { setMode("phone"); setStep("start"); setQrUrl(""); }}>
+              <Smartphone className="h-3.5 w-3.5" /> Use phone number instead
+            </button>
           </div>
           {qrError ? (
             <p className="t-sm mt-3 rounded-xl px-3.5 py-3 leading-relaxed"

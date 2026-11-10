@@ -30,6 +30,15 @@ Android has exactly one API that survives the app being swiped away — **WorkMa
 and it is only reachable from native code. That is the whole reason this directory is here.
 Everything else, the entire UI included, is still the website.
 
+## Connect Telegram on the same phone
+
+In Settings, switch **Direct upload** on and choose **Sign in on this phone**.
+Enter your existing Telegram number with its country code, then enter the code
+Telegram delivers and your two-step password if requested. This code comes from
+Telegram, not the TeleDrive login bot. No QR scan or second device is needed.
+The browser creates its own Telegram session; it does not reuse the server's key.
+QR login remains available when you have another device to scan it with.
+
 ## How a run works
 
 1. **MediaStore** is asked for photos and videos added after the stored watermark.
