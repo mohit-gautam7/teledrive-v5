@@ -495,7 +495,6 @@ class UploadManager {
       this.items
         .filter(
           it =>
-            it.size > SINGLE_SHOT_LIMIT &&
             it.resumeKey &&
             (it.status === "uploading" || it.status === "pending" || it.status === "paused" || it.status === "error")
         )
@@ -510,6 +509,7 @@ class UploadManager {
           folderId: it.folderId ?? null,
           resumeKey: it.resumeKey as string,
           path: it.path,
+          transport: it.transport,
           loaded: it.loaded,
           updatedAt: Date.now()
         }))
@@ -546,7 +546,8 @@ class UploadManager {
       lastModified: session.lastModified,
       folderId: session.folderId,
       resumeKey: session.resumeKey,
-      path: session.path
+      path: session.path,
+      transport: session.transport
     }));
     this.items = [...restored.filter(it => !this.items.some(x => x.resumeKey === it.resumeKey)), ...this.items];
     this.emit();

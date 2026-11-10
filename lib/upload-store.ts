@@ -21,6 +21,7 @@
  */
 
 export type PersistedUpload = {
+  transport?: "direct" | "relay";
   id: string;
   name: string;
   size: number;

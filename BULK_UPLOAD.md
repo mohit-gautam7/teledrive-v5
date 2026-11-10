@@ -13,6 +13,8 @@ Use the same Telegram account linked to your drive. The browser has a separate
 session; it never borrows the server's login key.
 
 - The queue labels each transfer **direct** or **server**.
+- Small-file queue entries now survive refresh too. You may need to select the
+  source file again if the browser cannot retain its file handle.
 - In direct mode, a failed connection stops the file with an error. It never
   silently switches the file bytes to a host upload. Turn Direct upload off
   explicitly if you want the normal relay instead.
