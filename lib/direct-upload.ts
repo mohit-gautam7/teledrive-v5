@@ -188,6 +188,8 @@ export class DirectUploadUnavailable extends Error {
 /* ── Authorising this browser ──────────────────────────────────────────────── */
 
 export type QrHandlers = {
+  phoneNumber?: string;
+  onCode?: (viaApp?: boolean) => Promise<string>;
   /** Called with each fresh `tg://login?token=…` URL to render as a QR code.
    *  Telegram reissues the token every ~30s, so this fires more than once. */
   onQr: (url: string, expiresAt: number) => void;
@@ -195,8 +197,49 @@ export type QrHandlers = {
   onPassword: (hint?: string) => Promise<string>;
 };
 
+export async function signInBrowser(
+  client: Pick<TelegramClient, "signInUser" | "signInUserWithQrCode">,
+  config: DirectConfig,
+  handlers: QrHandlers
+) {
+  if (handlers.phoneNumber) {
+    return client.signInUser(
+      { apiId: config.apiId, apiHash: config.apiHash },
+      {
+        phoneNumber: handlers.phoneNumber,
+        phoneCode: viaApp => {
+          if (!handlers.onCode) throw new Error("A code prompt is required.");
+          return handlers.onCode(viaApp);
+        },
+        password: hint => handlers.onPassword(hint),
+        firstAndLastNames: async () => { throw new Error("Use an existing Telegram account."); },
+        onError: async err => { throw err; }
+      }
+    );
+  }
+  return client.signInUserWithQrCode(
+    { apiId: config.apiId, apiHash: config.apiHash },
+    {
+      qrCode: async ({ token, expires }) => {
+        const encoded = btoa(String.fromCharCode(...new Uint8Array(token)))
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/, "");
+        handlers.onQr(`tg://login?token=${encoded}`, expires * 1000);
+      },
+      password: async hint => handlers.onPassword(hint),
+      onError: async err => {
+        if (err.message === "Login cancelled.") throw err;
+        console.warn("[direct-upload] qr login:", err.message);
+        // false = keep trying; the helper reissues an expired token itself.
+        return false;
+      }
+    }
+  );
+}
+
 /**
- * Log this browser in to Telegram with a QR code and keep the session.
+ * Log this browser in to Telegram by QR or phone code and keep its own session.
  *
  * Resolves with the Telegram display name once the scan is accepted.
  */
@@ -208,24 +251,8 @@ export async function linkBrowser(user: string, handlers: QrHandlers): Promise<s
   // place, so starting from a stale one would authorise over the top of it.
   const client = await buildClient("", config);
   try {
-    const me = (await client.signInUserWithQrCode(
-      { apiId: config.apiId, apiHash: config.apiHash },
-      {
-        qrCode: async ({ token, expires }) => {
-          const encoded = btoa(String.fromCharCode(...new Uint8Array(token)))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=+$/, "");
-          handlers.onQr(`tg://login?token=${encoded}`, expires * 1000);
-        },
-        password: async hint => handlers.onPassword(hint),
-        onError: async err => {
-          console.warn("[direct-upload] qr login:", err.message);
-          // false = keep trying; the helper reissues an expired token itself.
-          return false;
-        }
-      }
-    )) as { firstName?: string; lastName?: string; username?: string };
+    const me = await signInBrowser(client, config, handlers);
+    if (!("firstName" in me)) throw new Error("Telegram did not return an account.");
 
     const { StringSession } = await import("telegram/sessions");
     rememberSession(user, (client.session as InstanceType<typeof StringSession>).save());
