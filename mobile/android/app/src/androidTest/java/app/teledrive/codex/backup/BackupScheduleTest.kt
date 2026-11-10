@@ -85,6 +85,11 @@ class BackupScheduleTest {
         prefs.maxFileSizeMb = 0
         prefs.includePhotos = true
         prefs.includeVideos = true
+        // A claim left behind by the real app would make the worker under test
+        // stand down, and "the scheduled worker never ran" would be reported
+        // about a worker that was working exactly as designed.
+        prefs.lockUntil = 0L
+        prefs.clearStrikes()
 
         WorkManagerTestInitHelper.initializeTestWorkManager(
             context,
@@ -242,6 +247,60 @@ class BackupScheduleTest {
             "An image came back with photos switched off",
             items.none { it.mimeType.startsWith("image/", ignoreCase = true) }
         )
+    }
+
+    /**
+     * The regression test for seventeen hours of silence.
+     *
+     * Android killed a run mid-file. WorkManager restarted that same work a
+     * moment later; it found its own unexpired claim on the lock, took it for
+     * somebody else's, stood down and reported success — which consumed the
+     * work and left nothing queued. A run has to recognise its own id.
+     */
+    @Test
+    fun aRestartedRunReclaimsItsOwnLock() {
+        assertTrue("A free lock must be claimable", prefs.tryAcquireLock("run-a"))
+        assertTrue("The owner must be able to claim its own lock again", prefs.tryAcquireLock("run-a"))
+        assertTrue("A different run must be refused while it is held", !prefs.tryAcquireLock("run-b"))
+
+        // Releasing somebody else's claim must do nothing, or a run standing
+        // down would unlock the run it was standing down for.
+        prefs.releaseLock("run-b")
+        assertTrue("A stranger's release must not free the lock", !prefs.tryAcquireLock("run-b"))
+
+        prefs.releaseLock("run-a")
+        assertTrue("Once released it must be claimable by anyone", prefs.tryAcquireLock("run-b"))
+        prefs.releaseLock("run-b")
+    }
+
+    /** A dead run's claim must expire by itself rather than lock backup out for ever. */
+    @Test
+    fun anExpiredLockIsFreeForTheTaking() {
+        assertTrue(prefs.tryAcquireLock("dead-run"))
+        // Stand in for "its process was killed five minutes ago".
+        prefs.lockUntil = System.currentTimeMillis() - 1
+        assertTrue("An expired claim must not block a new run", prefs.tryAcquireLock("new-run"))
+        prefs.releaseLock("new-run")
+    }
+
+    /**
+     * Strikes count consecutive failures of the *same* file.
+     *
+     * The reset on a different key is the part that matters: without it, three
+     * unrelated files failing once each would set the third one aside for
+     * something it did once.
+     */
+    @Test
+    fun strikesFollowOneFileAndResetForAnother() {
+        assertEquals(1, prefs.strike("content://media/1"))
+        assertEquals(2, prefs.strike("content://media/1"))
+        assertEquals("A different file starts its own count", 1, prefs.strike("content://media/2"))
+        assertEquals(2, prefs.strike("content://media/2"))
+        assertEquals(3, prefs.strike("content://media/2"))
+
+        prefs.clearStrikes()
+        assertEquals("A success in between wipes the slate", 1, prefs.strike("content://media/2"))
+        prefs.clearStrikes()
     }
 
     /* ── Permission plumbing ───────────────────────────────────────────────── */

@@ -43,6 +43,11 @@ object BackupScheduler {
     /** Used when a preference has never been written. */
     private const val DEFAULT_INTERVAL_HOURS = 2
 
+    /** First wait after a paused one-shot run; doubles from there. */
+    private const val RETRY_MINUTES = 1L
+
+    private const val KICK_THROTTLE_MS = 2 * 60 * 1000L
+
     /**
      * Install or replace the repeating job.
      *
@@ -115,6 +120,7 @@ object BackupScheduler {
     fun continueRun(context: Context, prefs: BackupPrefs): Operation {
         val request = OneTimeWorkRequestBuilder<BackupWorker>()
             .setConstraints(constraints(prefs))
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, RETRY_MINUTES, TimeUnit.MINUTES)
             .build()
         return WorkManager.getInstance(context)
             .enqueueUniqueWork(ONE_SHOT, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
@@ -127,10 +133,42 @@ object BackupScheduler {
                     .setRequiredNetworkType(if (prefs.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
                     .build()
             )
+            // A run that pauses on a network blip comes back in a minute, then
+            // two, then four. Without this a pause after some progress waited
+            // for the next scheduled run, which on a daily schedule is a day.
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, RETRY_MINUTES, TimeUnit.MINUTES)
             .build()
         return WorkManager.getInstance(context)
             .enqueueUniqueWork(ONE_SHOT, ExistingWorkPolicy.REPLACE, request)
     }
+
+    /**
+     * Start a run now, unless one is already going.
+     *
+     * Called when the app comes to the front. On phones whose battery manager
+     * refuses to start apps in the background — ColorOS without auto-launch is
+     * the one this was written on — nothing WorkManager schedules will fire
+     * once the process has been killed, and the old resume path only
+     * re-registered the schedule. So opening the app, the one thing a user
+     * does when they suspect backup has stopped, did not restart it.
+     *
+     * REPLACE is right here and only here: with nothing running, whatever is
+     * queued is at best waiting out a backoff, and the user being present is a
+     * better signal than any timer. A run in flight is left alone — replacing
+     * it would cancel a file mid-upload to start the same file again.
+     */
+    fun kickIfIdle(context: Context, prefs: BackupPrefs) {
+        val now = System.currentTimeMillis()
+        // The activity resumes after every permission dialog and task switch;
+        // one kick covers a burst of them.
+        if (now - lastKickAt < KICK_THROTTLE_MS) return
+        lastKickAt = now
+        if (isActive(context)) return
+        runNow(context, prefs)
+    }
+
+    @Volatile
+    private var lastKickAt = 0L
 
     /** Is a run happening or waiting right now? For the UI's status line. */
     /**

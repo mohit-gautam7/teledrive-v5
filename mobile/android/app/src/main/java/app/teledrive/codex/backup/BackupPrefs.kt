@@ -40,7 +40,15 @@ class BackupPrefs(context: Context) {
     }
 
     fun resetWatermark() {
-        prefs.edit().putLong(KEY_WATERMARK, 0L).apply()
+        // Files that were set aside sit below the watermark, so this is also
+        // the way back for them — and the count starts again from nothing.
+        prefs.edit()
+            .putLong(KEY_WATERMARK, 0L)
+            .remove(KEY_PROBLEM_COUNT)
+            .remove(KEY_PROBLEM_NAME)
+            .remove(KEY_STRIKE_KEY)
+            .remove(KEY_STRIKE_COUNT)
+            .apply()
     }
 
     /** Unmetered networks only. On by default: a camera roll is gigabytes. */
@@ -179,23 +187,92 @@ class BackupPrefs(context: Context) {
      *
      * A timestamp rather than a boolean, so a worker killed mid-run cannot
      * leave the backup locked for ever: the claim simply expires. It is
-     * refreshed as each item starts, so a long upload holds it as long as it
+     * refreshed as each chunk lands, so a long upload holds it as long as it
      * is making progress and no longer.
      */
     var lockUntil: Long
         get() = prefs.getLong(KEY_LOCK_UNTIL, 0L)
         set(value) = prefs.edit().putLong(KEY_LOCK_UNTIL, value).apply()
 
-    /** True when another run holds the lock right now. */
-    fun anotherRunIsActive(): Boolean = lockUntil > System.currentTimeMillis()
-
-    fun holdLock() {
-        lockUntil = System.currentTimeMillis() + LOCK_MS
+    /**
+     * Claim the lock for [me], or learn that a different run has it.
+     *
+     * The owner matters as much as the expiry. When Android kills the process
+     * mid-run, WorkManager restarts the very same work a moment later — and
+     * the first version of this lock made that work stand down against its own
+     * stale claim and report success, which consumed the chain: seventeen
+     * hours of nothing, with six hundred photos still waiting. A run that
+     * finds its own id on the lock simply carries on.
+     *
+     * Synchronised on a process-wide gate so two workers starting in the same
+     * instant cannot both read "free" before either writes "taken".
+     */
+    fun tryAcquireLock(me: String): Boolean = synchronized(LOCK_GATE) {
+        val now = System.currentTimeMillis()
+        val owner = prefs.getString(KEY_LOCK_OWNER, "") ?: ""
+        if (lockUntil > now && owner != me) return false
+        prefs.edit().putLong(KEY_LOCK_UNTIL, now + LOCK_MS).putString(KEY_LOCK_OWNER, me).apply()
+        true
     }
 
-    fun releaseLock() {
-        prefs.edit().remove(KEY_LOCK_UNTIL).apply()
+    /** Push the expiry out. Called per chunk, so a slow file cannot outlive its claim. */
+    fun refreshLock(me: String) {
+        prefs.edit().putLong(KEY_LOCK_UNTIL, System.currentTimeMillis() + LOCK_MS).putString(KEY_LOCK_OWNER, me).apply()
     }
+
+    /** Release, but only a claim that is actually [me]'s to release. */
+    fun releaseLock(me: String) = synchronized(LOCK_GATE) {
+        if ((prefs.getString(KEY_LOCK_OWNER, "") ?: "") == me) {
+            prefs.edit().remove(KEY_LOCK_UNTIL).remove(KEY_LOCK_OWNER).apply()
+        }
+    }
+
+    /*
+     * One file must not be able to stop the rest.
+     *
+     * Runs go oldest first and stop at the first failure, which is what keeps
+     * the watermark honest — and also means a file that fails the same way
+     * every time is first in line every time. Strikes count consecutive
+     * failures of the same item across runs; at the limit the worker sets the
+     * file aside, says so, and moves on.
+     *
+     * Only failures that are evidence about the *file* earn a strike. A dead
+     * network fails every file equally, and striking for that would quietly
+     * discard a camera roll one photo at a time during a long outage.
+     */
+    fun strike(key: String): Int {
+        val count =
+            if ((prefs.getString(KEY_STRIKE_KEY, "") ?: "") == key) prefs.getInt(KEY_STRIKE_COUNT, 0) + 1 else 1
+        prefs.edit().putString(KEY_STRIKE_KEY, key).putInt(KEY_STRIKE_COUNT, count).apply()
+        return count
+    }
+
+    fun clearStrikes() {
+        prefs.edit().remove(KEY_STRIKE_KEY).remove(KEY_STRIKE_COUNT).apply()
+    }
+
+    /** Files set aside after repeated failures, for the card to own up to. */
+    val problemCount: Int
+        get() = prefs.getInt(KEY_PROBLEM_COUNT, 0)
+
+    val lastProblemName: String
+        get() = prefs.getString(KEY_PROBLEM_NAME, "") ?: ""
+
+    fun addProblem(name: String) {
+        prefs.edit().putInt(KEY_PROBLEM_COUNT, problemCount + 1).putString(KEY_PROBLEM_NAME, name).apply()
+    }
+
+    /**
+     * When a run last found the previous one had been cut off mid-file.
+     *
+     * A run that ends normally clears its progress fields; one whose process
+     * was killed cannot. Finding them still set at the start of the next run is
+     * direct evidence the system ended the last one — unlike a long gap between
+     * runs, which a phone that was simply offline produces too.
+     */
+    var interruptedAt: Long
+        get() = prefs.getLong(KEY_INTERRUPTED_AT, 0L)
+        set(value) = prefs.edit().putLong(KEY_INTERRUPTED_AT, value).apply()
 
     /*
      * A request from the UI to the worker, which is in another process-less
@@ -247,6 +324,18 @@ class BackupPrefs(context: Context) {
         const val KEY_FOLDER_NAME = "folderName"
         const val KEY_INTERVAL_HOURS = "intervalHours"
         const val KEY_LOCK_UNTIL = "lockUntil"
+        const val KEY_LOCK_OWNER = "lockOwner"
+        const val KEY_STRIKE_KEY = "strikeKey"
+        const val KEY_STRIKE_COUNT = "strikeCount"
+        const val KEY_PROBLEM_COUNT = "problemCount"
+        const val KEY_PROBLEM_NAME = "problemName"
+        const val KEY_INTERRUPTED_AT = "interruptedAt"
+
+        /** Guards check-then-claim on the lock within this process. */
+        private val LOCK_GATE = Any()
+
+        /** Consecutive failures of one file before it is set aside. */
+        const val MAX_STRIKES = 3
 
         /**
          * How long a claim survives without being refreshed.

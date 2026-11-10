@@ -15,7 +15,7 @@ ext {
     cordovaAndroidVersion = '10.1.1'
 
     // Added for the background backup (Track 3).
-    workVersion = '2.9.1'
+    workVersion = '2.10.5'
     okhttpVersion = '4.12.0'
     coroutinesVersion = '1.8.1'
     androidxConcurrentVersion = '1.2.0'
