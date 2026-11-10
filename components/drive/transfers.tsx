@@ -184,6 +184,11 @@ function TransferRow({
           <span className="t-xs truncate font-medium" style={{ color: "var(--text-1)" }} title={item.name}>
             {item.name}
           </span>
+          {item.kind === "upload" && item.transport ? (
+            <span className="mono shrink-0" title={item.transport === "direct" ? "File bytes go straight to Telegram" : "File bytes go through the file server"}>
+              {item.transport === "direct" ? "direct" : "server"}
+            </span>
+          ) : null}
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           {item.status === "pending" ? <span className="mono" style={{ color: "var(--text-3)" }}>wait</span> : null}
@@ -247,8 +252,10 @@ function TransferRow({
         </p>
       ) : item.status === "paused" ? (
         <p className="t-xs mt-1 truncate" style={{ color: "var(--text-3)" }}>
+          {item.kind === "upload" && item.transport === "direct" ? "Direct transfer paused. Unfinished parts may restart; files already sent to Telegram only need confirmation." : <>
           {formatBytes(item.loaded)} of {formatBytes(item.size)} already stored —{" "}
           {item.kind === "upload" && !item.file ? "resume and pick the file again" : "resume to send the rest"}.
+          </>}
         </p>
       ) : (
         <p className="mono mt-1 truncate" style={{ color: "var(--text-3)" }}>

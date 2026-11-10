@@ -6,6 +6,7 @@ import { DuplicateFileError, uploadFileInChunks } from "@/lib/chunked-upload";
 import { resumeKeyFor } from "@/lib/file-identity";
 import type { QueuedUpload, SkippedUpload } from "@/lib/duplicate-plan";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
+import { browserLinked, directConfig } from "@/lib/direct-upload";
 import { readPreferences } from "@/lib/preferences";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import {
@@ -353,10 +354,16 @@ class UploadManager {
     this.controllers.set(item.id, controller);
     try {
       let created: DriveFile | null = null;
-      if (source.size > SINGLE_SHOT_LIMIT) {
+      const directOnly = Boolean(await directConfig());
+      if (directOnly && !browserLinked(this.user)) {
+        throw new Error("Direct upload is on, but this browser is not connected. Open Settings → Direct upload and sign in. No file bytes were relayed.");
+      }
+      this.patch(item.id, { transport: directOnly ? "direct" : "relay" });
+      if (directOnly || source.size > SINGLE_SHOT_LIMIT) {
         const result = await uploadFileInChunks({
           file: source,
           user: this.user,
+          directOnly,
           folderId: target,
           // Read at send time, not at queue time, so changing the setting takes
           // effect on the next file rather than on the next reload.

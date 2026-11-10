@@ -1,8 +1,38 @@
 # Bulk upload
 
 What it does, what it does not, and what was actually tested rather than
-assumed. Everything below was exercised on 19 September 2026 against a restored
+assumed. The original queue checks below were exercised on 19 September 2026 against a restored
 copy of the production database and the real Telegram channel.
+
+## Direct upload (November update)
+
+**Settings → Direct upload → On** protects every manual browser upload, including
+small files. Connect this browser using **Sign in on this phone** (Telegram number,
+Telegram code, optional two-step password), or scan a QR from another device.
+Use the same Telegram account linked to your drive. The browser has a separate
+session; it never borrows the server's login key.
+
+- The queue labels each transfer **direct** or **server**.
+- In direct mode, a failed connection stops the file with an error. It never
+  silently switches the file bytes to a host upload. Turn Direct upload off
+  explicitly if you want the normal relay instead.
+- Files are read in 512 KiB slices, with two parts in flight per file, rather
+  than loading an entire large file into the phone's memory.
+- If Telegram has received a file but drive confirmation fails, a local receipt
+  lets Retry confirm the same Telegram message without uploading the file again.
+  Receipts last up to 24 hours and survive refresh if browser storage is available.
+- A partially sent direct file may restart after pause or refresh. Completed
+  messages can be confirmed without resending. Closing a browser still stops it.
+
+This is **not unlimited bandwidth or guaranteed uptime**. Original file bytes
+bypass Vercel and Render only for manual direct transfers. Metadata still reaches
+the website; thumbnails, downloads and native Android background backups use the
+file server and its quotas. Internet data charges, Telegram rate limits and the
+current direct ceiling of 4000 × 512 KiB (about 1.95 GiB) still apply.
+
+Verification uses synthetic files only, not a sweep of existing files. Automated
+checks cover small-file routing, rejected backends, no relay after errors,
+confirmation retries, account mismatch, bounded slices and cancellation.
 
 ## Selecting
 

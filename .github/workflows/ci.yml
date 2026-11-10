@@ -49,6 +49,8 @@ jobs:
           node scripts/check-backoff.mjs
           node scripts/check-dedupe.mjs
           node scripts/check-direct-login.mjs
+          node --experimental-transform-types scripts/check-direct-only.mjs
+          node scripts/check-direct-parts.mjs
 
       # DATABASE_URL comes from the job env above; the build only parses it.
       - name: Build
