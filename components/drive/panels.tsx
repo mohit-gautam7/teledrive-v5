@@ -1241,6 +1241,13 @@ function DirectUploadCard({ user }: { user: string }) {
                 On your phone: <strong>Telegram &rarr; Settings &rarr; Devices &rarr; Link Desktop Device</strong>,
                 then scan this. The code refreshes itself every few seconds, which is normal.
               </p>
+              {/* A phone cannot scan its own screen. The QR is only a tg://login
+                  link drawn as a picture, so on the device that has Telegram the
+                  link itself does the same job: Telegram opens and asks to
+                  confirm the new device. */}
+              <a href={qr} className="btn btn-accent" style={{ minHeight: 34, fontSize: 12 }}>
+                <Smartphone className="h-3.5 w-3.5" /> Telegram is on this phone &mdash; open it
+              </a>
             </div>
           ) : (
             <button
@@ -2639,6 +2646,12 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
           <div className="mt-3 inline-block rounded-xl bg-white p-3">
             {/* Rendered from the tg:// login URL Telegram returned. */}
             <QrCanvas value={qrUrl} />
+          </div>
+          {/* Same link the QR encodes, for when Telegram is on this very phone. */}
+          <div className="mt-3">
+            <a href={qrUrl} className="btn btn-accent" style={{ minHeight: 34, fontSize: 12 }}>
+              <Smartphone className="h-3.5 w-3.5" /> Telegram is on this phone &mdash; open it
+            </a>
           </div>
           {qrError ? (
             <p className="t-sm mt-3 rounded-xl px-3.5 py-3 leading-relaxed"
