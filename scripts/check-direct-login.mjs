@@ -25,6 +25,7 @@ const client = {
   async signInUserWithQrCode(credentials, params) {
     qrCalls++;
     await params.qrCode({ token: new Uint8Array([251, 255]), expires: 10 });
+    await assert.rejects(params.onError(new Error("Login cancelled.")), /Login cancelled/);
     return account;
   }
 };

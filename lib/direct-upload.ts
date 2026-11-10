@@ -229,6 +229,7 @@ export async function signInBrowser(
       },
       password: async hint => handlers.onPassword(hint),
       onError: async err => {
+        if (err.message === "Login cancelled.") throw err;
         console.warn("[direct-upload] qr login:", err.message);
         // false = keep trying; the helper reissues an expired token itself.
         return false;
