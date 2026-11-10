@@ -48,6 +48,11 @@ export type NativeBackupStatus = {
   currentTotal: number;
   currentSent: number;
   currentSize: number;
+  /** Files set aside after failing three runs in a row. */
+  problemCount: number;
+  lastProblemName: string;
+  /** When a run last found its predecessor had been killed mid-file, or 0. */
+  interruptedAt: number;
   lastRunAt: number;
   lastResult: string;
   uploadedTotal: number;

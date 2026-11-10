@@ -22,6 +22,28 @@ class NotSignedInException : IOException("Not signed in to TeleDrive.")
 class PermanentUploadException(message: String) : IOException(message)
 
 /**
+ * The phone itself could not hand over the file's bytes.
+ *
+ * Deliberately not an IOException. Everything that is one gets treated as "the
+ * network had a moment", and a file MediaStore lists but cannot open — deleted
+ * a second ago, on an unmounted card, revoked by a permission change — is not
+ * the network and will fail identically on every retry. Lumped in with real
+ * outages it blocked the whole backup behind itself, because runs go oldest
+ * first and it was always first.
+ */
+class LocalReadException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
+ * The server was reached and answered with a 5xx.
+ *
+ * Still an IOException, so everything that handles a transient failure keeps
+ * working. The subtype exists because "the server keeps erroring on this one
+ * file while answering everything else" is evidence about the file, and
+ * "nothing could be reached" is not.
+ */
+class ServerErrorException(message: String) : IOException(message)
+
+/**
  * Talks to the TeleDrive upload API the same way the website does.
  *
  * Nothing here is a second implementation of the upload protocol for its own
@@ -169,8 +191,15 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
             // 4xx that is not auth means this file will never be accepted:
             // too large, a duplicate, a folder that is gone. Retrying the same
             // bytes every three hours forever is the failure to avoid here.
+            // 408, 425 and 429 are the 4xx codes that mean "not now" rather than
+            // "never". Treating a rate limit as a refusal would step over the
+            // file and move the watermark past it - a photo silently left out
+            // of the backup because the server was busy for a second.
+            if (response.code == 408 || response.code == 425 || response.code == 429) {
+                throw IOException("$what: $detail")
+            }
             if (response.code in 400..499) throw PermanentUploadException("$what: $detail")
-            throw IOException("$what: $detail")
+            throw ServerErrorException("$what: $detail")
         }
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
@@ -345,7 +374,11 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         try {
             openStream(item).use { input ->
                 while (index < session.totalChunks) {
-                    val read = ChunkReader.readFully(input, buffer)
+                    val read = try {
+                        ChunkReader.readFully(input, buffer)
+                    } catch (unreadable: IOException) {
+                        throw LocalReadException("${item.name} could not be read from the phone", unreadable)
+                    }
                     if (read <= 0) break
                     if (!session.received.contains(index)) {
                         uploadChunk(session, index, buffer, read, item.name)
@@ -359,15 +392,50 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         } catch (permanent: PermanentUploadException) {
             abort(session)
             throw permanent
-        } catch (error: Throwable) {
-            // Transient: leave the session alone so the next run resumes it.
-            throw error
+        }
+        // Anything else propagates untouched and the session is left alone, so
+        // the next run resumes it from the chunks the server already holds.
+
+        // The file is stored; the thumbnail is a courtesy. Nothing about it is
+        // allowed to turn a finished upload into a failed one.
+        runCatching { Thumbnailer.make(appContext, item)?.let { uploadThumb(session, it) } }
+            .onFailure { Log.i(TAG, "no thumbnail for ${item.name}: ${it.message}") }
+    }
+
+    /**
+     * Hand the server a thumbnail made on the phone.
+     *
+     * The server builds thumbnails lazily by downloading the original back out
+     * of Telegram and resizing it — megabytes of transfer per photo, on first
+     * view — and it cannot do even that for HEIC, because its image library has
+     * no HEVC decoder. The phone has both problems solved already: MediaStore
+     * keeps a thumbnail of every photo and video, and Android decodes HEIC
+     * natively. Thirty kilobytes sent now replaces all of it.
+     */
+    private fun uploadThumb(session: Session, webp: ByteArray) {
+        val part = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("thumb", "thumb.webp", webp.toRequestBody("image/webp".toMediaType()))
+            .build()
+        callWithFallback(session.fileOrigin, "/api/upload/thumb/${session.fileId}", "Thumbnail upload failed") {
+            it.post(part)
         }
     }
 
+    /**
+     * Open the item for reading, or say plainly that the phone could not.
+     *
+     * openInputStream reports a missing file by throwing FileNotFoundException
+     * — an IOException — and a revoked permission by throwing
+     * SecurityException. Neither is a network failure, and both are stable:
+     * the same file fails the same way next run.
+     */
     private fun openStream(item: MediaItem): InputStream =
-        appContext.contentResolver.openInputStream(item.uri)
-            ?: throw PermanentUploadException("${item.name} could not be opened — it may have been deleted.")
+        try {
+            appContext.contentResolver.openInputStream(item.uri)
+        } catch (unreadable: Exception) {
+            throw LocalReadException("${item.name} could not be opened on the phone", unreadable)
+        } ?: throw LocalReadException("${item.name} could not be opened on the phone")
 
     private companion object {
         const val TAG = "TeleDriveBackup"

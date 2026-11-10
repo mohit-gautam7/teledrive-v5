@@ -31,11 +31,15 @@ class MainActivity : BridgeActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Make sure the schedule survived whatever the OS did while we were
-        // away, without restarting its countdown — see BackupScheduler.schedule.
         val prefs = BackupPrefs(this)
-        if (prefs.enabled) {
-            runCatching { BackupScheduler.ensureScheduled(this, prefs) }
-        }
+        if (!prefs.enabled) return
+        // Make sure the schedule survived whatever the OS did while we were
+        // away, without restarting its countdown - see BackupScheduler.schedule.
+        runCatching { BackupScheduler.ensureScheduled(this, prefs) }
+        // And start a run if none is going. Opening the app is what people do
+        // when they suspect backup has stopped, so it should be the thing that
+        // restarts it. Off the main thread: it reads WorkManager's database.
+        val app = applicationContext
+        Thread { runCatching { BackupScheduler.kickIfIdle(app, prefs) } }.start()
     }
 }

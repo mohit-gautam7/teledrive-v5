@@ -856,6 +856,37 @@ function NativeBackupCard() {
       ) : null}
 
       {/*
+        Files the backup gave up on, said out loud.
+
+        After three failed runs in a row a file is set aside so it cannot block
+        everything behind it. That is the right call and it is still a file that
+        was not backed up, so it is counted and named here rather than left to
+        be discovered missing later.
+      */}
+      {status && status.problemCount > 0 ? (
+        <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
+          <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
+          {status.problemCount === 1 ? "1 file" : `${status.problemCount} files`} could not be backed up after three
+          tries{status.lastProblemName ? ` (most recently ${status.lastProblemName})` : ""}. <em>Re-check everything</em>{" "}
+          tries again.
+        </p>
+      ) : null}
+
+      {/*
+        Evidence, not a guess. The worker records when it finds the run before
+        it was killed mid-file; within the last three days that is worth saying,
+        because it turns the general warning below into something that actually
+        happened to this phone.
+      */}
+      {status && status.interruptedAt > 0 && Date.now() - status.interruptedAt < 3 * 24 * 3600_000 ? (
+        <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
+          <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
+          Android stopped a backup part-way on {new Date(status.interruptedAt).toLocaleString()}. It picks up where it
+          stopped, and opening this app restarts it &mdash; but the two settings below are what prevent it.
+        </p>
+      ) : null}
+
+      {/*
         The part that actually decides whether background backup works. Android
         itself is willing; the manufacturer's battery manager is the obstacle,
         and there is no way to read its setting - only to open the screen.
