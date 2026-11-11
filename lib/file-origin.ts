@@ -28,7 +28,7 @@ export const FILE_ORIGIN = RAW.trim().replace(/\/+$/, "");
 /**
  * Paths whose responses or request bodies are large enough to be worth moving.
  *
- * Upload checking, initialisation, and direct confirmation stay on the primary
+ * Upload checking and initialisation stay on the primary
  * origin: they carry JSON, not file contents. Checking is a few hundred bytes of
  * JSON, and on Render's free tier a sleeping service takes the better part of a
  * minute to wake — asking it this question would stall the duplicate prompt
@@ -44,8 +44,9 @@ const HEAVY = [
 ];
 
 export function isHeavyPath(path: string) {
-  // These carry JSON only. Direct uploads must not wait for the relay host.
-  if (path === "/api/upload/init" || /^\/api\/upload\/direct\/[^/?]+$/.test(path)) return false;
+  // Init only creates metadata. Confirmation stays with the persistent Telegram
+  // client so the same server auth key is not opened from another host.
+  if (path === "/api/upload/init") return false;
   return HEAVY.some(pattern => pattern.test(path));
 }
 
