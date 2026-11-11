@@ -121,7 +121,12 @@ class BackupPlugin : Plugin() {
 
     @PluginMethod
     fun activity(call: PluginCall) {
-        call.resolve(JSObject().put("files", prefs.activity()))
+        try {
+            val account = TeleDriveClient(context, BackupWorker.BASE_URL).whoAmI()
+            call.resolve(JSObject().put("files", prefs.activity(account)))
+        } catch (error: Exception) {
+            call.reject("Sign in and reconnect to view backup activity.")
+        }
     }
 
     /* ── Turning it on and off ─────────────────────────────────────────────── */

@@ -34,6 +34,8 @@ class BackupPrefs(context: Context) {
         get() = prefs.getLong(KEY_WATERMARK, 0L)
         set(value) = prefs.edit().putLong(KEY_WATERMARK, value).apply()
 
+    val sourceRevision: Int get() = prefs.getInt("sourceRevision", 0)
+
     /** Only advance, never retreat: two runs can finish out of order. */
     fun raiseWatermark(seconds: Long) {
         if (seconds > watermark) {
@@ -45,16 +47,18 @@ class BackupPrefs(context: Context) {
     val processedAtWatermark: Set<String>
         get() = prefs.getStringSet("processedAtWatermark", emptySet())?.toSet() ?: emptySet()
 
-    fun markProcessed(item: MediaItem) {
+    fun markProcessed(item: MediaItem, expectedRevision: Int = sourceRevision) = synchronized(CURSOR_GATE) {
+        if (expectedRevision != sourceRevision) return@synchronized
         raiseWatermark(item.addedAt)
         if (item.addedAt == watermark) prefs.edit()
             .putStringSet("processedAtWatermark", processedAtWatermark + item.uri.toString()).apply()
     }
 
-    fun resetWatermark() {
+    fun resetWatermark() = synchronized(CURSOR_GATE) {
         // Files that were set aside sit below the watermark, so this is also
         // the way back for them — and the count starts again from nothing.
         prefs.edit()
+            .putInt("sourceRevision", sourceRevision + 1)
             .putLong(KEY_WATERMARK, 0L)
             .remove("processedAtWatermark")
             .remove(KEY_PROBLEM_COUNT)
@@ -77,22 +81,30 @@ class BackupPrefs(context: Context) {
             prefs.edit().putString("networkMode", value).putBoolean(KEY_WIFI_ONLY, value == "wifi").apply()
         }
 
-    fun recordActivity(item: MediaItem, state: String, error: String? = null) {
+    fun recordActivity(item: MediaItem, state: String, error: String? = null, accountId: String) {
         val old = runCatching { org.json.JSONArray(prefs.getString("activity", "[]")) }.getOrDefault(org.json.JSONArray())
         val rows = org.json.JSONArray()
         rows.put(org.json.JSONObject().put("uri", item.uri.toString()).put("name", item.name)
+            .put("accountId", accountId)
             .put("size", item.size).put("status", state).put("error", error?.take(240))
             .put("time", System.currentTimeMillis()))
         for (i in 0 until old.length()) {
             if (rows.length() >= 200) break
             val row = old.optJSONObject(i) ?: continue
-            if (row.optString("uri") != item.uri.toString()) rows.put(row)
+            if (row.optString("uri") != item.uri.toString() || row.optString("accountId") != accountId) rows.put(row)
         }
         prefs.edit().putString("activity", rows.toString()).apply()
     }
 
-    fun activity(): org.json.JSONArray =
-        runCatching { org.json.JSONArray(prefs.getString("activity", "[]")) }.getOrDefault(org.json.JSONArray())
+    fun activity(accountId: String): org.json.JSONArray {
+        val all = runCatching { org.json.JSONArray(prefs.getString("activity", "[]")) }.getOrDefault(org.json.JSONArray())
+        val result = org.json.JSONArray()
+        for (i in 0 until all.length()) {
+            val row = all.optJSONObject(i) ?: continue
+            if (accountId.isNotBlank() && row.optString("accountId") == accountId) result.put(row)
+        }
+        return result
+    }
 
     /**
      * Wait for the charger. Off by default — on a phone that is rarely plugged
@@ -371,6 +383,7 @@ class BackupPrefs(context: Context) {
 
         /** Guards check-then-claim on the lock within this process. */
         private val LOCK_GATE = Any()
+        private val CURSOR_GATE = Any()
 
         /** Consecutive failures of one file before it is set aside. */
         const val MAX_STRIKES = 3

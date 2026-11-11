@@ -389,7 +389,7 @@ class UploadManager {
       // requests /api/preview?thumb=1, and with no thumbnail yet the server
       // takes the slow path — re-downloading the original from Telegram and
       // resizing it — which is exactly what this avoids.
-      if (created && canThumbnail(source)) await uploadThumbnail(created.id, source);
+      if (created && canThumbnail(source)) await uploadThumbnail(created.id, source, controller.signal, beforeSend);
       if (created) this.hooks.onStored?.(created);
       if (item.backup) recordBrowserBackup(this.user, item.name, item.size, "completed");
 
@@ -686,18 +686,24 @@ function asDuplicate(error: unknown): { id: string; name: string } | null {
  * Bounded: a slow thumbnail must never hold up the queue. If it times out the
  * server falls back to generating one on first view.
  */
-async function uploadThumbnail(fileId: string, source: File) {
+async function uploadThumbnail(fileId: string, source: File, signal?: AbortSignal, beforeSend?: () => Promise<void>) {
   try {
     const thumb = await makeThumbnail(source);
     if (!thumb) return;
+    if (signal?.aborted) return;
+    await beforeSend?.();
     const form = new FormData();
     form.append("thumb", thumb);
     const abort = new AbortController();
+    const cancel = () => abort.abort();
+    if (signal?.aborted) abort.abort();
+    signal?.addEventListener("abort", cancel, {once:true});
     const timer = window.setTimeout(() => abort.abort(), 15_000);
     try {
       await fileFetch(`/api/upload/thumb/${fileId}`, { method: "POST", body: form, signal: abort.signal });
     } finally {
       window.clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
     }
   } catch {
     /* the server still generates one on first view */

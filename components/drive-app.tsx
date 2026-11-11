@@ -67,6 +67,7 @@ import {
 } from "@/components/drive/dnd";
 import { markScanned, readBackupState, scanForNew, writeBackupState } from "@/lib/photo-backup";
 import { backupConnection, backupNetworkAllowed } from "@/lib/backup-network";
+import { nativeBackup, nativeBackupAvailable } from "@/lib/native-backup";
 import { clearPrivateCaches, takeSharedFiles } from "@/lib/shared-intake";
 import { forgetDirectSession } from "@/lib/direct-upload";
 import { AuthBadge, EmptyState, PanelFallback } from "@/components/drive/bits";
@@ -1449,6 +1450,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   async function logout() {
     try {
+      uploads.pauseAll();
+      if (nativeBackupAvailable()) await nativeBackup.disable();
       await apiFetch("/api/auth/logout", { method: "POST" });
       Object.keys(window.localStorage)
         .filter(k => k.startsWith("td:"))
@@ -1457,7 +1460,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       // shared phone, leaving them would show the next person this drive's
       // file names and previews before the login screen even appeared.
       clearPrivateCaches();
-    forgetDirectSession();
+      forgetDirectSession();
     } finally {
       window.location.href = "/";
     }

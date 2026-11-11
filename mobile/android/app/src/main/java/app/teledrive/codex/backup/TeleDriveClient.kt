@@ -182,7 +182,8 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
     fun whoAmI(): String {
         http.newCall(request("/api/auth/me").get().build()).execute().use { response ->
             val body = ok(response, "Session check failed")
-            return body.optJSONObject("user")?.optString("username").orEmpty()
+            return body.optJSONObject("user")?.optString("id")?.takeIf { it.isNotBlank() }
+                ?: throw NotSignedInException()
         }
     }
 
