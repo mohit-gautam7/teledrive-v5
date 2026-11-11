@@ -44,8 +44,10 @@ class MediaScanner(private val context: Context) {
      */
     private val cameraPaths = listOf("DCIM/")
 
-    fun scan(prefs: BackupPrefs, limit: Int): List<MediaItem> {
-        val cap = limit.coerceIn(1, MAX_SCAN)
+    fun scan(prefs: BackupPrefs, limit: Int): List<MediaItem> = scanResult(prefs, limit, true).first
+
+    private fun scanResult(prefs: BackupPrefs, limit: Int, collect: Boolean): Pair<List<MediaItem>, Int> {
+        val cap = limit.coerceAtLeast(1)
         val since = prefs.watermark
         val chosen = prefs.albums
         val maxBytes = prefs.maxFileSizeMb.toLong() * 1024L * 1024L
@@ -66,11 +68,12 @@ class MediaScanner(private val context: Context) {
         // the results merged, because a sorted union of two cursors is simpler
         // to reason about than MediaStore.Files with a media-type filter. A
         // type the user has switched off is simply never queried.
-        if (prefs.includePhotos) queryInto(items, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, since, cap, inAlbum, withinSize)
-        if (prefs.includeVideos) queryInto(items, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, since, cap, inAlbum, withinSize)
+        var count = 0
+        if (prefs.includePhotos) count += queryInto(if (collect) items else null, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, since, cap, inAlbum, withinSize, prefs.processedAtWatermark)
+        if (prefs.includeVideos) count += queryInto(if (collect) items else null, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, since, cap, inAlbum, withinSize, prefs.processedAtWatermark)
 
         // Oldest first, so a partial run still leaves a correct watermark.
-        return items.sortedBy { it.addedAt }.take(cap)
+        return items.sortedBy { it.addedAt }.take(cap) to count
     }
 
     /**
@@ -116,10 +119,9 @@ class MediaScanner(private val context: Context) {
         path.trim('/').substringAfterLast('/').ifBlank { "Internal storage" }
 
     /**
-     * How many are waiting. Counts up to [MAX_SCAN] and stops — the UI says
-     * "2000+" rather than walking a 40,000-photo cursor to render one number.
+     * How many are waiting. The count does not allocate file rows or stop at a page boundary.
      */
-    fun pendingCount(prefs: BackupPrefs): Int = scan(prefs, MAX_SCAN).size
+    fun pendingCount(prefs: BackupPrefs): Int = scanResult(prefs, Int.MAX_VALUE, false).second
 
     /**
      * Collect up to [cap] items from one collection that pass both filters.
@@ -133,13 +135,14 @@ class MediaScanner(private val context: Context) {
      * still waiting. A cap applied before a filter is a cap on the wrong thing.
      */
     private fun queryInto(
-        into: MutableList<MediaItem>,
+        into: MutableList<MediaItem>?,
         collection: Uri,
         since: Long,
         cap: Int,
         inAlbum: (String) -> Boolean,
-        withinSize: (Long) -> Boolean
-    ) {
+        withinSize: (Long) -> Boolean,
+        processed: Set<String>
+    ): Int {
         val projection = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -153,10 +156,10 @@ class MediaScanner(private val context: Context) {
         val cursor: Cursor = context.contentResolver.query(
             collection,
             projection,
-            "${MediaStore.MediaColumns.DATE_ADDED} > ?",
+            "${MediaStore.MediaColumns.DATE_ADDED} >= ?",
             arrayOf(since.toString()),
             "${MediaStore.MediaColumns.DATE_ADDED} ASC"
-        ) ?: return
+        ) ?: return 0
 
         cursor.use {
             val idCol = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
@@ -177,6 +180,8 @@ class MediaScanner(private val context: Context) {
                 if (!inAlbum(relative)) continue
                 val uri = Uri.withAppendedPath(collection, it.getLong(idCol).toString())
 
+                if (!isPending(it.getLong(addedCol), since, uri.toString(), processed)) continue
+
                 // SIZE is NULL more often than the documentation suggests —
                 // files restored from a backup, synced in by another app, or
                 // pushed onto the device have a row before MediaStore has
@@ -193,7 +198,7 @@ class MediaScanner(private val context: Context) {
                 if (!withinSize(size)) continue
                 taken++
 
-                into.add(
+                into?.add(
                     MediaItem(
                         uri = uri,
                         name = name,
@@ -204,6 +209,7 @@ class MediaScanner(private val context: Context) {
                     )
                 )
             }
+            return taken
         }
     }
 
@@ -223,9 +229,9 @@ class MediaScanner(private val context: Context) {
             context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
         }.getOrNull()?.takeIf { it > 0L } ?: -1L
 
-    private companion object {
-        /** Ceiling on one scan, so neither memory nor the UI's count runs away. */
-        const val MAX_SCAN = 2000
+    companion object {
+        fun isPending(addedAt: Long, watermark: Long, uri: String, processed: Set<String>): Boolean =
+            addedAt > watermark || (addedAt == watermark && uri !in processed)
 
         /** Ceiling on the album counting pass. One column, but still a cursor. */
         const val MAX_ALBUM_ROWS = 60_000

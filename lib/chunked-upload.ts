@@ -3,6 +3,7 @@ import { resumeKeyFor } from "@/lib/file-identity";
 import { CHUNK_SIZE, CHUNK_CONCURRENCY, MAX_HONOURED_WAIT_MS, retryAfterMs, type UploadBackend } from "@/lib/upload-config";
 import { DirectUploadUnavailable, uploadDirect } from "@/lib/direct-upload";
 import { readDirectReceipt, saveDirectReceipt, clearDirectReceipt } from "@/lib/direct-receipt";
+import { BackupPausedError } from "@/lib/backup-network";
 
 const MAX_RETRIES = 5;
 
@@ -41,11 +42,12 @@ async function discardSession(fileId: string) {
   }
 }
 
-async function putChunk(fileId: string, index: number, blob: Blob, signal?: AbortSignal) {
+async function putChunk(fileId: string, index: number, blob: Blob, signal?: AbortSignal, beforeSend?: () => Promise<void>) {
   let lastErr: unknown;
   /** Set when the server names a Retry-After; overrides the jittered backoff once. */
   let waitOverride: number | null = null;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    await beforeSend?.();
     if (signal?.aborted) throw new UploadAbortedError();
     try {
       const form = new FormData();
@@ -100,6 +102,7 @@ export async function uploadFileInChunks({
   file,
   user,
   directOnly = false,
+  beforeSend,
   folderId,
   prefer,
   contentHash,
@@ -112,6 +115,7 @@ export async function uploadFileInChunks({
    *  session *this browser* authorised for them. */
   user: string;
   directOnly?: boolean;
+  beforeSend?: () => Promise<void>;
   folderId?: string | null;
   /** The user's storage choice from Settings. The server may decline it. */
   prefer?: string;
@@ -177,7 +181,8 @@ export async function uploadFileInChunks({
           file,
           caption: "\u{1F4C4} " + file.name,
           onProgress,
-          signal
+          signal,
+          beforeSend
         }));
         saveDirectReceipt(user, fileId, messageId);
       }
@@ -197,6 +202,7 @@ export async function uploadFileInChunks({
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error || "Telegram stored the file, but the drive could not confirm it. Retry to confirm.");
     } catch (err) {
+      if (err instanceof BackupPausedError) throw err;
       if (isAbort(err)) throw new UploadAbortedError();
       if (directOnly || readDirectReceipt(user, fileId) !== null) {
         throw new DirectUploadUnavailable(`${(err as Error)?.message || "Direct upload failed."} No file bytes were relayed. Retry when connected.`);
@@ -236,7 +242,7 @@ export async function uploadFileInChunks({
       if (slot >= pending.length) return;
       const i = pending[slot];
       const start = i * chunkSize;
-      await putChunk(fileId, i, file.slice(start, Math.min(start + chunkSize, file.size)), signal);
+      await putChunk(fileId, i, file.slice(start, Math.min(start + chunkSize, file.size)), signal, beforeSend);
       completed++;
       report();
     }
@@ -252,7 +258,7 @@ export async function uploadFileInChunks({
     // A cancel leaves the session alone so the user can resume it. Any other
     // failure has exhausted its retries, so the half-created row is discarded
     // rather than left in the drive as a phantom file of the full size.
-    if (!isAbort(failure.reason)) await discardSession(fileId);
+    if (!isAbort(failure.reason) && !(failure.reason instanceof BackupPausedError)) await discardSession(fileId);
     throw failure.reason;
   }
 

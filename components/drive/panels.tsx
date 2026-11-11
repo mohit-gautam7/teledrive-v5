@@ -58,6 +58,7 @@ import {
 import { DURATION, EASE, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
 import { EmptyState } from "./bits";
 import { browserLinked, forgetDirectSession, linkBrowser, unlinkBrowser } from "@/lib/direct-upload";
+import { BackupDestination, BackupFiles, BackupNetworkSelect } from "./backup-controls";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
@@ -421,16 +422,14 @@ function Choice<T extends string | number>({
  * nativeBackupAvailable(), so a normal visit never sees a setting it cannot use
  * and never learns there is an app it is not running.
  */
-function NativeBackupCard() {
+function NativeBackupCard({user}: {user: string}) {
   const [status, setStatus] = useState<NativeBackupStatus | null>(null);
   const [busy, setBusy] = useState(false);
   // null means "not asked yet", which is a different thing from "none found"
   // and the card says so rather than showing an empty box either way.
   const [albums, setAlbums] = useState<NativeAlbum[] | null>(null);
-  const [driveFolders, setDriveFolders] = useState<{ id: string; name: string }[]>([]);
   const available = nativeBackupAvailable();
   const running = status?.running ?? false;
-  const enabled = status?.enabled ?? false;
 
   // An empty selection in prefs means "not chosen yet", and the native side
   // falls back to the camera folders - so the UI shows that same fallback
@@ -457,26 +456,19 @@ function NativeBackupCard() {
     return () => window.clearInterval(timer);
   }, [available, refresh, running]);
 
-  // Albums and drive folders are only needed while the options are on screen,
-  // and both are far too expensive for the 1.5s status poll: one walks every
-  // MediaStore row, the other is a network round trip.
+  // Album names are read separately from the frequent progress poll.
   useEffect(() => {
-    if (!available || !enabled) return;
+    if (!available || !status?.mediaPermission) return;
     let cancelled = false;
     void (async () => {
       const result = await nativeBackup.albums();
       if (!cancelled) setAlbums(result?.albums ?? []);
-      const folders = await apiFetch<{ folders: { id: string; name: string; parentId: string | null }[] }>(
-        "/api/folders?flat=1"
-      ).catch(() => null);
-      if (!cancelled && folders) {
-        setDriveFolders(folders.folders.map(f => ({ id: f.id, name: f.name })));
-      }
+
     })();
     return () => {
       cancelled = true;
     };
-  }, [available, enabled]);
+  }, [available, status?.mediaPermission]);
 
   const toggleAlbum = useCallback(
     async (path: string, checked: boolean) => {
@@ -527,7 +519,7 @@ function NativeBackupCard() {
               status?.enabled ? "Automatic backup is off." : "Automatic backup is on."
             )
           }
-          disabled={busy || !status}
+          disabled={busy || !status || (!status.enabled && (status.backupVersion ?? 0) < 2)}
           role="switch"
           aria-checked={status?.enabled ?? false}
           aria-label="Automatic backup"
@@ -635,7 +627,7 @@ function NativeBackupCard() {
         </p>
       ) : null}
 
-      {status?.enabled ? (
+      {status ? (
         <div className="mt-5 space-y-5">
           {/* ── Which albums ───────────────────────────────────────────── */}
           <div>
@@ -757,14 +749,16 @@ function NativeBackupCard() {
             <p className="t-sm" style={{ color: "var(--text-1)" }}>
               When to run
             </p>
-            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-              <input
-                type="checkbox"
-                checked={!status.wifiOnly}
-                onChange={event => void applyResult(() => nativeBackup.setOptions({ wifiOnly: !event.target.checked }))}
-              />
-              Use mobile data too (otherwise Wi-Fi only)
-            </label>
+            <BackupNetworkSelect value={!status.enabled ? "off" : status.networkMode ?? (status.wifiOnly ? "wifi" : "both")}
+              disabled={busy} onChange={value => {
+                if (value === "off") { void applyResult(nativeBackup.disable, "Automatic backup is off."); return; }
+                if ((status.backupVersion ?? 0) < 2) { toast.error("Update the Android app before enabling backup. The older build can fall back to Vercel."); return; }
+                void applyResult(async () => {
+                  const updated = await nativeBackup.setOptions({networkMode:value});
+                  return updated?.enabled ? updated : updated ? nativeBackup.enable() : null;
+                });
+              }} />
+            <p className="t-xs">Current connection: {status.networkType ?? "unknown"}. File uploads pause when this connection is not allowed.</p>
             <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
               <input
                 type="checkbox"
@@ -802,28 +796,8 @@ function NativeBackupCard() {
             <p className="t-sm" style={{ color: "var(--text-1)" }}>
               Save into
             </p>
-            <select
-              value={status.folderId ?? ""}
-              onChange={event => {
-                const id = event.target.value;
-                const picked = driveFolders.find(f => f.id === id);
-                void applyResult(() =>
-                  nativeBackup.setOptions({
-                    folderId: id || null,
-                    folderName: picked ? picked.name : "Camera backup"
-                  })
-                );
-              }}
-              className="field mt-1.5"
-              style={{ height: 36 }}
-            >
-              <option value="">Camera backup (made automatically)</option>
-              {driveFolders.map(folder => (
-                <option key={folder.id} value={folder.id}>
-                  {folder.name}
-                </option>
-              ))}
-            </select>
+            <BackupDestination value={status.folderId} automaticName="Camera backup"
+              onChange={(id,name) => void applyResult(() => nativeBackup.setOptions({folderId:id,folderName:name}))} />
           </div>
         </div>
       ) : null}
@@ -948,123 +922,60 @@ function NativeBackupCard() {
           </div>
         </div>
       ) : null}
+      {status ? <BackupFiles native user={user} folderId={status.folderId} /> : null}
+      <p className="t-xs mt-3" style={{color:"var(--text-3)"}}>Waiting counts update about every 10 seconds.
+        Source albums are combined in the chosen destination. Background backup uses the file server, not browser-direct upload.</p>
     </section>
   );
 }
 
-function PhoneBackupCard({
-  user,
-  onBackupNow,
-  scanning
-}: {
-  user: string;
-  onBackupNow: (options: { everything: boolean }) => void;
-  scanning: boolean;
+function PhoneBackupCard({ user, onBackupNow, scanning }: {
+  user: string; onBackupNow: (options: {everything:boolean}) => void; scanning: boolean;
 }) {
   const supported = backupSupported();
   const [state, setState] = useState<BackupState | null>(null);
-
-  // Read after mount: localStorage does not exist during the server render,
-  // and reading it in useState would make the first client paint disagree.
-  useEffect(() => setState(readBackupState(user)), [user]);
-
-  if (!supported) {
-    return (
-      <section className="panel p-5">
-        <h2 className="display t-h2">Phone backup</h2>
-        <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-          This browser cannot read a folder on its own, so there is nothing to automate here. It needs the File System
-          Access API — Chrome or Samsung Internet on Android. On iPhone no browser has it, and the share sheet is the
-          way: open Photos, select, <strong>Share → TeleDrive</strong>.
-        </p>
-      </section>
-    );
-  }
-
+  useEffect(() => {
+    const update = () => setState(readBackupState(user));
+    update(); window.addEventListener("teledrive-backup-settings", update);
+    return () => window.removeEventListener("teledrive-backup-settings", update);
+  }, [user]);
+  if (nativeBackupAvailable()) return null;
   const chosen = state?.folderName;
-  return (
-    <section className="panel p-5">
-      <div className="flex items-start justify-between gap-3">
-        <h2 className="display t-h2">Phone backup</h2>
-        {chosen ? (
-          <button
-            onClick={() => {
-              const next = writeBackupState(user, { enabled: !state?.enabled });
-              setState(next);
-              toast.success(next.enabled ? "Backup on." : "Backup off.");
-            }}
-            className="btn btn-ghost"
-            style={{ minHeight: 34, fontSize: 12 }}
-          >
-            <Power className="h-3.5 w-3.5" /> {state?.enabled ? "On" : "Off"}
-          </button>
-        ) : null}
-      </div>
-
-      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        Choose your camera folder once. Every time you open TeleDrive after that, anything new in it is queued
-        automatically. Nothing is ever uploaded twice — each file is fingerprinted against the drive first.
-      </p>
-
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button
-          onClick={async () => {
-            const name = await chooseSource(user);
-            if (!name) return;
-            setState(readBackupState(user));
-            toast.success(`Watching "${name}".`);
-            onBackupNow({ everything: false });
-          }}
-          className="btn btn-ghost"
-          style={{ minHeight: 34, fontSize: 12 }}
-        >
-          <FolderIcon className="h-3.5 w-3.5" /> {chosen ? "Change folder" : "Choose folder"}
-        </button>
-
-        {chosen ? (
-          <>
-            <button
-              onClick={() => onBackupNow({ everything: false })}
-              disabled={scanning}
-              className="btn btn-ghost"
-              style={{ minHeight: 34, fontSize: 12 }}
-            >
-              {scanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Back
-              up now
-            </button>
-            <button
-              onClick={() => {
-                resetWatermark(user);
-                setState(readBackupState(user));
-                onBackupNow({ everything: true });
-              }}
-              disabled={scanning}
-              className="btn btn-ghost"
-              style={{ minHeight: 34, fontSize: 12 }}
-            >
-              <RotateCcw className="h-3.5 w-3.5" /> Re-check everything
-            </button>
-          </>
-        ) : null}
-      </div>
-
-      {chosen ? (
-        <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-          Watching <strong className="mono">{chosen}</strong>
-          {state?.lastRunAt
-            ? ` · last checked ${new Date(state.lastRunAt).toLocaleString()} · ${state.lastCount} queued`
-            : " · not checked yet"}
-          . New files are found by modification date, so something copied in with an old timestamp is missed —{" "}
-          <strong>Re-check everything</strong> is for that.
-        </p>
-      ) : null}
-
-      <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        It runs when you open the app, not in the background: the upload queue lives in the page, so there is nothing
-        to upload with while the app is closed. Install TeleDrive to your home screen and opening it is one tap.
-      </p>
-    </section>
-  );
+  return <section className="panel p-5 space-y-4">
+    <h2 className="display t-h2">Browser folder backup</h2>
+    <p className="t-sm" style={{color:"var(--text-3)"}}>Choose a source folder on this device and a destination in your drive.
+      Runs when this website opens or you press Back up now. Keep the page open while files upload.</p>
+    {!supported ? <p className="t-sm" role="status">This browser cannot remember a source folder.
+      You can still use Upload folder manually, or the Android app for automatic photo backup.</p> : null}
+    <BackupNetworkSelect value={!state?.enabled ? "off" : state.networkMode} disabled={!supported}
+      onChange={value => setState(writeBackupState(user, value === "off" ? {enabled:false} : {enabled:true,networkMode:value}))} />
+    <p className="t-xs" style={{color:"var(--text-3)"}}>If the browser cannot identify Wi-Fi versus mobile data, a network-only
+      choice pauses safely. Choose both only if you accept any online connection, including Ethernet.
+      Changing the connection or switching backup off pauses queued browser backups; resume them in Transfers.</p>
+    <div>
+      <p className="t-sm">Source on this device: <strong>{chosen ?? "Not selected"}</strong></p>
+      <button className="btn btn-ghost mt-2" disabled={!supported || scanning} onClick={async () => {
+        const name = await chooseSource(user);
+        if (name) {setState(readBackupState(user));toast.success(`Source folder: ${name}. Choose a backup connection, then Back up now.`);}
+      }}>{chosen ? "Change source folder" : "Choose source folder"}</button>
+    </div>
+    <BackupDestination value={state?.destinationId ?? null} automaticName="Browser backup"
+      onChange={id => setState(writeBackupState(user,{destinationId:id}))} />
+    <div className="flex flex-wrap gap-2">
+      <span className="chip">{state?.completedCount ?? 0} saved by this browser</span>
+      <span className="chip">{state?.lastCount ?? 0} queued at last scan</span>
+    </div>
+    <div className="flex flex-wrap gap-2">
+      <button className="btn btn-accent" disabled={!supported||!chosen||!state?.enabled||scanning}
+        onClick={() => onBackupNow({everything:false})}>{scanning?"Checking source…":"Back up now"}</button>
+      <button className="btn btn-ghost" disabled={!supported||!chosen||!state?.enabled||scanning} onClick={() => {
+        resetWatermark(user);setState(readBackupState(user));onBackupNow({everything:true});
+      }}>Re-check all source files</button>
+    </div>
+    <p className="t-xs" style={{color:"var(--text-3)"}}>Re-check all includes files with old modification dates. Duplicate checks
+      still run before storage. Counters and recent activity belong to this browser; saved destination files are available on every device.</p>
+    <BackupFiles user={user} folderId={state?.destinationId ?? null} />
+  </section>;
 }
 
 /**
@@ -1485,7 +1396,7 @@ export function SettingsPanel({
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
 
       <DirectUploadCard user={backupUser} />
-      <NativeBackupCard />
+      <NativeBackupCard user={backupUser} />
       <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
 
       <section className="panel p-5">

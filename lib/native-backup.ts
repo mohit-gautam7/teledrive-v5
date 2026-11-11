@@ -16,6 +16,9 @@
  */
 
 export type NativeBackupStatus = {
+  backupVersion?: number;
+  networkMode?: "wifi" | "mobile" | "both";
+  networkType?: string;
   available: boolean;
   enabled: boolean;
   mediaPermission: boolean;
@@ -59,6 +62,7 @@ export type NativeBackupStatus = {
 };
 
 export type NativeBackupOptions = {
+  networkMode?: "wifi" | "mobile" | "both";
   wifiOnly?: boolean;
   chargingOnly?: boolean;
   albums?: string[];
@@ -82,6 +86,8 @@ export type NativeAlbum = {
 };
 
 type BackupPlugin = {
+  pendingFiles(options: {skip: number; take: number}): Promise<{files: Array<{name:string;size:number;status:string;path?:string}>;hasMore:boolean}>;
+  activity(): Promise<{files: Array<{name:string;size:number;status:string;error?:string;time?:number}>}>;
   status(): Promise<NativeBackupStatus>;
   enable(): Promise<NativeBackupStatus>;
   disable(): Promise<NativeBackupStatus>;
@@ -130,6 +136,8 @@ async function call<K extends keyof BackupPlugin>(
 }
 
 export const nativeBackup = {
+  pendingFiles: (options: {skip:number;take:number}) => call("pendingFiles", options),
+  activity: () => call("activity"),
   status: () => call("status"),
   enable: () => call("enable"),
   disable: () => call("disable"),

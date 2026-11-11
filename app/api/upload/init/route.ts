@@ -127,7 +127,8 @@ export async function POST(request: NextRequest) {
           chunkSizeBytes: CHUNK_SIZE,
           backend: existing.backend,
           received: expired ? [] : existing.chunks.map(c => c.chunkIndex),
-          resumed: true
+          resumed: true,
+          fileOrigin: FILE_ORIGIN
         });
       }
     }

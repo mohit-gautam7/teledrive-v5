@@ -84,45 +84,19 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         return cookies
     }
 
-    /**
-     * Send a heavy request to the file origin, falling back to the app's own
-     * origin when that origin cannot be reached.
-     *
-     * Measured on a campus guest network: 100% packet loss to Render's
-     * addresses while the app's origin answered normally, so every chunk hit a
-     * 30-second connect timeout and the backup stalled indefinitely — pausing
-     * and retrying for ever against a host that network will never deliver to.
-     *
-     * Falling back costs the primary origin's bandwidth, which is the whole
-     * thing the split exists to save. That is still the right trade: a backup
-     * that works on an expensive path beats one that does not work at all, and
-     * the cheap path is tried first on every run. The flag lives on this
-     * client, and the worker builds a new one per run, so a network that was
-     * merely having a bad minute is retried at the next batch rather than
-     * written off.
-     */
-    private fun callWithFallback(
+    // File bytes must never fall back to Vercel when the file server is offline.
+    private fun callFileServer(
         origin: String,
         path: String,
         what: String,
         build: (Request.Builder) -> Request.Builder
     ): JSONObject {
-        if (origin.isNotBlank() && !fileOriginUnreachable) {
-            try {
-                http.newCall(build(fileRequest(origin, path)).build()).execute().use { return ok(it, what) }
-            } catch (unreachable: IOException) {
-                // Only a transport failure or a 5xx lands here; ok() throws its
-                // own types for auth and for anything the server refuses
-                // outright, and those must not be retried somewhere else.
-                Log.w(TAG, "file origin unreachable, using the app origin for the rest of this run", unreachable)
-                fileOriginUnreachable = true
-            }
+        BackupNetwork.requireAllowed(appContext, BackupPrefs(appContext))
+        if (!BackupNetwork.fileOriginAllowed(origin)) {
+            throw IOException("File server unavailable or not configured. Backup paused to protect Vercel bandwidth.")
         }
-        http.newCall(build(request(path)).build()).execute().use { return ok(it, what) }
+        http.newCall(build(fileRequest(origin, path)).build()).execute().use { return ok(it, what) }
     }
-
-    @Volatile
-    private var fileOriginUnreachable = false
 
     /**
      * A request to the file origin, when the deployment has one.
@@ -333,10 +307,22 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
             .addFormDataPart(
                 "chunk",
                 name,
-                bytes.toRequestBody("application/octet-stream".toMediaType(), 0, length)
+                object : RequestBody() {
+                    override fun contentType() = "application/octet-stream".toMediaType()
+                    override fun contentLength() = length.toLong()
+                    override fun writeTo(sink: okio.BufferedSink) {
+                        var offset = 0
+                        while (offset < length) {
+                            BackupNetwork.requireAllowed(appContext, BackupPrefs(appContext))
+                            val count = minOf(64 * 1024, length - offset)
+                            sink.write(bytes, offset, count)
+                            offset += count
+                        }
+                    }
+                }
             )
             .build()
-        callWithFallback(
+        callFileServer(
             session.fileOrigin,
             "/api/upload/chunk/${session.fileId}/$index",
             "Chunk $index of $name failed"
@@ -344,7 +330,7 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
     }
 
     fun complete(session: Session, name: String) {
-        callWithFallback(session.fileOrigin, "/api/upload/complete/${session.fileId}", "Could not finish $name") {
+        callFileServer(session.fileOrigin, "/api/upload/complete/${session.fileId}", "Could not finish $name") {
             it.post(EMPTY)
         }
     }
@@ -352,7 +338,7 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
     /** Abandon a session so the server does not keep a half-written row. */
     fun abort(session: Session) {
         runCatching {
-            callWithFallback(session.fileOrigin, "/api/upload/abort/${session.fileId}", "Could not abandon the upload") {
+            callFileServer(session.fileOrigin, "/api/upload/abort/${session.fileId}", "Could not abandon the upload") {
                 it.delete()
             }
         }
@@ -374,6 +360,7 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         try {
             openStream(item).use { input ->
                 while (index < session.totalChunks) {
+                    BackupNetwork.requireAllowed(appContext, BackupPrefs(appContext))
                     val read = try {
                         ChunkReader.readFully(input, buffer)
                     } catch (unreadable: IOException) {
@@ -417,7 +404,7 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
             .setType(MultipartBody.FORM)
             .addFormDataPart("thumb", "thumb.webp", webp.toRequestBody("image/webp".toMediaType()))
             .build()
-        callWithFallback(session.fileOrigin, "/api/upload/thumb/${session.fileId}", "Thumbnail upload failed") {
+        callFileServer(session.fileOrigin, "/api/upload/thumb/${session.fileId}", "Thumbnail upload failed") {
             it.post(part)
         }
     }

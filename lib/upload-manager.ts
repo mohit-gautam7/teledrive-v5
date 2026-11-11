@@ -7,6 +7,8 @@ import { resumeKeyFor } from "@/lib/file-identity";
 import type { QueuedUpload, SkippedUpload } from "@/lib/duplicate-plan";
 import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
 import { browserLinked, directConfig, DirectUploadUnavailable } from "@/lib/direct-upload";
+import { backupConnection, backupNetworkAllowed, BackupPausedError } from "@/lib/backup-network";
+import { readBackupState, recordBrowserBackup } from "@/lib/photo-backup";
 import { readPreferences } from "@/lib/preferences";
 import { canThumbnail, makeThumbnail } from "@/lib/thumbnail";
 import {
@@ -171,9 +173,11 @@ class UploadManager {
         eta: null,
         status: "skipped",
         file: null,
-        duplicateOf: entry.duplicateOf
+        duplicateOf: entry.duplicateOf,
+        backup: entry.backup
       })),
-      ...picked.map<UploadItem>(({ file, path, destination, contentHash, allowDuplicate, replaceFileId }) => ({
+      ...picked.map<UploadItem>(({ file, path, destination, contentHash, allowDuplicate, replaceFileId, backup }) => ({
+        backup,
         id: Math.random().toString(36).slice(2),
         name: file.name,
         size: file.size,
@@ -353,6 +357,8 @@ class UploadManager {
     const controller = new AbortController();
     this.controllers.set(item.id, controller);
     try {
+      const beforeSend = item.backup ? () => this.assertBackupNetwork() : undefined;
+      await beforeSend?.();
       let created: DriveFile | null = null;
       const directOnly = Boolean(await directConfig());
       if (directOnly && !browserLinked(this.user)) {
@@ -364,6 +370,7 @@ class UploadManager {
           file: source,
           user: this.user,
           directOnly,
+          beforeSend,
           folderId: target,
           // Read at send time, not at queue time, so changing the setting takes
           // effect on the next file rather than on the next reload.
@@ -384,6 +391,7 @@ class UploadManager {
       // resizing it — which is exactly what this avoids.
       if (created && canThumbnail(source)) await uploadThumbnail(created.id, source);
       if (created) this.hooks.onStored?.(created);
+      if (item.backup) recordBrowserBackup(this.user, item.name, item.size, "completed");
 
       // Replace: the new copy is safely stored, so the old one can go to Trash.
       // In this order deliberately — a failed replace must never lose a file.
@@ -393,6 +401,10 @@ class UploadManager {
       this.patch(item.id, { loaded: item.size, percent: 100, speed: null, eta: null, status: "done" });
       void forgetHandle(resumeKeyFor(source));
     } catch (error) {
+      if (error instanceof BackupPausedError) {
+        this.pauseBackups(error.message);
+        return;
+      }
       if (error instanceof UploadAbortedError || (error instanceof DOMException && error.name === "AbortError")) {
         // A pause already set the status and wants the row kept; a cancel has
         // already removed it. Either way there is nothing left to do.
@@ -415,9 +427,27 @@ class UploadManager {
         return;
       }
       this.fail(item.id, error);
+      if (item.backup) recordBrowserBackup(this.user, item.name, item.size, "failed", error instanceof Error ? error.message : "Upload failed");
       if (error instanceof DirectUploadUnavailable) this.pauseAll();
     } finally {
       this.controllers.delete(item.id);
+    }
+  }
+
+  private async assertBackupNetwork() {
+    const state = readBackupState(this.user);
+    if (!state.enabled) throw new BackupPausedError("Browser backup is off. Choose a backup network in Settings to continue.");
+    if (!backupNetworkAllowed(state.networkMode, await backupConnection())) {
+      throw new BackupPausedError(`Waiting for ${state.networkMode === "wifi" ? "Wi-Fi" : state.networkMode === "mobile" ? "mobile data" : "an internet connection"}. Resume in Transfers when connected.`);
+    }
+  }
+
+  private pauseBackups(message: string) {
+    for (const item of this.items) {
+      if (item.backup && (item.status === "uploading" || item.status === "pending")) {
+        this.pause(item.id);
+        this.patch(item.id, { error: message });
+      }
     }
   }
 
@@ -510,6 +540,7 @@ class UploadManager {
           resumeKey: it.resumeKey as string,
           path: it.path,
           transport: it.transport,
+          backup: it.backup,
           loaded: it.loaded,
           updatedAt: Date.now()
         }))
@@ -529,6 +560,13 @@ class UploadManager {
     if (this.hydrated) return;
     this.hydrated = true;
     this.user = user;
+    const checkNetwork = () => {
+      if (!this.items.some(item => item.backup && (item.status === "uploading" || item.status === "pending"))) return;
+      void this.assertBackupNetwork().catch(error => this.pauseBackups(error.message));
+    };
+    window.addEventListener("teledrive-backup-settings", checkNetwork);
+    window.addEventListener("offline", checkNetwork);
+    (navigator as Navigator & { connection?: EventTarget }).connection?.addEventListener("change", checkNetwork);
 
     const sessions = readPersisted(user);
     if (!sessions.length) return;
@@ -547,7 +585,8 @@ class UploadManager {
       folderId: session.folderId,
       resumeKey: session.resumeKey,
       path: session.path,
-      transport: session.transport
+      transport: session.transport,
+      backup: session.backup
     }));
     this.items = [...restored.filter(it => !this.items.some(x => x.resumeKey === it.resumeKey)), ...this.items];
     this.emit();

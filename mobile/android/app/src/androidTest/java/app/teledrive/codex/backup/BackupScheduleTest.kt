@@ -125,7 +125,7 @@ class BackupScheduleTest {
         val all = scanner.scan(prefs, 50)
         assertTrue("Needs at least two items to test the boundary", all.size >= 2)
 
-        prefs.raiseWatermark(all.first().addedAt)
+        prefs.markProcessed(all.first())
         val after = scanner.scan(prefs, 50)
         assertTrue("The watermarked item must not come back", after.none { it.uri == all.first().uri })
         assertTrue("Later items must still come back", after.isNotEmpty())

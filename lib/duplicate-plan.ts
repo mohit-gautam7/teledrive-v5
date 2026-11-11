@@ -21,6 +21,7 @@ export type DuplicateChoice = "skip" | "replace" | "copy";
  * implies is created once, up front, before anything is queued.
  */
 export type QueuedUpload = {
+  backup?: boolean;
   file: File;
   destination: string | null;
   path?: string;
@@ -31,6 +32,7 @@ export type QueuedUpload = {
 
 /** A duplicate the user chose to skip — listed, not silently dropped. */
 export type SkippedUpload = {
+  backup?: boolean;
   name: string;
   size: number;
   duplicateOf: { id: string; name: string };
@@ -66,6 +68,7 @@ export function planBatch(
     const choice = choices[index] ?? "skip";
     if (choice === "skip") {
       skipped.push({
+        ...(item.backup ? {backup:true} : {}),
         name: item.file.name,
         size: item.file.size,
         duplicateOf: { id: existing.id, name: existing.name }

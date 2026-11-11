@@ -80,6 +80,12 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             prefs.clearCurrent()
         }
 
+        try {
+            BackupNetwork.requireAllowed(applicationContext, prefs)
+        } catch (waiting: IOException) {
+            finish(waiting.message ?: "Waiting for network")
+            return Result.retry()
+        }
         val client = TeleDriveClient(applicationContext, BASE_URL)
 
         try {
@@ -128,7 +134,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         var signedOut = false
 
         for ((index, item) in pending.withIndex()) {
-            if (isStopped) break
+            if (isStopped || !prefs.enabled) break
             // Also checked here, not only between chunks: a stop asked for
             // while the worker is between files would otherwise be ignored
             // until the next chunk of the next file.
@@ -143,11 +149,14 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 // Already in the drive: step over it and let the watermark pass,
                 // or every future run would re-offer the same file.
                 skipped++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.recordActivity(item, "already_saved")
+                prefs.markProcessed(item)
                 continue
             }
 
             try {
+                BackupNetwork.requireAllowed(applicationContext, prefs)
+                prefs.recordActivity(item, "uploading")
                 prefs.beginItem(item.name, index + 1, pending.size, item.size)
                 client.upload(item, folderId) { sent ->
                     prefs.currentSent = sent
@@ -163,26 +172,33 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                     }
                 }
                 stored++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.addUploaded(1)
+                prefs.recordActivity(item, "completed")
+                prefs.markProcessed(item)
                 prefs.clearStrikes()
             } catch (skip: SkipRequested) {
+                prefs.recordActivity(item, "cancelled")
                 // The user does not want this one. Step over it for good, or
                 // the next run would offer it again and they would have to say
                 // so every couple of hours.
                 skipped++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.markProcessed(item)
             } catch (stop: StopRequested) {
+                prefs.recordActivity(item, "paused")
                 stopped = true
                 break
             } catch (gone: NotSignedInException) {
+                prefs.recordActivity(item, "failed", gone.message)
                 signedOut = true
                 break
             } catch (permanent: PermanentUploadException) {
+                prefs.recordActivity(item, "failed", permanent.message)
                 // The server will never accept this one. Move past it, or the
                 // whole backup stalls behind a single bad file forever.
                 skipped++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.markProcessed(item)
             } catch (unreadable: LocalReadException) {
+                prefs.recordActivity(item, "failed", unreadable.message)
                 // The phone could not read its own file. That is about this
                 // file and nothing else, so it earns a strike — and on the
                 // third, the file is set aside so the rest can go.
@@ -193,6 +209,8 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 pausedBecause = reasonFor(unreadable)
                 break
             } catch (error: Throwable) {
+                val networkWaiting = !prefs.enabled || !BackupNetwork.allows(prefs.networkMode, BackupNetwork.type(applicationContext))
+                prefs.recordActivity(item, if (networkWaiting) "paused" else "failed", reasonFor(error))
                 // Network died, server hiccuped, phone lost Wi-Fi: stop the run
                 // and come back shortly; the watermark is still correct.
                 //
@@ -214,7 +232,6 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             }
         }
 
-        prefs.addUploaded(stored)
         prefs.clearCurrent()
 
         val summary = buildString {
@@ -274,7 +291,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         if (strikes < BackupPrefs.MAX_STRIKES) return false
         prefs.clearStrikes()
         prefs.addProblem(item.name)
-        prefs.raiseWatermark(item.addedAt)
+        prefs.markProcessed(item)
         return true
     }
 

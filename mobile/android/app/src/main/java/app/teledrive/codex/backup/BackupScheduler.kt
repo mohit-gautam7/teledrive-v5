@@ -130,7 +130,7 @@ object BackupScheduler {
         val request = OneTimeWorkRequestBuilder<BackupWorker>()
             .setConstraints(
                 Constraints.Builder()
-                    .setRequiredNetworkType(if (prefs.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
             )
             // A run that pauses on a network blip comes back in a minute, then
@@ -188,7 +188,7 @@ object BackupScheduler {
     }
 
     private fun constraints(prefs: BackupPrefs) = Constraints.Builder()
-        .setRequiredNetworkType(if (prefs.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+        .setRequiredNetworkType(NetworkType.CONNECTED)
         .setRequiresCharging(prefs.chargingOnly)
         // Not setRequiresBatteryNotLow(false): a phone under 15% should not be
         // spending what is left pushing video to Telegram.

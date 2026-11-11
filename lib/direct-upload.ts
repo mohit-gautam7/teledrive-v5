@@ -316,13 +316,15 @@ export async function uploadDirect({
   file,
   caption,
   onProgress,
-  signal
+  signal,
+  beforeSend
 }: {
   user: string;
   file: File;
   caption?: string;
   onProgress: (loadedBytes: number) => void;
   signal?: AbortSignal;
+  beforeSend?: () => Promise<void>;
 }): Promise<{ messageId: number }> {
   if (file.size > DIRECT_MAX_BYTES) {
     throw new DirectUploadUnavailable("File is past Telegram's 4000-part ceiling for one upload.");
@@ -339,7 +341,7 @@ export async function uploadDirect({
       return client.invoke(large
         ? new Api.upload.SaveBigFilePart({ fileId, filePart: index, fileTotalParts: count, bytes })
         : new Api.upload.SaveFilePart({ fileId, filePart: index, bytes }));
-    }, onProgress, signal);
+    }, onProgress, signal, beforeSend);
     const handle = large
       ? new Api.InputFileBig({ id: fileId, parts, name: file.name })
       : new Api.InputFile({ id: fileId, parts, name: file.name, md5Checksum: "" });

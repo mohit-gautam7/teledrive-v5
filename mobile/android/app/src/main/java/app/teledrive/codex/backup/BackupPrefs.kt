@@ -36,7 +36,19 @@ class BackupPrefs(context: Context) {
 
     /** Only advance, never retreat: two runs can finish out of order. */
     fun raiseWatermark(seconds: Long) {
-        if (seconds > watermark) watermark = seconds
+        if (seconds > watermark) {
+            watermark = seconds
+            prefs.edit().remove("processedAtWatermark").apply()
+        }
+    }
+
+    val processedAtWatermark: Set<String>
+        get() = prefs.getStringSet("processedAtWatermark", emptySet())?.toSet() ?: emptySet()
+
+    fun markProcessed(item: MediaItem) {
+        raiseWatermark(item.addedAt)
+        if (item.addedAt == watermark) prefs.edit()
+            .putStringSet("processedAtWatermark", processedAtWatermark + item.uri.toString()).apply()
     }
 
     fun resetWatermark() {
@@ -44,6 +56,7 @@ class BackupPrefs(context: Context) {
         // the way back for them — and the count starts again from nothing.
         prefs.edit()
             .putLong(KEY_WATERMARK, 0L)
+            .remove("processedAtWatermark")
             .remove(KEY_PROBLEM_COUNT)
             .remove(KEY_PROBLEM_NAME)
             .remove(KEY_STRIKE_KEY)
@@ -53,8 +66,33 @@ class BackupPrefs(context: Context) {
 
     /** Unmetered networks only. On by default: a camera roll is gigabytes. */
     var wifiOnly: Boolean
-        get() = prefs.getBoolean(KEY_WIFI_ONLY, true)
-        set(value) = prefs.edit().putBoolean(KEY_WIFI_ONLY, value).apply()
+        get() = networkMode == "wifi"
+        set(value) { networkMode = if (value) "wifi" else "both" }
+
+    var networkMode: String
+        get() = prefs.getString("networkMode", null)
+            ?: if (prefs.getBoolean(KEY_WIFI_ONLY, true)) "wifi" else "both"
+        set(value) {
+            require(value in listOf("wifi", "mobile", "both"))
+            prefs.edit().putString("networkMode", value).putBoolean(KEY_WIFI_ONLY, value == "wifi").apply()
+        }
+
+    fun recordActivity(item: MediaItem, state: String, error: String? = null) {
+        val old = runCatching { org.json.JSONArray(prefs.getString("activity", "[]")) }.getOrDefault(org.json.JSONArray())
+        val rows = org.json.JSONArray()
+        rows.put(org.json.JSONObject().put("uri", item.uri.toString()).put("name", item.name)
+            .put("size", item.size).put("status", state).put("error", error?.take(240))
+            .put("time", System.currentTimeMillis()))
+        for (i in 0 until old.length()) {
+            if (rows.length() >= 200) break
+            val row = old.optJSONObject(i) ?: continue
+            if (row.optString("uri") != item.uri.toString()) rows.put(row)
+        }
+        prefs.edit().putString("activity", rows.toString()).apply()
+    }
+
+    fun activity(): org.json.JSONArray =
+        runCatching { org.json.JSONArray(prefs.getString("activity", "[]")) }.getOrDefault(org.json.JSONArray())
 
     /**
      * Wait for the charger. Off by default — on a phone that is rarely plugged
@@ -64,7 +102,7 @@ class BackupPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_CHARGING_ONLY, false)
         set(value) = prefs.edit().putBoolean(KEY_CHARGING_ONLY, value).apply()
 
-    /** Destination folder id in TeleDrive, or null for the drive root. */
+    /** Destination folder id, or null to create the default Camera backup folder. */
     var folderId: String?
         get() = prefs.getString(KEY_FOLDER, null)
         set(value) = prefs.edit().putString(KEY_FOLDER, value).apply()

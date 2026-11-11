@@ -1,0 +1,31 @@
+name: Android backup
+on:
+  pull_request:
+    paths: ["mobile/**", ".github/workflows/android.yml"]
+  push:
+    branches: [main]
+    paths: ["mobile/**", ".github/workflows/android.yml"]
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+        working-directory: mobile
+      - name: Prepare remote website shell
+        run: |
+          mkdir -p www
+          printf '<!doctype html><title>TeleDrive</title>' > www/index.html
+          npx cap sync android
+        working-directory: mobile
+      - name: Build and test Android backup
+        run: bash gradlew :app:assembleDebug :app:testDebugUnitTest --console=plain
+        working-directory: mobile/android
