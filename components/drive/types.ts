@@ -33,6 +33,7 @@ export type TypeFilter = "all" | "image" | "video" | "doc";
 export type PropsTarget = { kind: "file"; file: DriveFile } | { kind: "folder"; folder: DriveFolder };
 
 export type UploadItem = {
+  backup?: boolean;
   transport?: "direct" | "relay";
   id: string;
   name: string;

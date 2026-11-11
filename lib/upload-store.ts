@@ -21,6 +21,7 @@
  */
 
 export type PersistedUpload = {
+  backup?: boolean;
   transport?: "direct" | "relay";
   id: string;
   name: string;

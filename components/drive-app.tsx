@@ -65,7 +65,9 @@ import {
   rememberDroppedHandles,
   type PickedFile
 } from "@/components/drive/dnd";
-import { markScanned, readBackupState, scanForNew } from "@/lib/photo-backup";
+import { markScanned, readBackupState, scanForNew, writeBackupState } from "@/lib/photo-backup";
+import { backupConnection, backupNetworkAllowed } from "@/lib/backup-network";
+import { nativeBackup, nativeBackupAvailable } from "@/lib/native-backup";
 import { clearPrivateCaches, takeSharedFiles } from "@/lib/shared-intake";
 import { forgetDirectSession } from "@/lib/direct-upload";
 import { AuthBadge, EmptyState, PanelFallback } from "@/components/drive/bits";
@@ -737,16 +739,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    *     batch — because being asked two hundred times is not a question.
    */
   const startUploads = useCallback(
-    async (incoming: PickedFile[], destination: string | null = folderId) => {
+    async (incoming: PickedFile[], destination: string | null = folderId, backup = false) => {
       const usable = incoming.filter(p => p.file.size > 0);
       const tooLarge = usable.find(p => p.file.size > maxBytes);
       if (tooLarge) {
         toast.error(`"${tooLarge.file.name}" is larger than the ${formatBytes(maxBytes)} limit Telegram allows.`);
-        return;
+        return false;
       }
       if (!usable.length) {
         if (incoming.length) toast.error("Those files are empty, so there was nothing to upload.");
-        return;
+        return false;
       }
       setTrayOpen(true);
 
@@ -764,7 +766,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           const target = path?.includes("/")
             ? await ensureFolderPath(path.split("/").slice(0, -1), destination)
             : destination;
-          queued.push({ file, path, destination: target });
+          queued.push({ file, path, destination: target, backup });
         }
 
         const hashes = await fingerprintAll(
@@ -779,7 +781,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       } catch (error) {
         done();
         toast.error(error instanceof Error ? error.message : "Could not prepare the upload.");
-        return;
+        return false;
       }
 
       try {
@@ -814,7 +816,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             "[upload] duplicate check is running without fingerprints — File.contentHash is missing from the database. Run `pnpm db:sync`."
           );
         }
-        if (answer.duplicates.length) setDuplicateModal({ batch, duplicates: answer.duplicates });
+        if (backup) {
+          const planned = planBatch(batch, answer.duplicates, {});
+          uploads.add(planned.queue, planned.skipped);
+        } else if (answer.duplicates.length) setDuplicateModal({ batch, duplicates: answer.duplicates });
         else uploads.add(batch);
       } catch (error) {
         // The check is a courtesy, not a gate: the upload still goes ahead, and
@@ -826,11 +831,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         // proceeds exactly as before; the difference is that the reason is now
         // on screen and in the console.
         done();
+        if (backup) throw error;
         const reason = error instanceof Error ? error.message : String(error);
         console.warn("[upload] duplicate check failed:", error);
         toast.warning(`Could not check for duplicates — ${reason}. Uploading anyway.`);
         uploads.add(batch);
       }
+      return true;
     },
     [folderId, maxBytes, ensureFolderPath]
   );
@@ -1104,6 +1111,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     async (options: { everything?: boolean; prompt: boolean; quiet?: boolean }) => {
       setBackupScanning(true);
       try {
+        const settings = readBackupState(cacheUser);
+        if (!settings.enabled || !backupNetworkAllowed(settings.networkMode, await backupConnection())) {
+          if (!options.quiet) toast.info("Backup is off or waiting for the selected network. No files were uploaded.");
+          return;
+        }
         const result = await scanForNew(cacheUser, { prompt: options.prompt });
         if (!result.ok) {
           if (options.quiet) return;
@@ -1127,14 +1139,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         // survives reloads and resumes on its own, and the duplicate check
         // stops anything being sent twice. Holding it back until every upload
         // finished would re-scan the whole folder after any interruption.
-        markScanned(cacheUser, result.newest, result.files.length);
+        const destination = settings.destinationId ?? await ensureFolderPath(["Browser backup"], null);
+        writeBackupState(cacheUser, {destinationId:destination});
         toast.success(`${result.files.length} new file${result.files.length === 1 ? "" : "s"} from your phone.`);
-        void startUploads(result.files);
+        if (await startUploads(result.files, destination, true)) markScanned(cacheUser, result.newest, result.files.length);
+      } catch (error) {
+        if (!options.quiet) toast.error(error instanceof Error ? error.message : "Could not queue the backup.");
       } finally {
         setBackupScanning(false);
       }
     },
-    [cacheUser, startUploads]
+    [cacheUser, startUploads, ensureFolderPath]
   );
 
   /** Button in Settings. A gesture, so it may ask for permission. */
@@ -1435,6 +1450,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   async function logout() {
     try {
+      uploads.pauseAll();
+      if (nativeBackupAvailable()) await nativeBackup.disable();
       await apiFetch("/api/auth/logout", { method: "POST" });
       Object.keys(window.localStorage)
         .filter(k => k.startsWith("td:"))
@@ -1443,7 +1460,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       // shared phone, leaving them would show the next person this drive's
       // file names and previews before the login screen even appeared.
       clearPrivateCaches();
-    forgetDirectSession();
+      forgetDirectSession();
     } finally {
       window.location.href = "/";
     }

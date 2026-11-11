@@ -6,7 +6,8 @@ export async function uploadDirectParts(
   file: Blob,
   send: (index: number, bytes: Buffer, count: number) => Promise<boolean>,
   onProgress: (bytes: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  beforeSend?: () => Promise<void>
 ) {
   if (file.size <= 0 || file.size > DIRECT_MAX_BYTES) throw new Error("File exceeds the supported direct-upload size (4000 × 512 KiB parts), or is empty.");
   const { Buffer } = await import("buffer");
@@ -19,6 +20,7 @@ export async function uploadDirectParts(
     try {
       while (!failed) {
         checkAbort();
+        await beforeSend?.();
         const index = cursor++;
         if (index >= count) return;
         const bytes = Buffer.from(await file.slice(index * DIRECT_PART_SIZE, (index + 1) * DIRECT_PART_SIZE).arrayBuffer());

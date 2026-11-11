@@ -30,6 +30,14 @@ Android has exactly one API that survives the app being swiped away — **WorkMa
 and it is only reachable from native code. That is the whole reason this directory is here.
 Everything else, the entire UI included, is still the website.
 
+## Backup controls in Android 1.1.0
+
+See [Photo and folder backup](../PHOTO_BACKUP.md) for the Wi-Fi/mobile/both/off
+choices, source albums, destination folders, waiting/saved/failed lists and counts.
+This version never sends background file bytes to Vercel as a fallback.
+Install an update with `adb install -r` using the same signing certificate; do not
+uninstall the app to update it, because uninstalling erases its local settings.
+
 ## Connect Telegram on the same phone
 
 In Settings, switch **Direct upload** on and choose **Sign in on this phone**.

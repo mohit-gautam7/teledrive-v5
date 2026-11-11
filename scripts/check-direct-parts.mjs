@@ -25,5 +25,7 @@ await assert.rejects(uploadDirectParts(file, () => assert.fail("No bytes after c
 let failureCalls = 0;
 await assert.rejects(uploadDirectParts(file, async () => {failureCalls++; return false;}, () => {}), /did not accept/);
 assert.ok(failureCalls <= 2, "stop scheduling new parts after rejection");
+await assert.rejects(uploadDirectParts(file, () => assert.fail("No part may be sent on a forbidden backup network"), () => {}, undefined,
+  async () => { throw new Error("backup network blocked"); }), /backup network blocked/);
 await assert.rejects(uploadDirectParts({size:DIRECT_MAX_BYTES+1}, () => assert.fail(), () => {}), /exceeds/);
 console.log("direct parts: bounded slices, final short part, concurrency, cancellation, rejection and size limit passed");

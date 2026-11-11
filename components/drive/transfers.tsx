@@ -252,7 +252,7 @@ function TransferRow({
         </p>
       ) : item.status === "paused" ? (
         <p className="t-xs mt-1 truncate" style={{ color: "var(--text-3)" }}>
-          {item.kind === "upload" && item.transport === "direct" ? "Direct transfer paused. Unfinished parts may restart; files already sent to Telegram only need confirmation." : <>
+          {item.error ? item.error : item.kind === "upload" && item.transport === "direct" ? "Direct transfer paused. Unfinished parts may restart; files already sent to Telegram only need confirmation." : <>
           {formatBytes(item.loaded)} of {formatBytes(item.size)} already stored —{" "}
           {item.kind === "upload" && !item.file ? "resume and pick the file again" : "resume to send the rest"}.
           </>}

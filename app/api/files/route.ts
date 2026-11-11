@@ -4,6 +4,8 @@ import { prisma, readWithRetry } from "@/lib/prisma";
 import { toPublicFile } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
 import { STORED_ONLY } from "@/lib/upload-config";
+import { descendantFolderIds } from "@/lib/backup-folders";
+import { resolveOwnedFolder } from "@/lib/folder-tree";
 
 const PAGE_SIZE = 48;
 const MAX_PAGE_SIZE = 100;
@@ -38,13 +40,19 @@ export async function GET(request: NextRequest) {
     // filename you could see in the sidebar returned nothing, with no hint that
     // the folder you happened to be standing in was the reason.
     const spansFolders = view === "trash" || view === "favorites" || view === "recent" || Boolean(q);
+    let recursiveFolders: string[] | null = null;
+    if (folderId && searchParams.get("recursive") === "1") {
+      await resolveOwnedFolder(user.id, folderId);
+      const folders = await prisma.folder.findMany({where:{userId:user.id},select:{id:true,parentId:true}});
+      recursiveFolders = descendantFolderIds(folderId, folders);
+    }
 
     const where = {
       userId: user.id,
       ...STORED_ONLY,
       isDeleted: view === "trash" ? true : false,
       ...(view === "favorites" ? { isFavorite: true } : {}),
-      ...(spansFolders ? {} : { folderId: folderId || null }),
+      ...(recursiveFolders ? {folderId:{in:recursiveFolders}} : spansFolders ? {} : { folderId: folderId || null }),
       ...(type === "image"
         ? { mimeType: { startsWith: "image/" } }
         : type === "video"
@@ -75,7 +83,8 @@ export async function GET(request: NextRequest) {
     const hasMore = rows.length > take;
     const files = (hasMore ? rows.slice(0, take) : rows).map(toPublicFile);
 
-    return NextResponse.json({ files, hasMore, nextSkip: skip + files.length });
+    const total = searchParams.get("count") === "1" ? await readWithRetry(() => prisma.file.count({where})) : undefined;
+    return NextResponse.json({ files, hasMore, nextSkip: skip + files.length, total });
   } catch (error) {
     return jsonError(error, "Could not load files.");
   }

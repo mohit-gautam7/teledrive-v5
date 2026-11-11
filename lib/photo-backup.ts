@@ -28,11 +28,16 @@
 
 import { filesFromDirectoryHandle, type PickedFile } from "@/components/drive/dnd";
 import { recallHandle, rememberHandle, type StoredDirectoryHandle } from "@/lib/upload-store";
+import type { BackupNetworkMode } from "@/lib/backup-network";
 
 /** One remembered source folder per browser profile. */
 export const BACKUP_SOURCE_KEY = "dir:__backup_source__";
 
 export type BackupState = {
+  networkMode: BackupNetworkMode;
+  destinationId: string | null;
+  completedCount: number;
+  history: Array<{ name: string; size: number; status: string; error?: string; time: number }>;
   enabled: boolean;
   /** Display name of the chosen folder, for the settings card. */
   folderName: string | null;
@@ -42,7 +47,7 @@ export type BackupState = {
   lastCount: number;
 };
 
-const EMPTY: BackupState = { enabled: false, folderName: null, watermark: 0, lastRunAt: 0, lastCount: 0 };
+const EMPTY: BackupState = { enabled: false, networkMode: "wifi", destinationId: null, completedCount: 0, history: [], folderName: null, watermark: 0, lastRunAt: 0, lastCount: 0 };
 
 // `td:` so sign-out clears it along with the rest of this account's state.
 const stateKey = (user: string) => `td:${user}:backup:v1`;
@@ -51,7 +56,14 @@ export function readBackupState(user: string): BackupState {
   try {
     const raw = window.localStorage.getItem(stateKey(user));
     if (!raw) return { ...EMPTY };
-    return { ...EMPTY, ...(JSON.parse(raw) as Partial<BackupState>) };
+    const saved = JSON.parse(raw) as Partial<BackupState> | null;
+    if (!saved || typeof saved !== "object") return {...EMPTY};
+    return { ...EMPTY, ...saved, enabled: saved.enabled === true,
+      networkMode: ["wifi","mobile","both"].includes(saved.networkMode ?? "") ? saved.networkMode! : "wifi",
+      destinationId: typeof saved.destinationId === "string" ? saved.destinationId : null,
+      watermark: Number.isFinite(saved.watermark) && saved.watermark! >= 0 ? saved.watermark! : 0,
+      completedCount: Number.isSafeInteger(saved.completedCount) && saved.completedCount! >= 0 ? saved.completedCount! : 0,
+      history: Array.isArray(saved.history) ? saved.history.slice(0,200) : [] };
   } catch {
     return { ...EMPTY };
   }
@@ -64,7 +76,16 @@ export function writeBackupState(user: string, patch: Partial<BackupState>): Bac
   } catch {
     /* private mode, quota — the feature degrades to "re-pick each time" */
   }
+  window.dispatchEvent(new Event("teledrive-backup-settings"));
   return next;
+}
+
+export function recordBrowserBackup(user: string, name: string, size: number, status: string, error?: string) {
+  const current = readBackupState(user);
+  writeBackupState(user, {
+    completedCount: current.completedCount + (status === "completed" ? 1 : 0),
+    history: [{ name, size, status, error, time: Date.now() }, ...current.history].slice(0, 200)
+  });
 }
 
 /**
@@ -102,8 +123,8 @@ export async function chooseSource(user: string): Promise<string | null> {
   } catch {
     return null; // dismissed — not an error worth a toast
   }
-  await rememberHandle(BACKUP_SOURCE_KEY, handle);
-  writeBackupState(user, { folderName: handle.name, enabled: true });
+  await rememberHandle(`${BACKUP_SOURCE_KEY}:${user}`, handle);
+  writeBackupState(user, { folderName: handle.name, watermark: 0 });
   return handle.name;
 }
 
@@ -121,7 +142,7 @@ export type ScanResult =
 export async function scanForNew(user: string, options: { prompt: boolean }): Promise<ScanResult> {
   if (!backupSupported()) return { ok: false, reason: "unsupported" };
 
-  const handle = (await recallHandle(BACKUP_SOURCE_KEY)) as StoredDirectoryHandle | null;
+  const handle = (await recallHandle(`${BACKUP_SOURCE_KEY}:${user}`)) as StoredDirectoryHandle | null;
   if (!handle) return { ok: false, reason: "no-folder" };
 
   try {

@@ -46,6 +46,8 @@ import com.getcapacitor.annotation.PermissionCallback
 class BackupPlugin : Plugin() {
 
     private val prefs: BackupPrefs by lazy { BackupPrefs(context) }
+    private var pendingAt = 0L
+    private var pendingCount = -1
 
     /* ── Status ────────────────────────────────────────────────────────────── */
 
@@ -55,18 +57,25 @@ class BackupPlugin : Plugin() {
         // Counting means querying MediaStore, which needs the permission we may
         // not have — so it is reported as unknown rather than as zero. Zero
         // would read as "nothing to back up", the opposite of the truth.
-        val pending = if (granted) runCatching { MediaScanner(context).pendingCount(prefs) }.getOrNull() else null
+        if (granted && System.currentTimeMillis() - pendingAt > 10_000) {
+            pendingCount = runCatching { MediaScanner(context).pendingCount(prefs) }.getOrDefault(-1)
+            pendingAt = System.currentTimeMillis()
+        }
+        val pending = if (granted) pendingCount else -1
 
         call.resolve(
             JSObject()
                 .put("available", true)
+                .put("backupVersion", 2)
+                .put("networkMode", prefs.networkMode)
+                .put("networkType", BackupNetwork.type(context))
                 .put("enabled", prefs.enabled)
                 .put("mediaPermission", granted)
                 .put("notificationPermission", hasNotificationPermission())
                 .put("batteryExempt", isBatteryExempt())
                 .put("vendor", vendorLabel())
                 .put("needsStartupPermission", startupCandidates().isNotEmpty())
-                .put("pending", pending ?: -1)
+                .put("pending", pending)
                 .put("running", runCatching { BackupScheduler.isActive(context) }.getOrDefault(false))
                 .put("wifiOnly", prefs.wifiOnly)
                 .put("chargingOnly", prefs.chargingOnly)
@@ -89,6 +98,35 @@ class BackupPlugin : Plugin() {
                 .put("lastResult", prefs.lastResult)
                 .put("uploadedTotal", prefs.uploadedTotal)
         )
+    }
+
+    @PluginMethod
+    fun networkStatus(call: PluginCall) {
+        call.resolve(JSObject().put("type", BackupNetwork.type(context)))
+    }
+
+    @PluginMethod
+    fun pendingFiles(call: PluginCall) {
+        if (!hasMediaPermission()) { call.reject("Photo access is required."); return }
+        val skip = (call.getInt("skip") ?: 0).coerceIn(0, 100_000)
+        val take = (call.getInt("take") ?: 50).coerceIn(1, 100)
+        val files = MediaScanner(context).scan(prefs, skip + take + 1)
+        val rows = JSONArray()
+        files.drop(skip).take(take).forEach { item ->
+            rows.put(JSObject().put("name", item.name).put("size", item.size)
+                .put("path", item.relativePath).put("status", "waiting"))
+        }
+        call.resolve(JSObject().put("files", rows).put("hasMore", files.size > skip + take))
+    }
+
+    @PluginMethod
+    fun activity(call: PluginCall) {
+        try {
+            val account = TeleDriveClient(context, BackupWorker.BASE_URL).whoAmI()
+            call.resolve(JSObject().put("files", prefs.activity(account)))
+        } catch (error: Exception) {
+            call.reject("Sign in and reconnect to view backup activity.")
+        }
     }
 
     /* ── Turning it on and off ─────────────────────────────────────────────── */
@@ -207,6 +245,15 @@ class BackupPlugin : Plugin() {
 
     @PluginMethod
     fun setOptions(call: PluginCall) {
+        pendingAt = 0L
+        val oldAlbums = prefs.albums
+        val oldPhotos = prefs.includePhotos
+        val oldVideos = prefs.includeVideos
+        val oldSize = prefs.maxFileSizeMb
+        call.getString("networkMode")?.let {
+            if (it !in listOf("wifi", "mobile", "both")) { call.reject("Unknown backup network choice."); return }
+            prefs.networkMode = it
+        }
         call.getBoolean("wifiOnly")?.let { prefs.wifiOnly = it }
         call.getBoolean("chargingOnly")?.let { prefs.chargingOnly = it }
         call.getBoolean("includePhotos")?.let { prefs.includePhotos = it }
@@ -222,6 +269,9 @@ class BackupPlugin : Plugin() {
             if (chosen.isNotEmpty()) prefs.albums = chosen.toSet()
         }
         if (call.data.has("folderId")) prefs.folderId = call.getString("folderId")
+        if (oldAlbums != prefs.albums || oldPhotos != prefs.includePhotos || oldVideos != prefs.includeVideos || oldSize != prefs.maxFileSizeMb) {
+            prefs.resetWatermark()
+        }
         // Constraints are baked into the enqueued work, so a changed setting
         // only takes effect once the schedule is rebuilt.
         if (prefs.enabled) BackupScheduler.schedule(context, prefs)

@@ -80,9 +80,16 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             prefs.clearCurrent()
         }
 
-        val client = TeleDriveClient(applicationContext, BASE_URL)
-
         try {
+            BackupNetwork.requireAllowed(applicationContext, prefs)
+        } catch (waiting: IOException) {
+            finish(waiting.message ?: "Waiting for network")
+            return Result.retry()
+        }
+        val client = TeleDriveClient(applicationContext, BASE_URL)
+        val revision = prefs.sourceRevision
+
+        val accountId = try {
             client.whoAmI()
         } catch (signedOut: NotSignedInException) {
             // Not a failure to retry: no amount of waiting signs a user in.
@@ -126,9 +133,11 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         var pausedBecause: String? = null
         var stopped = false
         var signedOut = false
+        var sourceChanged = false
 
         for ((index, item) in pending.withIndex()) {
-            if (isStopped) break
+            if (isStopped || !prefs.enabled) break
+            if (prefs.sourceRevision != revision) { sourceChanged = true; break }
             // Also checked here, not only between chunks: a stop asked for
             // while the worker is between files would otherwise be ignored
             // until the next chunk of the next file.
@@ -143,13 +152,17 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 // Already in the drive: step over it and let the watermark pass,
                 // or every future run would re-offer the same file.
                 skipped++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.recordActivity(item, "already_saved", accountId = accountId)
+                prefs.markProcessed(item, revision)
                 continue
             }
 
             try {
+                BackupNetwork.requireAllowed(applicationContext, prefs)
+                prefs.recordActivity(item, "uploading", accountId = accountId)
                 prefs.beginItem(item.name, index + 1, pending.size, item.size)
                 client.upload(item, folderId) { sent ->
+                    if (prefs.sourceRevision != revision) throw SourceChanged()
                     prefs.currentSent = sent
                     // Per chunk, not per file: a video that takes longer than
                     // the lock's lifetime would otherwise let a second run in
@@ -163,36 +176,49 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                     }
                 }
                 stored++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.addUploaded(1)
+                prefs.recordActivity(item, "completed", accountId = accountId)
+                prefs.markProcessed(item, revision)
                 prefs.clearStrikes()
+            } catch (changed: SourceChanged) {
+                sourceChanged = true
+                prefs.recordActivity(item, "paused", "Backup source changed", accountId)
+                break
             } catch (skip: SkipRequested) {
+                prefs.recordActivity(item, "cancelled", accountId = accountId)
                 // The user does not want this one. Step over it for good, or
                 // the next run would offer it again and they would have to say
                 // so every couple of hours.
                 skipped++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.markProcessed(item, revision)
             } catch (stop: StopRequested) {
+                prefs.recordActivity(item, "paused", accountId = accountId)
                 stopped = true
                 break
             } catch (gone: NotSignedInException) {
+                prefs.recordActivity(item, "failed", gone.message, accountId)
                 signedOut = true
                 break
             } catch (permanent: PermanentUploadException) {
+                prefs.recordActivity(item, "failed", permanent.message, accountId)
                 // The server will never accept this one. Move past it, or the
                 // whole backup stalls behind a single bad file forever.
                 skipped++
-                prefs.raiseWatermark(item.addedAt)
+                prefs.markProcessed(item, revision)
             } catch (unreadable: LocalReadException) {
+                prefs.recordActivity(item, "failed", unreadable.message, accountId)
                 // The phone could not read its own file. That is about this
                 // file and nothing else, so it earns a strike — and on the
                 // third, the file is set aside so the rest can go.
-                if (strikeOut(item, unreadable)) {
+                if (strikeOut(item, unreadable, revision)) {
                     setAside++
                     continue
                 }
                 pausedBecause = reasonFor(unreadable)
                 break
             } catch (error: Throwable) {
+                val networkWaiting = !prefs.enabled || !BackupNetwork.allows(prefs.networkMode, BackupNetwork.type(applicationContext))
+                prefs.recordActivity(item, if (networkWaiting) "paused" else "failed", reasonFor(error), accountId)
                 // Network died, server hiccuped, phone lost Wi-Fi: stop the run
                 // and come back shortly; the watermark is still correct.
                 //
@@ -204,7 +230,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 // equally, and striking for it would throw the camera roll away
                 // one photo at a time.
                 val aboutThisFile = error is ServerErrorException && runCatching { client.whoAmI() }.isSuccess
-                if (aboutThisFile && strikeOut(item, error)) {
+                if (aboutThisFile && strikeOut(item, error, revision)) {
                     setAside++
                     continue
                 }
@@ -214,7 +240,6 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             }
         }
 
-        prefs.addUploaded(stored)
         prefs.clearCurrent()
 
         val summary = buildString {
@@ -230,6 +255,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
         finish(summary)
 
+        if (sourceChanged && prefs.enabled) return Result.retry()
         if (signedOut || stopped) return Result.success()
 
         // A pause is always a retry, whether or not this run stored anything
@@ -268,13 +294,13 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
      * runs to come good, a minute and then two apart, and only then is it set
      * aside, named in the card, and left for "Re-check everything".
      */
-    private fun strikeOut(item: MediaItem, why: Throwable): Boolean {
+    private fun strikeOut(item: MediaItem, why: Throwable, revision: Int): Boolean {
         val strikes = prefs.strike(item.uri.toString())
         Log.w(TAG, "${item.name} failed, strike $strikes of ${BackupPrefs.MAX_STRIKES}", why)
         if (strikes < BackupPrefs.MAX_STRIKES) return false
         prefs.clearStrikes()
         prefs.addProblem(item.name)
-        prefs.raiseWatermark(item.addedAt)
+        prefs.markProcessed(item, revision)
         return true
     }
 
@@ -282,6 +308,8 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         error.message?.take(80)?.ifBlank { null } ?: error.javaClass.simpleName
 
     /** The card asked for this one file to be abandoned. */
+    private class SourceChanged : RuntimeException()
+
     private class SkipRequested : RuntimeException()
 
     /** The card asked for the whole run to end now. */
