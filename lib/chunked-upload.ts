@@ -130,7 +130,8 @@ export async function uploadFileInChunks({
   if (signal?.aborted) throw new UploadAbortedError();
 
   // 1. Init — creates a session, or hands back the one we left half-finished.
-  const initRes = await fileFetch("/api/upload/init", {
+  // Direct mode needs only a metadata row here, not the relay's chunk settings.
+  const initRes = await (directOnly ? fetch : fileFetch)("/api/upload/init", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
