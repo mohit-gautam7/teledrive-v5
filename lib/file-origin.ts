@@ -28,7 +28,8 @@ export const FILE_ORIGIN = RAW.trim().replace(/\/+$/, "");
 /**
  * Paths whose responses or request bodies are large enough to be worth moving.
  *
- * `/api/upload/check` is deliberately *not* here. It is a few hundred bytes of
+ * Upload checking, initialisation, and direct confirmation stay on the primary
+ * origin: they carry JSON, not file contents. Checking is a few hundred bytes of
  * JSON, and on Render's free tier a sleeping service takes the better part of a
  * minute to wake — asking it this question would stall the duplicate prompt
  * behind a cold start every time. Left on the primary origin, the prompt opens
@@ -43,6 +44,8 @@ const HEAVY = [
 ];
 
 export function isHeavyPath(path: string) {
+  // These carry JSON only. Direct uploads must not wait for the relay host.
+  if (path === "/api/upload/init" || /^\/api\/upload\/direct\/[^/?]+$/.test(path)) return false;
   return HEAVY.some(pattern => pattern.test(path));
 }
 
