@@ -5,6 +5,7 @@ registerHooks({resolve(specifier, context, next) {
   if(specifier.startsWith('@/')) return next(new URL('../'+specifier.slice(2)+'.ts',import.meta.url).href,context);
   return next(specifier,context);
 }});
+process.env.NEXT_PUBLIC_FILE_ORIGIN='https://relay.invalid';
 const {uploadFileInChunks}=await import('../lib/chunked-upload.ts');
 const {saveDirectReceipt,readDirectReceipt,clearDirectReceipt}=await import('../lib/direct-receipt.ts');
 const storage=new Map();globalThis.localStorage={getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
@@ -12,11 +13,12 @@ let requests=[],uploads=0,confirmationFails=false,backend='mtproto';
 globalThis.directTest=async()=>{uploads++;return {messageId:42};};
 globalThis.fetch=async(path,options)=>{
   requests.push(path);
+  if(path==='/api/auth/file-token') return Response.json({token:'test-file-token'});
   if(path==='/api/upload/init') {
     const body=JSON.parse(options.body);assert.equal(body.prefer,'account');assert.match(body.resumeKey,/^direct\|/);
     return Response.json({fileId:'session',totalChunks:1,received:[],backend});
   }
-  if(path==='/api/upload/direct/session'){
+  if(path==='https://relay.invalid/api/upload/direct/session'){
     if(confirmationFails)throw new Error('network offline');
     return Response.json({file:{id:'session'}});
   }
