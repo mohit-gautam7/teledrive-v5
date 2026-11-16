@@ -26,20 +26,17 @@ function retryDelay(attempt: number) {
   return Math.random() * Math.min(1500 * 2 ** attempt, 30_000);
 }
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const cancel = () => { clearTimeout(timer); reject(new UploadAbortedError()); };
+  const timer = setTimeout(() => { signal?.removeEventListener("abort", cancel); resolve(); }, ms);
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener("abort", cancel, { once: true });
+});
+
+class UploadRefusedError extends Error {}
 
 function isAbort(err: unknown) {
   return err instanceof UploadAbortedError || (err instanceof DOMException && err.name === "AbortError");
-}
-
-/** Best-effort: the upload has already failed, so a failure to tidy up must not
- *  replace the real error the caller is about to see. */
-async function discardSession(fileId: string) {
-  try {
-    await fileFetch(`/api/upload/abort/${fileId}`, { method: "DELETE" });
-  } catch {
-    /* the stale session is garbage-collected server-side instead */
-  }
 }
 
 async function putChunk(fileId: string, index: number, blob: Blob, signal?: AbortSignal, beforeSend?: () => Promise<void>) {
@@ -58,7 +55,7 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       const err = new Error(body.error || `Chunk ${index} failed (HTTP ${res.status}).`);
       // 4xx other than 429 means this chunk will never succeed — fail fast.
-      if (res.status < 500 && res.status !== 429) throw err;
+      if (res.status < 500 && ![408, 425, 429].includes(res.status)) throw new UploadRefusedError(err.message);
       lastErr = err;
       // A 429 here is usually Telegram's FLOOD_WAIT relayed by lib/api-response,
       // and it carries the wait Telegram actually asked for. Backing off by our
@@ -73,7 +70,7 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
           // worker hostage and looks identical to a hang, so surface it instead
           // and let the queue move to the next file; Resume picks this one up.
           if (named > MAX_HONOURED_WAIT_MS) {
-            throw new Error(
+            throw new UploadRefusedError(
               `Telegram is rate-limiting this account for ${Math.ceil(named / 60_000)} more minutes. ` +
                 `This upload is paused — retry it after that.`
             );
@@ -82,9 +79,10 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
       }
     } catch (err) {
       if (isAbort(err)) throw new UploadAbortedError();
+      if (err instanceof UploadRefusedError || err instanceof BackupPausedError) throw err;
       lastErr = err;
     }
-    if (attempt < MAX_RETRIES - 1) await sleep(waitOverride ?? retryDelay(attempt));
+    if (attempt < MAX_RETRIES - 1) await sleep(waitOverride ?? retryDelay(attempt), signal);
     waitOverride = null;
   }
   throw lastErr instanceof Error ? lastErr : new Error(`Chunk ${index} failed.`);
@@ -92,8 +90,10 @@ async function putChunk(fileId: string, index: number, blob: Blob, signal?: Abor
 
 /** The server refused because this file is already stored in that folder. */
 export class DuplicateFileError extends Error {
-  constructor(readonly existing: { id: string; name: string }) {
+  readonly existing: { id: string; name: string };
+  constructor(existing: { id: string; name: string }) {
     super(`"${existing.name}" is already in this folder.`);
+    this.existing = existing;
     this.name = "DuplicateFileError";
   }
 }
@@ -256,10 +256,8 @@ export async function uploadFileInChunks({
   );
   const failure = results.find(r => r.status === "rejected") as PromiseRejectedResult | undefined;
   if (failure) {
-    // A cancel leaves the session alone so the user can resume it. Any other
-    // failure has exhausted its retries, so the half-created row is discarded
-    // rather than left in the drive as a phantom file of the full size.
-    if (!isAbort(failure.reason) && !(failure.reason instanceof BackupPausedError)) await discardSession(fileId);
+    // Keep confirmed chunks on every failure. A retry can resume them; expired
+    // sessions are cleaned up server-side. Network errors must not erase progress.
     throw failure.reason;
   }
 
@@ -271,6 +269,7 @@ export async function uploadFileInChunks({
     throw new Error(body.error || "Failed to complete chunked upload.");
   }
   const completeBody = (await completeRes.json().catch(() => ({}))) as { file?: UploadedFileMeta };
+  if (!completeBody.file?.id) throw new Error("Upload confirmation was incomplete. Retry to check the saved file.");
 
   onProgress(file.size);
   return { fileId, file: completeBody.file ?? null };

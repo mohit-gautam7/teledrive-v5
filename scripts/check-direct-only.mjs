@@ -18,7 +18,7 @@ globalThis.fetch=async(path,options)=>{
     const body=JSON.parse(options.body);assert.equal(body.prefer,'account');assert.match(body.resumeKey,/^direct\|/);
     return Response.json({fileId:'session',totalChunks:1,received:[],backend});
   }
-  if(path==='https://relay.invalid/api/upload/direct/session'){
+  if(path==='/api/upload/direct/session'){
     if(confirmationFails)throw new Error('network offline');
     return Response.json({file:{id:'session'}});
   }
@@ -37,5 +37,6 @@ assert.equal(uploads,1,'wrong backend must fail before sending bytes');
 backend='mtproto';globalThis.directTest=async()=>{throw new Error('Telegram offline');};
 await assert.rejects(uploadFileInChunks(params),/No file bytes were relayed/);
 assert.ok(requests.every(p=>!p.includes('/chunk/')&&p!=='/api/upload'),'direct errors must never relay');
+assert.ok(requests.every(p=>!/^https?:/.test(p)||new URL(p).host!=='relay.invalid'), 'direct upload metadata must not depend on Render');
 saveDirectReceipt('alice','one',99);assert.equal(readDirectReceipt('bob','one'),null);clearDirectReceipt('alice','one');
 console.log('direct-only: no relay on errors; small file; wrong backend; confirmation retry; account-scoped receipt passed');

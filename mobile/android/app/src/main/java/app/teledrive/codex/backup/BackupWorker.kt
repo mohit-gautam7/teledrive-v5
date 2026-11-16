@@ -46,6 +46,11 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         if (!prefs.enabled) return@withContext Result.success()
+        if (prefs.transport == "direct") {
+            // Never quietly relay a user's direct-only backup.
+            prefs.lastResult = "Direct backup is ready. Open TeleDrive to continue."
+            return@withContext Result.success()
+        }
 
         // WorkManager gives the same id back when it restarts work whose
         // process was killed, which is what lets a run reclaim its own lock.
@@ -87,7 +92,6 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             return Result.retry()
         }
         val client = TeleDriveClient(applicationContext, BASE_URL)
-        val revision = prefs.sourceRevision
 
         val accountId = try {
             client.whoAmI()
@@ -99,6 +103,9 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         } catch (offline: IOException) {
             return Result.retry()
         }
+
+        prefs.bindAccount(accountId)
+        val revision = prefs.sourceRevision
 
         val pending = scanner.scan(prefs, BATCH_LIMIT)
         if (pending.isEmpty()) {

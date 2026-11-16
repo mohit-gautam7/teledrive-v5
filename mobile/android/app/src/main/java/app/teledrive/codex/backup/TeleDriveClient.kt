@@ -376,6 +376,9 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
                     index++
                 }
             }
+            if (sent != item.size || index != session.totalChunks) {
+                throw LocalReadException("${item.name} changed or could not be read completely. It was not marked as backed up.")
+            }
             complete(session, item.name)
         } catch (permanent: PermanentUploadException) {
             abort(session)

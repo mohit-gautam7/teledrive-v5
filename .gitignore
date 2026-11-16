@@ -86,6 +86,8 @@ jspm_packages/
 
 # Next.js build output
 .next
+.next-*/
+.native-verify/
 app/generated/
 
 # Nuxt.js build / generate output

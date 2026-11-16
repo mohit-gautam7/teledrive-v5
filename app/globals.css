@@ -37,7 +37,7 @@
   /* Text — three tiers, enough contrast on every surface above. */
   --text-1: #edeff4;
   --text-2: #9aa2b1;
-  --text-3: #626a7a;
+  --text-3: #949dae;
 
   /* Borders */
   --border-dim: rgba(255, 255, 255, 0.07);
@@ -98,7 +98,7 @@ html:not(.dark) {
 
   --text-1: #0d1424;
   --text-2: #4a5568;
-  --text-3: #8892a4;
+  --text-3: #657188;
 
   --border-dim: rgba(13, 20, 36, 0.09);
   --border-med: rgba(13, 20, 36, 0.16);

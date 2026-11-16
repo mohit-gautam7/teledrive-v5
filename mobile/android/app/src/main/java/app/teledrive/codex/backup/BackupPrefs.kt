@@ -21,13 +21,38 @@ import android.content.SharedPreferences
  * for, and why the UI offers "Re-check everything" rather than pretending the
  * watermark is infallible.
  */
-class BackupPrefs(context: Context) {
-    private val prefs: SharedPreferences =
+class BackupPrefs internal constructor(private val prefs: SharedPreferences) {
+    constructor(context: Context) : this(
         context.applicationContext.getSharedPreferences("teledrive.backup", Context.MODE_PRIVATE)
+    )
+
+    /** A previous account's cursor must never make a new account look backed up. */
+    fun bindAccount(accountId: String) = synchronized(CURSOR_GATE) {
+        require(accountId.isNotBlank())
+        val previous = prefs.getString("backupAccountId", null)
+        if (previous == accountId) return@synchronized
+        resetWatermark()
+        clearCurrent()
+        val edit = prefs.edit().putString("backupAccountId", accountId)
+            .remove(KEY_UPLOADED_TOTAL).remove(KEY_LAST_RUN).remove(KEY_LAST_RESULT)
+            .remove(KEY_INTERRUPTED_AT).remove(KEY_CONTROL)
+        // An upgrade has no account marker yet. Keep the user's destination;
+        // ensureBackupFolder will validate ownership before using it.
+        if (previous != null) edit.remove(KEY_FOLDER).remove(KEY_FOLDER_NAME)
+        edit.apply()
+    }
 
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_ENABLED, value).apply()
+
+    /** Direct sends bytes from the visible app; relay is WorkManager's server path. */
+    var transport: String
+        get() = prefs.getString("transport", "relay") ?: "relay"
+        set(value) {
+            require(value in listOf("direct", "relay"))
+            prefs.edit().putString("transport", value).apply()
+        }
 
     /** Seconds since the epoch — MediaStore's own unit for DATE_ADDED. */
     var watermark: Long

@@ -1,0 +1,103 @@
+/* The overview is a small spatial illustration, not a full-page GPU scene. */
+@layer components {
+  .drive-overview {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 260px;
+    border: 1px solid var(--border-med);
+    border-radius: var(--r-xl);
+    background: radial-gradient(ellipse at 80% 20%, var(--accent-dim), transparent 65%), var(--bg-1);
+  }
+  .overview-copy { position: relative; z-index: 1; padding: 28px 30px; }
+  .overview-title {
+    font-family: var(--font-sans), system-ui, sans-serif;
+    font-size: clamp(1.6rem, 2.8vw, 2.4rem);
+    font-weight: 650;
+    letter-spacing: -.045em;
+    line-height: 1.13;
+    text-wrap: balance;
+  }
+  .overview-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .overview-metrics {
+    position: relative; z-index: 1;
+    grid-column: 1 / -1;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0; padding: 16px 30px; gap: 16px;
+    border-top: 1px solid var(--border-dim);
+    background: var(--surface);
+  }
+  .overview-metrics dt { color: var(--text-2); font-size: 11px; }
+  .overview-metrics dd {
+    margin: 5px 0 0; font-size: 18px; font-weight: 600;
+    font-variant-numeric: tabular-nums; letter-spacing: -.035em;
+  }
+  .cloud-sculpture {
+    position: relative; align-self: center; width: 260px; height: 230px;
+    perspective: 900px; pointer-events: none; contain: layout;
+  }
+  .cloud-stack {
+    position: absolute; inset: 40px 55px;
+    transform-style: preserve-3d;
+    transform: rotateX(12deg) rotateY(-23deg) rotateZ(8deg);
+    transition: transform 700ms var(--ease);
+    animation: cloud-arrive 900ms var(--ease) both;
+  }
+  .cloud-sheet {
+    position: absolute; inset: 0; padding: 17px; border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-med));
+    background: linear-gradient(145deg, var(--bg-2), var(--bg-1));
+    box-shadow: -10px 18px 32px #0002;
+    color: var(--accent);
+    transition: transform 700ms var(--ease);
+  }
+  .cloud-sheet svg { width: 22px; height: 22px; }
+  .cloud-sheet span { display: block; height: 4px; margin-top: 12px; border-radius: 9px; background: var(--accent-border); }
+  .cloud-sheet span:last-child { width: 65%; }
+  .cloud-sheet-back { transform: translate3d(22px, -16px, -48px) rotateZ(12deg); color: var(--accent-2); }
+  .cloud-sheet-middle { transform: translate3d(-12px, -7px, -16px) rotateZ(-12deg); }
+  .cloud-sheet-front { transform: translate3d(0, 14px, 34px); }
+  .cloud-landscape {
+    height: 48px; margin-top: 11px; border-radius: 7px;
+    background: radial-gradient(circle at 72% 28%, var(--accent) 0 9%, transparent 10%),
+      linear-gradient(145deg, transparent 38%, var(--accent-border) 39% 64%, transparent 65%),
+      linear-gradient(35deg, var(--accent-dim) 30%, var(--accent-2) 31% 51%, var(--bg-2) 52%);
+  }
+  .cloud-orbit { position: absolute; inset: 22px 4px; border: 1px solid var(--accent-border); border-radius: 50%; transform: rotate(-25deg); opacity: .6; }
+  .cloud-seal {
+    position: absolute; right: 28px; bottom: 30px; display: grid; place-items: center;
+    width: 40px; height: 40px; border-radius: 14px; color: var(--emerald);
+    background: var(--bg-2); border: 1px solid var(--border-med);
+    box-shadow: var(--shadow-md); transform: rotate(-8deg);
+  }
+  @keyframes cloud-arrive { from { opacity: 0; transform: translateY(18px) rotateX(25deg) rotateY(-40deg) rotateZ(12deg); } to { opacity: 1; } }
+  @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+    .drive-overview:hover .cloud-stack { transform: rotateX(4deg) rotateY(-8deg) rotateZ(3deg); }
+    .drive-overview:hover .cloud-sheet-back { transform: translate3d(32px, -25px, -58px) rotateZ(16deg); }
+    .drive-overview:hover .cloud-sheet-middle { transform: translate3d(-24px, -14px, -20px) rotateZ(-17deg); }
+  }
+  @media (max-width: 720px) {
+    .drive-overview { grid-template-columns: minmax(0, 1fr) 160px; }
+    .overview-copy { padding: 22px; }
+    .cloud-sculpture { transform: scale(.72); transform-origin: left center; }
+    .overview-metrics { padding: 16px 22px; }
+  }
+  @media (max-width: 480px) {
+    .drive-overview { grid-template-columns: minmax(0, 1fr); }
+    .drive-overview .cloud-sculpture {
+      position: absolute; right: -50px; top: 5px;
+      transform: scale(.62); transform-origin: top right; opacity: .16;
+    }
+    .overview-metrics { gap: 10px; }
+    .overview-metrics dd { font-size: 16px; }
+    .overview-copy .btn { min-height: 44px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cloud-stack, .cloud-sheet { animation: none; transition: none; }
+  }
+  [data-reduce-motion="1"] .cloud-stack, [data-reduce-motion="1"] .cloud-sheet { animation: none; transition: none; }
+  [data-reduce-motion="1"] .drive-overview:hover .cloud-stack { transform: rotateX(12deg) rotateY(-23deg) rotateZ(8deg); }
+  [data-reduce-motion="1"] .drive-overview:hover .cloud-sheet-back { transform: translate3d(22px, -16px, -48px) rotateZ(12deg); }
+  [data-reduce-motion="1"] .drive-overview:hover .cloud-sheet-middle { transform: translate3d(-12px, -7px, -16px) rotateZ(-12deg); }
+}

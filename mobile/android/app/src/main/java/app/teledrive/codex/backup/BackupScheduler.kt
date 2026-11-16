@@ -59,6 +59,10 @@ object BackupScheduler {
      */
     @JvmOverloads
     fun schedule(context: Context, prefs: BackupPrefs, replaceExisting: Boolean = true) {
+        if (prefs.transport == "direct") {
+            cancel(context)
+            return
+        }
         // The flex window is a third of the period, so a long interval keeps a
         // sensible amount of slack for the system to batch the wake-up with
         // other work instead of waking the radio on its own.
@@ -158,6 +162,7 @@ object BackupScheduler {
      * it would cancel a file mid-upload to start the same file again.
      */
     fun kickIfIdle(context: Context, prefs: BackupPrefs) {
+        if (prefs.transport == "direct") return
         val now = System.currentTimeMillis()
         // The activity resumes after every permission dialog and task switch;
         // one kick covers a burst of them.

@@ -3,6 +3,7 @@ import localFont from "next/font/local";
 import { Toaster } from "sonner";
 import { ServiceWorkerRegister } from "@/components/sw-register";
 import "./globals.css";
+import "./cloud-overview.css";
 
 // Syne carries the brand voice in headlines; Inter does the reading work; the
 // mono face is reserved for sizes, counts and other metadata.

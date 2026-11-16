@@ -35,7 +35,9 @@ export const FILE_ORIGIN = RAW.trim().replace(/\/+$/, "");
  * immediately and the wake happens while the user is reading it.
  */
 const HEAVY = [
-  /^\/api\/upload(\/(?!check)|$)/,
+  // Direct confirmation is metadata only. Sending it to Render strands a
+  // successfully uploaded file when that host is unreachable on campus Wi-Fi.
+  /^\/api\/upload(\/(?!check(?:\/|$)|direct(?:\/|$))|$)/,
   /^\/api\/download(\/|$)/,
   /^\/api\/stream(\/|$)/,
   /^\/api\/preview(\/|$)/,

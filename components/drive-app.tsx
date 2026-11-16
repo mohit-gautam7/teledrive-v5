@@ -56,6 +56,8 @@ import { cn, formatBytes } from "@/lib/utils";
 import { SPRING, fadeIn, fadeUp, riseFromBottom, transition, useReducedMotion } from "@/lib/motion";
 import { useOrbitOnChange } from "@/lib/motion-3d";
 import { DepthCard } from "@/components/drive/depth-card";
+import { DriveOverview } from "@/components/drive/drive-overview";
+import { nativeDirectBackup } from "@/lib/native-direct-backup";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
 import {
@@ -191,6 +193,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   // running when this tree unmounts (see lib/upload-manager.ts).
   const uploadQueue = useSyncExternalStore(uploads.subscribe, uploads.getSnapshot, uploads.getServerSnapshot);
   const uploading = uploadQueue.some(it => it.status === "uploading" || it.status === "pending");
+  const activelyUploading = uploadQueue.some(it => it.status === "uploading");
+  useEffect(() => {
+    if (!nativeBackupAvailable()) return;
+    void nativeBackup.keepAwake(activelyUploading);
+    return () => { void nativeBackup.keepAwake(false); };
+  }, [activelyUploading]);
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [trayOpen, setTrayOpen] = useState(true);
   const downloadControllers = useRef<Map<string, AbortController>>(new Map());
@@ -484,6 +492,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const refreshLink = useCallback(() => {
     apiFetch<TelegramLink>("/api/telegram/link").then(setLink).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const saved = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { void refresh(); refreshStats(); }, 700);
+    };
+    window.addEventListener("teledrive-direct-backup-saved", saved);
+    return () => { clearTimeout(timer); window.removeEventListener("teledrive-direct-backup-saved", saved); };
+  }, [refresh, refreshStats]);
+
+  useEffect(() => () => nativeDirectBackup.stop(), []);
 
   useEffect(() => {
     refresh();
@@ -1450,6 +1470,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   async function logout() {
     try {
+      nativeDirectBackup.stop();
       uploads.pauseAll();
       if (nativeBackupAvailable()) await nativeBackup.disable();
       await apiFetch("/api/auth/logout", { method: "POST" });
@@ -1994,6 +2015,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               </div>
             ) : null}
           </div>
+
+          {appView === "files" && !folderId && !debouncedQuery && typeFilter === "all" ? (
+            <DriveOverview insights={insights} active={uploadQueue.filter(item => item.status === "uploading" || item.status === "pending").length}
+              onUpload={() => fileInputRef.current?.click()} onSettings={() => selectView("settings")} />
+          ) : null}
 
           {/* Content.
               Deliberately not wrapped in AnimatePresence: the files branch has

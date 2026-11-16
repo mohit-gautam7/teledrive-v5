@@ -43,6 +43,7 @@ const sessionKey = (user: string) => `td:${user}:tg-session:v1`;
 
 let configPromise: Promise<DirectConfig | null> | null = null;
 let clientPromise: Promise<TelegramClient> | null = null;
+let clientUser: string | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 /* ── Stored session ────────────────────────────────────────────────────────── */
@@ -59,8 +60,9 @@ export function storedSession(user: string): string | null {
 function rememberSession(user: string, session: string) {
   try {
     window.localStorage.setItem(sessionKey(user), session);
+    if (storedSession(user) !== session) throw new Error("Session was not saved");
   } catch {
-    /* nothing to do — the next visit simply asks for another scan */
+    throw new DirectUploadUnavailable("This device could not save the Telegram connection. Allow app storage and try again.");
   }
 }
 
@@ -69,6 +71,14 @@ function forgetStoredSession(user: string) {
     window.localStorage.removeItem(sessionKey(user));
   } catch {
     /* already gone as far as anyone can tell */
+  }
+}
+
+function forgetRevokedSession(user: string, error: unknown) {
+  const reason = (error as { errorMessage?: string })?.errorMessage || (error as Error)?.message || "";
+  if (/AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|SESSION_REVOKED|USER_DEACTIVATED/i.test(reason)) {
+    forgetStoredSession(user);
+    if (clientUser === user) forgetDirectSession();
   }
 }
 
@@ -118,9 +128,10 @@ export function forgetDirectSession() {
   configPromise = null;
   const pending = clientPromise;
   clientPromise = null;
+  clientUser = null;
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = null;
-  void pending?.then(client => client.disconnect()).catch(() => {});
+  void pending?.then(retire).catch(() => {});
 }
 
 function touchIdle() {
@@ -129,8 +140,24 @@ function touchIdle() {
     const pending = clientPromise;
     clientPromise = null;
     idleTimer = null;
-    void pending?.then(client => client.disconnect()).catch(() => {});
+    void pending?.then(retire).catch(() => {});
   }, IDLE_DISCONNECT_MS);
+}
+
+/**
+ * Throw a client away for good: destroy(), never disconnect().
+ *
+ * GramJS keeps a ping loop per client that ends only when `_destroyed` is set,
+ * which destroy() does and disconnect() does not. A disconnected client's loop
+ * goes on pinging every 9 seconds, logs `Error: TIMEOUT` when the ping fails,
+ * and then reconnects the socket that was just closed - so every idle timeout
+ * in this tab left a zombie connection to Telegram running until the page
+ * closed, costing battery and data on a phone. Found on the server first
+ * (TeleDrive #51), where the same mistake leaked memory.
+ */
+async function retire(client: TelegramClient | null | undefined): Promise<void> {
+  if (!client) return;
+  await client.destroy().catch(() => {});
 }
 
 /* ── The client ────────────────────────────────────────────────────────────── */
@@ -151,12 +178,15 @@ async function buildClient(session: string, config: DirectConfig): Promise<Teleg
     connectionRetries: 3,
     requestRetries: 3
   });
-  await client.connect();
+  try { await client.connect(); }
+  catch (error) { await retire(client); throw error; }
   return client;
 }
 
 /** Connect once per tab using this browser's own session, and keep the socket. */
 async function connected(user: string): Promise<TelegramClient> {
+  if (clientUser !== null && clientUser !== user) forgetDirectSession();
+  clientUser = user;
   if (!clientPromise) {
     const pending = (async () => {
       const config = await directConfig();
@@ -168,12 +198,13 @@ async function connected(user: string): Promise<TelegramClient> {
         assertDirectAccount(config, (await client.getMe()).id.toString());
         return client;
       } catch (error) {
-        await client.disconnect().catch(() => {});
+        await retire(client);
         throw error;
       }
     })();
     // A failed connect must not stay memoised, or the tab never retries.
-    pending.catch(() => {
+    pending.catch(error => {
+      forgetRevokedSession(user, error);
       if (clientPromise === pending) clientPromise = null;
     });
     clientPromise = pending;
@@ -198,6 +229,7 @@ export function assertDirectAccount(config: DirectConfig, actualUserId: string) 
 /* ── Authorising this browser ──────────────────────────────────────────────── */
 
 export type QrHandlers = {
+  signal?: AbortSignal;
   phoneNumber?: string;
   onCode?: (viaApp?: boolean) => Promise<string>;
   /** Called with each fresh `tg://login?token=…` URL to render as a QR code.
@@ -212,16 +244,21 @@ export async function signInBrowser(
   config: DirectConfig,
   handlers: QrHandlers
 ) {
+  const checkCancelled = () => {
+    if (handlers.signal?.aborted) throw new Error("Login cancelled.");
+  };
+  checkCancelled();
   if (handlers.phoneNumber) {
     return client.signInUser(
       { apiId: config.apiId, apiHash: config.apiHash },
       {
         phoneNumber: handlers.phoneNumber,
         phoneCode: viaApp => {
+          checkCancelled();
           if (!handlers.onCode) throw new Error("A code prompt is required.");
           return handlers.onCode(viaApp);
         },
-        password: hint => handlers.onPassword(hint),
+        password: hint => { checkCancelled(); return handlers.onPassword(hint); },
         firstAndLastNames: async () => { throw new Error("Use an existing Telegram account."); },
         onError: async err => { throw err; }
       }
@@ -231,14 +268,16 @@ export async function signInBrowser(
     { apiId: config.apiId, apiHash: config.apiHash },
     {
       qrCode: async ({ token, expires }) => {
+        checkCancelled();
         const encoded = btoa(String.fromCharCode(...new Uint8Array(token)))
           .replace(/\+/g, "-")
           .replace(/\//g, "_")
           .replace(/=+$/, "");
         handlers.onQr(`tg://login?token=${encoded}`, expires * 1000);
       },
-      password: async hint => handlers.onPassword(hint),
+      password: async hint => { checkCancelled(); return handlers.onPassword(hint); },
       onError: async err => {
+        checkCancelled();
         if (err.message === "Login cancelled.") throw err;
         console.warn("[direct-upload] qr login:", err.message);
         // false = keep trying; the helper reissues an expired token itself.
@@ -260,8 +299,15 @@ export async function linkBrowser(user: string, handlers: QrHandlers): Promise<s
   // Always a fresh, empty session: an authorisation mutates the session in
   // place, so starting from a stale one would authorise over the top of it.
   const client = await buildClient("", config);
+  let cancel: (() => void) | undefined;
   try {
-    const me = await signInBrowser(client, config, handlers);
+    const cancelled = new Promise<never>((_, reject) => {
+      cancel = () => reject(new Error("Login cancelled."));
+      if (handlers.signal?.aborted) cancel();
+      else handlers.signal?.addEventListener("abort", cancel, { once: true });
+    });
+    const me = await Promise.race([signInBrowser(client, config, handlers), cancelled]);
+    if (handlers.signal?.aborted) throw new Error("Login cancelled.");
     if (!("firstName" in me)) throw new Error("Telegram did not return an account.");
     assertDirectAccount(config, me.id.toString());
 
@@ -270,13 +316,24 @@ export async function linkBrowser(user: string, handlers: QrHandlers): Promise<s
     // The next upload reconnects from the stored session rather than reusing
     // this one, which keeps exactly one place that owns the connection.
     forgetDirectSession();
-    await client.disconnect().catch(() => {});
+    await retire(client);
 
     return [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "Telegram";
   } catch (err) {
-    await client.disconnect().catch(() => {});
+    await retire(client);
     throw err;
+  } finally {
+    if (cancel) handlers.signal?.removeEventListener("abort", cancel);
   }
+}
+
+/** Check the saved connection without uploading a file. */
+export async function checkDirectConnection(user: string): Promise<string> {
+  try {
+    const client = await connected(user);
+    const me = await client.getMe();
+    return [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "Telegram";
+  } catch (error) { forgetRevokedSession(user, error); throw error; }
 }
 
 /**
@@ -287,19 +344,22 @@ export async function linkBrowser(user: string, handlers: QrHandlers): Promise<s
  */
 export async function unlinkBrowser(user: string): Promise<void> {
   const session = storedSession(user);
-  const config = await directConfig();
+  const configRequest = directConfig();
   // Clear locally first, so a failure to reach Telegram still leaves the
   // browser unlinked rather than stuck holding a key it cannot drop.
   forgetStoredSession(user);
   forgetDirectSession();
-  if (!session || !config) return;
+  let client: TelegramClient | undefined;
   try {
+    const config = await configRequest;
+    if (!session || !config) return;
     const { Api } = await import("telegram");
-    const client = await buildClient(session, config);
+    client = await buildClient(session, config);
     await client.invoke(new Api.auth.LogOut());
-    await client.disconnect().catch(() => {});
   } catch (err) {
     console.warn("[direct-upload] could not revoke the browser session:", (err as Error)?.message);
+  } finally {
+    await retire(client);
   }
 }
 
@@ -361,11 +421,7 @@ export async function uploadDirect({
     // The stored session has been revoked, from Telegram → Devices or by a
     // second client. Drop it so the UI offers a scan instead of failing every
     // upload from here on.
-    const message = (err as { errorMessage?: string })?.errorMessage || (err as Error)?.message || "";
-    if (/AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|SESSION_REVOKED|USER_DEACTIVATED/i.test(message)) {
-      forgetStoredSession(user);
-      forgetDirectSession();
-    }
+    forgetRevokedSession(user, err);
     throw err;
   }
 }

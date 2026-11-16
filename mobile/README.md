@@ -1,5 +1,59 @@
 # TeleDrive for Android
 
+## Upload and backup update: 1.2.0
+
+Manual uploads use the shared direct Telegram uploader when Direct upload is enabled.
+In Settings, connect this app with a phone code (or QR on another device), then use
+**Test connection** before uploading. QR login can be cancelled without reloading.
+Keep the app open until the transfer is saved; updated builds keep the screen awake
+while a manual upload is active. Pausing or finishing releases that screen flag.
+
+In **Settings > Photo and video backup**, updated Android builds also offer a
+**Backup route** choice:
+
+| Route | Where original bytes go | When it runs |
+| --- | --- | --- |
+| Direct to Telegram | Phone to Telegram; only metadata uses the website | Press **Back up directly now**, keeping the app visible |
+| File server | Phone to the configured file server, then Telegram | Scheduled Android background jobs, including when the app is closed |
+
+Direct album backup reads selected MediaStore files in at most 512 KiB pieces;
+it never loads a whole video into the WebView. It respects the album, media type,
+size, network and charging filters. The phone does not contact Render for this
+backup. The website still needs its database and linked Telegram server session
+to verify and record the uploaded messages.
+
+Hiding the app pauses direct backup at a part boundary. Start it again to
+continue: confirmed files remain saved, while an interrupted file can restart.
+An upload that reached Telegram but lost the website confirmation retains its
+message receipt, so retrying confirmation does not resend the original bytes.
+The direct limit is 2,000 MiB per file (4,000 parts of 512 KiB).
+
+**Re-check selected albums** resets the scan; press **Back up directly now** to
+run it. Changing the source, filters or destination also resets the scan.
+The backup cursor advances only after the drive confirms the file. Switching
+accounts resets that cursor and the old account's destination. Existing Android
+backup uses the server's filename/size/folder duplicate policy, including in
+direct mode; this is not a byte-for-byte integrity comparison.
+
+Automatic background backup is a separate implementation: it still requires the
+configured HTTPS file server and does not implement native background MTProto
+uploads. Selecting direct mode cancels relay scheduling; there is no automatic
+fallback. An absent file server pauses relay backup without falling back to the
+website host. The worker also refuses to complete a truncated local file.
+
+Previews and downloads still use the file server. Use **Connection health** to
+check the current network and **Test connection** to check Telegram separately.
+These checks do not upload a test file.
+
+Both the website update and a newly built APK are needed for the new native
+bridge. The shell loads the deployed website; changing local files alone does
+not update the installed app. See [verification notes](../UPLOAD_REVIEW.md)
+for exactly what was tested and what still needs device validation.
+
+Run `npm test` and `npm run check` from the project root for the web regression
+checks. Android validation still requires the Gradle commands in Building below
+and a device test of upload, download, pause/resume, and background backup.
+
 The website, in a native shell, plus the one thing a website cannot do: **back up new
 photos and videos while the app is closed.**
 
@@ -30,7 +84,7 @@ Android has exactly one API that survives the app being swiped away — **WorkMa
 and it is only reachable from native code. That is the whole reason this directory is here.
 Everything else, the entire UI included, is still the website.
 
-## Backup controls in Android 1.1.0
+## Backup controls in Android 1.2.0
 
 See [Photo and folder backup](../PHOTO_BACKUP.md) for the Wi-Fi/mobile/both/off
 choices, source albums, destination folders, waiting/saved/failed lists and counts.
@@ -47,7 +101,7 @@ Telegram, not the TeleDrive login bot. No QR scan or second device is needed.
 The browser creates its own Telegram session; it does not reuse the server's key.
 QR login remains available when you have another device to scan it with.
 
-## How a run works
+## How a background relay run works
 
 1. **MediaStore** is asked for photos and videos added after the stored watermark.
    Not a folder scan: a phone with 40,000 photos must not re-list all of them every
@@ -128,11 +182,10 @@ adb shell run-as app.teledrive.codex cat shared_prefs/teledrive.backup.xml
 
 ## What it deliberately does not do
 
-- **It does not upload straight to Telegram.** Files go through TeleDrive's server, the
-  same route the website's relay path uses, which means they count against the host's
-  bandwidth. Direct upload needs an MTProto client, and the only mature one for Android is
-  TDLib — a large native dependency for a second implementation of something the browser
-  already does. Worth revisiting; not worth bundling blind.
+- **Direct backup does not continue with the app closed.** The visible app reuses
+  the website's Telegram client. True background direct upload would require a
+  native MTProto client and its own persistent session. The existing background
+  route still consumes file-server bandwidth.
 - **It does not back up anything but the camera by default.** Screenshots, WhatsApp media
   and Telegram's own cache are other people's copies of files, and including them silently
   triples what a user stores. There is a switch for it.
