@@ -37,6 +37,6 @@ assert.equal(uploads,1,'wrong backend must fail before sending bytes');
 backend='mtproto';globalThis.directTest=async()=>{throw new Error('Telegram offline');};
 await assert.rejects(uploadFileInChunks(params),/No file bytes were relayed/);
 assert.ok(requests.every(p=>!p.includes('/chunk/')&&p!=='/api/upload'),'direct errors must never relay');
-assert.ok(requests.every(p=>!p.startsWith('https://relay.invalid')), 'direct upload metadata must not depend on Render');
+assert.ok(requests.every(p=>!/^https?:/.test(p)||new URL(p).host!=='relay.invalid'), 'direct upload metadata must not depend on Render');
 saveDirectReceipt('alice','one',99);assert.equal(readDirectReceipt('bob','one'),null);clearDirectReceipt('alice','one');
 console.log('direct-only: no relay on errors; small file; wrong backend; confirmation retry; account-scoped receipt passed');
