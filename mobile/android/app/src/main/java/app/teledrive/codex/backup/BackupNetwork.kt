@@ -30,8 +30,9 @@ object BackupNetwork {
             else -> false
         }
 
-    fun requireAllowed(context: Context, prefs: BackupPrefs) {
+    fun requireAllowed(context: Context, prefs: BackupPrefs, allowDirect: Boolean = false) {
         if (!prefs.enabled) throw IOException("Automatic backup is off.")
+        if (prefs.transport == "direct" && !allowDirect) throw IOException("Direct backup selected. Open TeleDrive to continue without relaying file bytes.")
         if (!allows(prefs.networkMode, type(context))) throw IOException("Waiting for the selected backup network (${prefs.networkMode}).")
     }
 }

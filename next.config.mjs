@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const dev = process.env.NODE_ENV !== "production";
 
@@ -89,6 +90,8 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  outputFileTracingRoot: fileURLToPath(new URL(".", import.meta.url)),
+  distDir: process.env.NEXT_BUILD_DIR || ".next",
   output: "standalone",
   poweredByHeader: false,
   env: {

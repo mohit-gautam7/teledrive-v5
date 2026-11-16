@@ -72,6 +72,7 @@ export function middleware(request: NextRequest) {
  */
 export const config = {
   matcher: [
+    "/api/network",
     // Listed separately: ":path*" does not match the bare path, and the
     // single-shot small-file upload posts to /api/upload itself.
     "/api/upload",

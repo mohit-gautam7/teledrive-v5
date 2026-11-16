@@ -44,6 +44,49 @@ import com.getcapacitor.annotation.PermissionCallback
     ]
 )
 class BackupPlugin : Plugin() {
+    private val directSession by lazy { DirectBackupSession(context) }
+    private val awakeOwners = mutableSetOf<String>()
+
+    @PluginMethod
+    fun directBegin(call: PluginCall) = directCall(call) {
+        check(hasMediaPermission()) { "Photo and video access is required." }
+        directSession.begin(call.getString("accountId") ?: error("Account is required."))
+    }
+
+    @PluginMethod
+    fun directRead(call: PluginCall) = directCall(call) {
+        directSession.read(call.getString("runId") ?: "", call.getString("id") ?: "",
+            call.getDouble("offset")?.toLong() ?: -1L, call.getInt("length") ?: 0)
+    }
+
+    @PluginMethod
+    fun directAcknowledge(call: PluginCall) = directCall(call) {
+        directSession.acknowledge(call.getString("runId") ?: "", call.getString("id") ?: "")
+    }
+
+    @PluginMethod
+    fun directEnd(call: PluginCall) = directCall(call) { directSession.end(call.getString("runId") ?: "") }
+
+    private fun directCall(call: PluginCall, action: () -> JSObject) {
+        try { call.resolve(action()) } catch (error: Exception) { call.reject(error.message ?: "Direct backup failed.") }
+    }
+
+    override fun handleOnDestroy() {
+        directSession.close()
+        super.handleOnDestroy()
+    }
+
+    @PluginMethod
+    fun keepAwake(call: PluginCall) {
+        val enabled = call.getBoolean("enabled") ?: false
+        val owner = if (call.getString("owner") == "backup") "backup" else "manual"
+        activity.runOnUiThread {
+            if (enabled) awakeOwners.add(owner) else awakeOwners.remove(owner)
+            if (awakeOwners.isNotEmpty()) activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            call.resolve()
+        }
+    }
 
     private val prefs: BackupPrefs by lazy { BackupPrefs(context) }
     private var pendingAt = 0L
@@ -66,7 +109,8 @@ class BackupPlugin : Plugin() {
         call.resolve(
             JSObject()
                 .put("available", true)
-                .put("backupVersion", 2)
+                .put("backupVersion", 3)
+                .put("transport", prefs.transport)
                 .put("networkMode", prefs.networkMode)
                 .put("networkType", BackupNetwork.type(context))
                 .put("enabled", prefs.enabled)
@@ -169,6 +213,10 @@ class BackupPlugin : Plugin() {
             call.reject("Backup is switched off.")
             return
         }
+        if (prefs.transport == "direct") {
+            call.reject("Use Back up directly now and keep TeleDrive open.")
+            return
+        }
         BackupScheduler.runNow(context, prefs)
         status(call)
     }
@@ -238,18 +286,24 @@ class BackupPlugin : Plugin() {
 
     @PluginMethod
     fun rescanAll(call: PluginCall) {
+        pendingAt = 0L
         prefs.resetWatermark()
-        if (prefs.enabled) BackupScheduler.runNow(context, prefs)
+        if (prefs.enabled && prefs.transport != "direct") BackupScheduler.runNow(context, prefs)
         status(call)
     }
 
     @PluginMethod
     fun setOptions(call: PluginCall) {
         pendingAt = 0L
+        call.getString("transport")?.let {
+            if (it !in listOf("direct", "relay")) { call.reject("Unknown backup transport."); return }
+            prefs.transport = it
+        }
         val oldAlbums = prefs.albums
         val oldPhotos = prefs.includePhotos
         val oldVideos = prefs.includeVideos
         val oldSize = prefs.maxFileSizeMb
+        val oldFolder = prefs.folderId
         call.getString("networkMode")?.let {
             if (it !in listOf("wifi", "mobile", "both")) { call.reject("Unknown backup network choice."); return }
             prefs.networkMode = it
@@ -269,7 +323,7 @@ class BackupPlugin : Plugin() {
             if (chosen.isNotEmpty()) prefs.albums = chosen.toSet()
         }
         if (call.data.has("folderId")) prefs.folderId = call.getString("folderId")
-        if (oldAlbums != prefs.albums || oldPhotos != prefs.includePhotos || oldVideos != prefs.includeVideos || oldSize != prefs.maxFileSizeMb) {
+        if (oldAlbums != prefs.albums || oldPhotos != prefs.includePhotos || oldVideos != prefs.includeVideos || oldSize != prefs.maxFileSizeMb || oldFolder != prefs.folderId) {
             prefs.resetWatermark()
         }
         // Constraints are baked into the enqueued work, so a changed setting

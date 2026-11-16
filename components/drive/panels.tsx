@@ -57,8 +57,10 @@ import {
 } from "@/lib/preferences";
 import { DURATION, EASE, fadeUp, stagger, useReducedMotion } from "@/lib/motion";
 import { EmptyState } from "./bits";
-import { browserLinked, forgetDirectSession, linkBrowser, unlinkBrowser } from "@/lib/direct-upload";
+import { browserLinked, checkDirectConnection, forgetDirectSession, linkBrowser, unlinkBrowser } from "@/lib/direct-upload";
 import { BackupDestination, BackupFiles, BackupNetworkSelect } from "./backup-controls";
+import { DirectBackupControls } from "./direct-backup-controls";
+import { NetworkDiagnostics } from "./network-diagnostics";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
 // ── Shared view ─────────────────────────────────────────────────────────────
@@ -511,18 +513,18 @@ function NativeBackupCard({user}: {user: string}) {
   return (
     <section className="panel p-5">
       <div className="flex items-start justify-between gap-3">
-        <h2 className="display t-h2">Automatic backup</h2>
+        <h2 className="display t-h2">Photo and video backup</h2>
         <button
           onClick={() =>
             void applyResult(
               status?.enabled ? nativeBackup.disable : nativeBackup.enable,
-              status?.enabled ? "Automatic backup is off." : "Automatic backup is on."
+              status?.enabled ? "Backup is off." : "Backup is on."
             )
           }
           disabled={busy || !status || (!status.enabled && (status.backupVersion ?? 0) < 2)}
           role="switch"
           aria-checked={status?.enabled ?? false}
-          aria-label="Automatic backup"
+          aria-label="Photo and video backup"
           className={status?.enabled ? "btn btn-accent" : "btn btn-ghost"}
           style={{ minHeight: 34, fontSize: 12 }}
         >
@@ -538,10 +540,15 @@ function NativeBackupCard({user}: {user: string}) {
       </div>
 
       <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        New photos and videos are saved to TeleDrive on their own, every couple of hours, whether or not this app is
-        open. They go into <strong>{status?.folderName || "Camera backup"}</strong>, not loose in your drive. Nothing is
-        uploaded twice &mdash; each one is checked against your drive first.
+        Save selected photos and videos into <strong>{status?.folderName || "Camera backup"}</strong>.
+        Choose direct backup while the app is open, or scheduled background backup through your file server.
+        Existing files are checked before saving another copy.
       </p>
+      {status ? <DirectBackupControls user={user} status={status} busy={busy}
+      onRescan={() => { void applyResult(nativeBackup.rescanAll, "Selected albums will be checked again when you start direct backup."); }}
+      onTransport={transport => {
+        void applyResult(() => nativeBackup.setOptions({ transport }), "Backup route updated.");
+      }} /> : null}
 
       {status ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -769,7 +776,7 @@ function NativeBackupCard({user}: {user: string}) {
               />
               Only while charging
             </label>
-            <div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
+            {status.transport !== "direct" ? <><div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
               <span>Check for new photos every</span>
               <select
                 value={status.intervalHours}
@@ -789,6 +796,7 @@ function NativeBackupCard({user}: {user: string}) {
             <p className="t-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
               Android decides the exact moment &mdash; it batches work to save battery, so a run can arrive late.
             </p>
+            </> : <p className="t-xs" style={{ color: "var(--text-2)" }}>Start a direct backup above and keep TeleDrive visible until it finishes.</p>}
           </div>
 
           {/* ── Where it lands ─────────────────────────────────────────── */}
@@ -802,7 +810,7 @@ function NativeBackupCard({user}: {user: string}) {
         </div>
       ) : null}
 
-      {status?.enabled ? (
+      {status?.enabled && status.transport !== "direct" ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             onClick={() => void applyResult(nativeBackup.runNow, "Looking for new photos now.")}
@@ -994,6 +1002,8 @@ function PhoneBackupCard({ user, onBackupNow, scanning }: {
  * in Telegram under Settings - Devices like any other, to revoke whenever.
  */
 function DirectUploadCard({ user }: { user: string }) {
+  const loginController = useRef<AbortController | null>(null);
+  const device = nativeBackupAvailable() ? "app" : "browser";
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [linked, setLinked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1008,7 +1018,10 @@ function DirectUploadCard({ user }: { user: string }) {
   const [password, setPassword] = useState("");
   const passwordResolve = useRef<((value: string) => void) | null>(null);
 
-  useEffect(() => () => { inputReject.current?.(new Error("Login cancelled.")); }, []);
+  useEffect(() => () => {
+    loginController.current?.abort();
+    inputReject.current?.(new Error("Login cancelled."));
+  }, []);
 
   useEffect(() => {
     setLinked(browserLinked(user));
@@ -1030,6 +1043,8 @@ function DirectUploadCard({ user }: { user: string }) {
   async function toggle(next: boolean) {
     setBusy(true);
     try {
+      // Revoke while the endpoint still returns the app credentials.
+      if (!next) await unlinkBrowser(user);
       await apiFetch("/api/telegram/direct-session", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1040,13 +1055,13 @@ function DirectUploadCard({ user }: { user: string }) {
       if (!next) {
         // Switching the account off should not leave an authorised Telegram
         // device behind on a browser that can no longer use it.
-        await unlinkBrowser(user);
         setLinked(false);
       }
       toast.success(next ? "Direct upload is on for this account." : "Direct upload is off.");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not change that setting.");
     } finally {
+      setLinked(browserLinked(user));
       setBusy(false);
     }
   }
@@ -1058,8 +1073,11 @@ function DirectUploadCard({ user }: { user: string }) {
     }
     setBusy(true);
     setQr(null);
+    const controller = new AbortController();
+    loginController.current = controller;
     try {
       const name = await linkBrowser(user, {
+        signal: controller.signal,
         phoneNumber: withPhone ? phone.trim() : undefined,
         onCode: viaApp => new Promise<string>((resolve, reject) => {
           inputReject.current = reject;
@@ -1077,7 +1095,7 @@ function DirectUploadCard({ user }: { user: string }) {
           })
       });
       setLinked(true);
-      toast.success("This browser is connected as " + name + ".");
+      toast.success(`This ${device} is connected as ${name}.`);
     } catch (err) {
       toast.error((err as Error)?.message || "Could not connect this browser to Telegram.");
     } finally {
@@ -1091,6 +1109,7 @@ function DirectUploadCard({ user }: { user: string }) {
       codeResolve.current = null;
       inputReject.current = null;
       passwordResolve.current = null;
+      loginController.current = null;
     }
   }
 
@@ -1126,6 +1145,10 @@ function DirectUploadCard({ user }: { user: string }) {
         While this is on, all manual uploads use your linked account and file bytes bypass the host.
         If direct upload fails, the queue stops that file rather than silently relaying it.
       </p>
+      {device === "app" ? <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
+        Direct uploads work while this app is open. Keep it open until Transfers shows the file as saved.
+        Updated Android builds keep the screen awake during uploads. Choose Direct to Telegram under Photo and video backup for direct album backups while the app is open.
+      </p> : null}
 
       {enabled ? (
         <div className="mt-4">
@@ -1135,7 +1158,7 @@ function DirectUploadCard({ user }: { user: string }) {
                 className="chip"
                 style={{ color: "var(--emerald)", background: "rgba(52,211,153,0.1)", borderColor: "rgba(52,211,153,0.28)" }}
               >
-                <Check className="h-3.5 w-3.5" /> This browser is connected
+                <Check className="h-3.5 w-3.5" /> This {device} is connected
               </span>
               <button
                 onClick={() => void disconnect()}
@@ -1143,8 +1166,14 @@ function DirectUploadCard({ user }: { user: string }) {
                 className="btn btn-ghost"
                 style={{ minHeight: 34, fontSize: 12 }}
               >
-                <Unlink className="h-3.5 w-3.5" /> Disconnect this browser
+                <Unlink className="h-3.5 w-3.5" /> Disconnect this {device}
               </button>
+              <button className="btn btn-ghost" disabled={busy} onClick={async () => {
+                setBusy(true);
+                try { toast.success(`Telegram connection works: ${await checkDirectConnection(user)}.`); }
+                catch (error) { toast.error((error as Error).message || "Could not connect to Telegram."); }
+                finally { setLinked(browserLinked(user)); setBusy(false); }
+              }}>Test connection</button>
             </div>
           ) : codeDelivery ? (
             <form onSubmit={event => {
@@ -1194,7 +1223,10 @@ function DirectUploadCard({ user }: { user: string }) {
                 On your phone: <strong>Telegram &rarr; Settings &rarr; Devices &rarr; Link Desktop Device</strong>,
                 then scan this. The code refreshes itself every few seconds, which is normal.
               </p>
-              <p className="t-xs">Using just this phone? Reload Settings and choose “Sign in on this phone” instead.</p>
+              <button className="btn btn-ghost" onClick={() => {
+                loginController.current?.abort();
+                setPhoneMode(true);
+              }}>Cancel QR and use phone number</button>
             </div>
           ) : phoneMode ? (
             <form onSubmit={event => { event.preventDefault(); void connect(true); }} className="flex flex-wrap items-center gap-2">
@@ -1396,6 +1428,7 @@ export function SettingsPanel({
       <TelegramLinkCard link={link} onChanged={onLinkChanged} />
 
       <DirectUploadCard user={backupUser} />
+      <NetworkDiagnostics user={backupUser} />
       <NativeBackupCard user={backupUser} />
       <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
 

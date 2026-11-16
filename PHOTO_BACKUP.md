@@ -2,17 +2,33 @@
 
 Open **Settings** in [TeleDrive](https://teledrive-codex.vercel.app).
 
-## Android app: automatic photo/video backup
+## Android app: photo and video backup
 
-Android app 1.1.0 adds these controls. Existing sign-in and backup settings are preserved when updating the APK.
+Android app 1.2.0 adds a direct route alongside the existing background route.
+Update the APK using the same signing key. Existing sign-in and backup settings
+are preserved; the first run verifies old unbound scan progress against the drive.
 
-1. Under **Automatic backup**, select the source albums. Photos, videos and the size limit can be configured while backup is off.
+Under **Backup route**, choose **Direct to Telegram** to avoid relaying original
+files through the file server. Connect Telegram in **Direct upload**, then press
+**Back up directly now** and keep the app visible. Hiding it pauses the run.
+This route uses small Vercel metadata requests and bounded native file reads,
+supports files up to 2,000 MiB, and never silently falls back to a relay.
+**Re-check selected albums** includes old media on the next direct run.
+
+Choose **File server** for scheduled backup with the app closed. The following
+schedule and **Back up now** controls apply to that background route.
+
+1. Under **Photo and video backup**, select the source albums. Photos, videos and the size limit can be configured while backup is off.
 2. Under **Save backups into**, choose a TeleDrive folder. Nested paths are shown in full. **New destination folder** creates a folder under the selected folder, or at the drive root if no destination exists yet.
 3. Choose **Wi-Fi only**, **Mobile data only**, or **Wi-Fi and mobile data**. **No backup — off** stops automatic backup without deleting saved files.
 4. Optionally require charging and select a check interval. Android decides the exact time, so a scheduled run can arrive late.
 5. **Back up now** starts a run with these same network rules. Only Wi-Fi really means Wi-Fi transport; metered/unmetered classifications are not substituted for connection type. Both permits other online connections too.
 
-Changing source albums or media filters re-checks the selected source, including older files. Existing duplicates are skipped. Changing the destination applies to new runs; **Re-check everything** is the explicit way to copy old source files into a new destination. Selected Android albums are combined in that destination.
+Changing source albums, media filters or the destination re-checks the selected
+source, including older files. Existing duplicates are skipped using the native
+backup's filename/size/folder matching policy. Selected Android albums are
+combined in that destination. Switching accounts resets the scan and destination
+so the previous account's progress cannot hide unbacked-up media.
 
 ### See what is happening
 
@@ -24,7 +40,10 @@ Changing source albums or media filters re-checks the selected source, including
 - **Recent activity** retains the latest 200 file results on this device, including failures and their reasons. **Failed files** filters the latest failed results. History starts with this update; earlier saved files are visible in the destination list.
 - Use **Refresh list**, **Next 50** and **Previous** to browse without downloading file contents.
 
-Background file bytes go to the configured file server. If it is unavailable, backup waits; it does not fall back to Vercel. Authentication and metadata still use the website. Render/Telegram/network limits still apply. This is separate from browser-direct MTProto upload.
+Background relay file bytes go to the configured file server. If it is unavailable,
+backup waits; it does not fall back to Vercel. Authentication and metadata still
+use the website. Render/Telegram/network limits still apply. Direct album backup
+is the visible-app alternative and does not need phone-to-Render access.
 
 ## Website: source-folder backup while the page is open
 
