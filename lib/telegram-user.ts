@@ -64,6 +64,24 @@ function silenceBackgroundErrors(client: TelegramClient) {
   }
 }
 
+/**
+ * Throw a client away for good: destroy(), never disconnect().
+ *
+ * GramJS runs a background loop per client that pings every 9 seconds, and it
+ * stops only when `_destroyed` is set — which destroy() does and disconnect()
+ * does not. A merely disconnected client's loop keeps going: each ping fails
+ * after three 10-second attempts, it logs `Error: TIMEOUT`, and then it calls
+ * `reconnect()` on the socket that was just closed. Every client the idle
+ * reaper "disconnected" therefore came back as a zombie that logged a TIMEOUT
+ * every 39 seconds for the life of the process and kept its socket and buffers
+ * alive — measured on Render as that exact 39-second cadence, with memory
+ * climbing to 477 MB of the free plan's 512 MB.
+ */
+async function retire(client: TelegramClient | null | undefined): Promise<void> {
+  if (!client) return;
+  await client.destroy().catch(() => {});
+}
+
 /** Reject if a call outlives `ms`, so one stuck invoke cannot hold a request. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -131,7 +149,7 @@ function startReaper() {
       const client = clients.get(session);
       clients.delete(session);
       lastUsed.delete(session);
-      void client?.disconnect().catch(() => {});
+      void retire(client);
     }
     if (!clients.size && reaper) {
       clearInterval(reaper);
@@ -155,7 +173,7 @@ export function forgetSession(sessionString: string) {
   const cached = clients.get(sessionString);
   clients.delete(sessionString);
   lastUsed.delete(sessionString);
-  void cached?.disconnect().catch(() => {});
+  void retire(cached);
 }
 
 /** Run `fn` against a client built from `sessionString` (empty string = fresh). */
@@ -187,7 +205,7 @@ export async function startQrLogin(): Promise<QrStart> {
   } finally {
     // Uncached client — the auth key lives on in the saved session string, so
     // releasing the socket here costs nothing and avoids leaking one per start.
-    await client.disconnect().catch(() => {});
+    await retire(client);
   }
 }
 
@@ -495,7 +513,7 @@ export async function startPhoneLogin(
       delivery
     };
   } finally {
-    await client.disconnect().catch(() => {});
+    await retire(client);
   }
 }
 
