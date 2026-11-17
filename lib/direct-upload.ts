@@ -363,6 +363,43 @@ export async function unlinkBrowser(user: string): Promise<void> {
   }
 }
 
+/* ── The download ──────────────────────────────────────────────────────────── */
+
+/**
+ * Read a file stored in the user's own Saved Messages straight from Telegram.
+ *
+ * Only `backend: "mtproto"` files qualify: their message id belongs to the
+ * user's account, the same account this browser is signed into. Bot-stored
+ * chunks live in the bot's chat under the bot's message ids and file ids,
+ * which a user client cannot address, so those still come through the server.
+ */
+export async function* downloadDirect(user: string, messageId: number, signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+  const client = await connected(user);
+  const { Api } = await import("telegram");
+  try {
+    const [message] = await client.getMessages("me", { ids: [messageId] });
+    const media = message?.media;
+    if (!(media instanceof Api.MessageMediaDocument) || !(media.document instanceof Api.Document)) {
+      throw new DirectUploadUnavailable("This file is no longer in your Telegram Saved Messages.");
+    }
+    const doc = media.document;
+    const parts = client.iterDownload({
+      file: new Api.InputDocumentFileLocation({ id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: "" }),
+      requestSize: 512 * 1024,
+      fileSize: doc.size,
+      dcId: doc.dcId
+    });
+    for await (const part of parts) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      touchIdle();
+      yield new Uint8Array(part as Uint8Array);
+    }
+  } catch (err) {
+    forgetRevokedSession(user, err);
+    throw err;
+  }
+}
+
 /* ── The upload ────────────────────────────────────────────────────────────── */
 
 /**

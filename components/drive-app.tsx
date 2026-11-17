@@ -912,7 +912,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    * disk it does; otherwise very large files go back to a plain browser download
    * and the row says so instead of inventing a percentage.
    */
-  const startDownload = useCallback(async (file: { id: string; originalName: string; size: number }) => {
+  const startDownload = useCallback(async (file: { id: string; originalName: string; size: number; backend?: string; telegramMessageId?: string | null }) => {
     const id = `dl-${file.id}-${Date.now()}`;
     const controller = new AbortController();
     downloadControllers.current.set(id, controller);
@@ -940,6 +940,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         filename: file.originalName,
         sizeHint: file.size,
         signal: controller.signal,
+        direct: file.backend === "mtproto" && file.telegramMessageId ? { user: cacheUser, messageId: Number(file.telegramMessageId) } : undefined,
         onProgress: ({ loaded, total }) => {
           const rate = sampleRate(samples, loaded, total || file.size);
           setDownloads(list => list.map(d => (d.id === id ? { ...d, ...rate, size: total || d.size } : d)));
@@ -966,7 +967,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     } finally {
       downloadControllers.current.delete(id);
     }
-  }, []);
+  }, [cacheUser]);
 
   /**
    * Download a selection of folders and/or files as one archive.
@@ -2399,6 +2400,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             onClose={() => setPreviewFile(null)}
             onNavigate={setPreviewFile}
             onDownload={target => void startDownload(target)}
+            directUser={cacheUser}
           />
         ) : null}
       </AnimatePresence>

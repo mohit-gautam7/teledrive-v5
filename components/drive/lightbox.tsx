@@ -26,6 +26,38 @@ const isImage = (f: DriveFile) =>
 const isVideo = (f: DriveFile) => f.mimeType.startsWith("video/");
 const isAudio = (f: DriveFile) => f.mimeType.startsWith("audio/");
 
+/** Above this a preview is streamed by the file server, which can seek. */
+const DIRECT_PREVIEW_LIMIT = 64 * 1024 * 1024;
+
+/**
+ * A blob URL for a file read straight from the user's own Telegram, or
+ * "pending" while it loads, or null when the file server must serve it.
+ * Waiting rather than racing keeps the file server out of it entirely.
+ */
+function useDirectPreview(file: DriveFile, user: string | undefined, wanted: boolean) {
+  const eligible = Boolean(wanted && user && file.backend === "mtproto" && file.telegramMessageId && file.size <= DIRECT_PREVIEW_LIMIT);
+  const [state, setState] = useState<{ id: string; url: string | null } | null>(null);
+  useEffect(() => {
+    if (!eligible || !user) return;
+    const abort = new AbortController();
+    let blobUrl: string | null = null;
+    (async () => {
+      const { browserLinked, downloadDirect } = await import("@/lib/direct-upload");
+      if (!browserLinked(user)) throw new Error("not linked");
+      const parts: Uint8Array[] = [];
+      for await (const part of downloadDirect(user, Number(file.telegramMessageId), abort.signal)) parts.push(part);
+      blobUrl = URL.createObjectURL(new Blob(parts as BlobPart[], { type: file.mimeType }));
+      if (!abort.signal.aborted) setState({ id: file.id, url: blobUrl });
+    })().catch(() => { if (!abort.signal.aborted) setState({ id: file.id, url: null }); });
+    return () => {
+      abort.abort();
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [eligible, user, file.id, file.telegramMessageId, file.mimeType]);
+  if (!eligible) return null;
+  return state?.id === file.id ? state.url : "pending";
+}
+
 /** Shown when a file can't be rendered inline — always offers the download. */
 function Unsupported({
   icon,
@@ -322,7 +354,8 @@ export function Lightbox({
   allFiles,
   onClose,
   onNavigate,
-  onDownload
+  onDownload,
+  directUser
 }: {
   file: DriveFile;
   allFiles: DriveFile[];
@@ -330,6 +363,8 @@ export function Lightbox({
   onNavigate: (file: DriveFile) => void;
   /** Routed through the app so the transfer joins the panel with the rest. */
   onDownload: (file: DriveFile) => void;
+  /** Whose browser Telegram session may read previews directly. */
+  directUser?: string;
 }) {
   const reduceMotion = useReducedMotion();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -393,10 +428,9 @@ export function Lightbox({
   const audio = isAudio(file);
   // Images come from /api/preview (cacheable); anything time-based streams from
   // /api/stream, which serves HTTP ranges so the player can seek.
-  const src = useAssetUrl(image ? `/api/preview/${file.id}` : video || audio ? `/api/stream/${file.id}` : "");
-  // An <a download> is fetched by the browser, not by the app, so the token has
-  // to be in the URL rather than a header. Same-origin this is the bare path.
-  const downloadHref = useAssetUrl(`/api/download/${file.id}`);
+  const direct = useDirectPreview(file, directUser, image || video || audio);
+  const serverSrc = useAssetUrl(direct === null && (image || video || audio) ? (image ? `/api/preview/${file.id}` : `/api/stream/${file.id}`) : "");
+  const src = direct === "pending" ? "" : direct ?? serverSrc;
   const Icon = image ? ImageIcon : video ? VideoIcon : audio ? Music : FileIcon;
 
   return (
@@ -423,10 +457,10 @@ export function Lightbox({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <a href={downloadHref} className="btn btn-accent" aria-label="Download">
+          <button onClick={() => onDownload(file)} className="btn btn-accent" aria-label="Download">
             <Download className="h-4 w-4" />
             <span className="hidden sm:inline">Download</span>
-          </a>
+          </button>
           <button onClick={toggleFullscreen} className="icon-btn" aria-label="Toggle fullscreen" title="Fullscreen (F)">
             {fullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
           </button>

@@ -63,7 +63,8 @@ export async function downloadWithProgress({
   sizeHint,
   init,
   signal,
-  onProgress
+  onProgress,
+  direct
 }: {
   url: string;
   filename: string;
@@ -73,6 +74,9 @@ export async function downloadWithProgress({
   init?: Pick<RequestInit, "method" | "body" | "headers">;
   signal?: AbortSignal;
   onProgress: (progress: DownloadProgress) => void;
+  /** Read from Telegram in this browser instead of the file server, when the
+   *  file is in the user's own account and this browser is connected. */
+  direct?: { user: string; messageId: number };
 }): Promise<DownloadOutcome> {
   const streaming = canStreamToDisk();
 
@@ -96,31 +100,52 @@ export async function downloadWithProgress({
   }
 
   try {
-    const target = apiUrl(url);
-    const auth = target === url ? {} : await fileAuthHeaders();
-    const response = await fetch(target, {
-      ...init,
-      signal,
-      headers: { ...((init?.headers as Record<string, string>) ?? {}), ...auth }
-    });
-    if (!response.ok || !response.body) {
-      const body = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error || `Download failed (HTTP ${response.status}).`);
-    }
-
-    const declared = Number(response.headers.get("content-length")) || 0;
-    const total = declared || sizeHint || 0;
-    const reader = response.body.getReader();
     const parts: Uint8Array[] = [];
     let loaded = 0;
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (writable) await writable.write(value);
-      else parts.push(value);
-      loaded += value.byteLength;
+    const collect = async (chunk: Uint8Array, total: number) => {
+      if (writable) await writable.write(chunk as Uint8Array<ArrayBuffer>);
+      else parts.push(chunk);
+      loaded += chunk.byteLength;
       onProgress({ loaded, total });
+    };
+
+    let viaTelegram = false;
+    if (direct) {
+      const { browserLinked, downloadDirect } = await import("@/lib/direct-upload");
+      if (browserLinked(direct.user)) {
+        try {
+          for await (const chunk of downloadDirect(direct.user, direct.messageId, signal)) await collect(chunk, sizeHint ?? 0);
+          viaTelegram = true;
+        } catch (error) {
+          // Nothing written yet: the file server can still deliver it. Part-way
+          // through, a restart would duplicate bytes in the open file.
+          if (loaded > 0 || signal?.aborted) throw error;
+          console.warn("[download] direct read failed, using the file server:", (error as Error)?.message);
+        }
+      }
+    }
+
+    if (!viaTelegram) {
+      const target = apiUrl(url);
+      const auth = target === url ? {} : await fileAuthHeaders();
+      const response = await fetch(target, {
+        ...init,
+        signal,
+        headers: { ...((init?.headers as Record<string, string>) ?? {}), ...auth }
+      });
+      if (!response.ok || !response.body) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || `Download failed (HTTP ${response.status}).`);
+      }
+
+      const declared = Number(response.headers.get("content-length")) || 0;
+      const total = declared || sizeHint || 0;
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await collect(value, total);
+      }
     }
 
     if (writable) {
