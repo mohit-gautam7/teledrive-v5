@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { StorageMode } from "@prisma/client";
 import { fetchBotFile } from "@/lib/telegram-bot";
 import { downloadChunkFromTelegram, legacySessionAvailable } from "@/lib/telegram";
-import { downloadRange } from "@/lib/telegram-user";
+import { downloadRange, isKnownDeadSession } from "@/lib/telegram-user";
+import { dropIfDead } from "@/lib/mtproto-session";
 import { decryptSecret } from "@/lib/crypto";
 import { BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
 
@@ -253,6 +254,16 @@ export function unreachableReason(file: StreamableFile): string | null {
       return `This file was stored in ${Math.round(oversized.chunkSize / (1024 * 1024))} MB pieces, and Telegram will not let a bot download a piece larger than 20 MB. Re-upload it to store it in smaller pieces.`;
     }
     return null;
+  }
+
+  if (file.backend === "mtproto") {
+    const encrypted = file.user?.storageConfig?.mtprotoSession;
+    const session = decryptSecret(encrypted);
+    if (!session) return "Your Telegram account is not linked. Link it again in Upload & backup to open this file.";
+    if (isKnownDeadSession(session)) {
+      void dropIfDead(encrypted).catch(() => {});
+      return "Telegram signed TeleDrive out of your account. Link it again in Upload & backup to open this file.";
+    }
   }
 
   if (file.backend !== "mtproto" && file.storageMode === StorageMode.BOT && totalSize > BOT_DOWNLOAD_LIMIT) {

@@ -4,6 +4,7 @@ import { StringSession } from "telegram/sessions";
 import { computeCheck } from "telegram/Password";
 import { requireEnv } from "@/lib/env";
 import { MTPROTO_PART_SIZE } from "@/lib/upload-config";
+import { isDeadSession } from "@/lib/mtproto-errors";
 
 /**
  * Per-user MTProto ("personal session") access.
@@ -119,6 +120,20 @@ async function connect(sessionString: string): Promise<TelegramClient> {
 
   const client = build(sessionString);
   silenceBackgroundErrors(client);
+  // Remember a session Telegram has revoked, so lib/mtproto-session can drop it
+  // and the drive stops treating the account as linked.
+  const invoke = client.invoke.bind(client);
+  client.invoke = (async (...args: Parameters<typeof invoke>) => {
+    try {
+      return await invoke(...args);
+    } catch (error) {
+      if (isDeadSession(error)) {
+        deadSessions.add(sessionString);
+        forgetSession(sessionString);
+      }
+      throw error;
+    }
+  }) as typeof client.invoke;
   await client.connect();
   clients.set(sessionString, client);
   lastUsed.set(sessionString, Date.now());
@@ -166,6 +181,12 @@ async function connectFresh(): Promise<TelegramClient> {
   silenceBackgroundErrors(client);
   await client.connect();
   return client;
+}
+
+/** Sessions Telegram has rejected in this process. */
+const deadSessions = new Set<string>();
+export function isKnownDeadSession(sessionString: string) {
+  return deadSessions.has(sessionString);
 }
 
 /** Drop a session's cached socket — used when Telegram tells us it is dead. */
