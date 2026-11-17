@@ -2042,15 +2042,13 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             <motion.div initial={fadeUp(reduceMotion).initial} animate={{ opacity: 1, y: 0 }} transition={transition}>
               {appView === "transfers" ? (
                 <TransfersPanel
-                  link={link}
-                  onLinkChanged={refreshLink}
                   backupUser={cacheUser}
                   onBackupNow={backupNow}
                   backupScanning={backupScanning}
                   onUpload={() => fileInputRef.current?.click()}
                 />
               ) : appView === "settings" ? (
-                <SettingsPanel />
+                <SettingsPanel link={link} onLinkChanged={refreshLink} user={cacheUser} />
               ) : appView === "about" ? (
                 <AboutPanel maxBytes={maxBytes} />
               ) : appView === "shared" ? (

@@ -131,9 +131,26 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             return Result.retry()
         }
 
+        // Albums with a folder of their own. Without the folder list we cannot
+        // tell a live choice from a deleted one, and guessing would put photos
+        // in the wrong place, so a failed lookup retries the whole run.
+        val overrides = prefs.albumFolders
+        val existing = if (overrides.isEmpty()) emptySet() else try {
+            client.folderIds()
+        } catch (error: Throwable) {
+            Log.w(TAG, "could not check album destinations", error)
+            return Result.retry()
+        }
+        fun destinationOf(item: MediaItem) = overrides[item.relativePath]?.takeIf { it in existing } ?: folderId
+
         setForegroundSafely(0, pending.size)
 
-        val already = runCatching { client.findExisting(pending, folderId) }.getOrDefault(emptySet())
+        // Duplicates are checked per destination, since each album may land elsewhere.
+        val already = mutableSetOf<Int>()
+        pending.withIndex().groupBy { destinationOf(it.value) }.forEach { (destination, group) ->
+            runCatching { client.findExisting(group.map { it.value }, destination) }.getOrDefault(emptySet())
+                .forEach { already.add(group[it].index) }
+        }
         var stored = 0
         var skipped = 0
         var setAside = 0
@@ -168,7 +185,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 BackupNetwork.requireAllowed(applicationContext, prefs)
                 prefs.recordActivity(item, "uploading", accountId = accountId)
                 prefs.beginItem(item.name, index + 1, pending.size, item.size)
-                client.upload(item, folderId) { sent ->
+                client.upload(item, destinationOf(item)) { sent ->
                     if (prefs.sourceRevision != revision) throw SourceChanged()
                     prefs.currentSent = sent
                     // Per chunk, not per file: a video that takes longer than

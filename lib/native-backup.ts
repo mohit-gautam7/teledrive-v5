@@ -43,6 +43,8 @@ export type NativeBackupStatus = {
   /** Hours between scheduled runs. */
   intervalHours: number;
   folderId: string | null;
+  /** Album path → its own destination folder. Albums not listed use folderId. */
+  albumFolders?: Record<string, string>;
   /** The destination folder's name, so the card can show it without a lookup. */
   folderName: string;
   /** The file being uploaded right now, or "" between files. */
@@ -74,6 +76,8 @@ export type NativeBackupOptions = {
   intervalHours?: number;
   folderId?: string | null;
   folderName?: string;
+  /** Replaces the whole album → folder map. */
+  albumFolders?: Record<string, string>;
 };
 
 /** One folder on the phone that holds photos or videos. */

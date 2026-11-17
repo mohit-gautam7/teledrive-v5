@@ -84,7 +84,7 @@ export const nativeDirectBackup = {
             return response.data;
           });
           try {
-            await uploadFileInChunks({ file, user, folderId: batch.folderId, directOnly: true,
+            await uploadFileInChunks({ file, user, folderId: media.folderId || batch.folderId, directOnly: true,
               signal: active.signal, beforeSend, onProgress: sent => publish({ sent }) });
           } catch (error) {
             if (!(error instanceof DuplicateFileError)) throw error;
