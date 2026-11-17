@@ -42,7 +42,7 @@ function Segment<T extends string | number>({ value, options, onChange, disabled
     <div className="flex flex-wrap gap-1 rounded-xl p-1" style={{ background: "var(--surface)" }}>
       {options.map(o => (
         <button key={String(o.value)} disabled={disabled} onClick={() => onChange(o.value)} aria-pressed={value === o.value}
-                className="t-sm flex min-h-[36px] flex-1 items-center justify-center gap-1.5 rounded-lg px-3 font-semibold transition disabled:opacity-50"
+                className="t-xs flex min-h-[36px] flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 font-semibold transition disabled:opacity-50"
                 style={value === o.value ? { background: "var(--surface-hi)", color: "var(--text-1)" } : { color: "var(--text-3)" }}>
           {o.icon ? <o.icon className="h-4 w-4" /> : null}{o.label}
         </button>
@@ -176,8 +176,8 @@ export function PhotoBackupHub({ user }: { user: string }) {
             </span>
             <div className="min-w-0 flex-1">
               <p className="eyebrow">Photo &amp; video backup</p>
-              <h2 className="display t-h2 truncate">{stateLook.title}</h2>
-              <p className="t-xs truncate" style={{ color: "var(--text-3)" }}>{stateLook.sub}</p>
+              <h2 className="display text-xl leading-tight" style={{ color: "var(--text-1)" }}>{stateLook.title}</h2>
+              <p className="t-xs mt-0.5 line-clamp-2" style={{ color: "var(--text-3)" }}>{stateLook.sub}</p>
             </div>
             <Toggle label="Photo and video backup" on={status.enabled}
                     disabled={busy || (!status.enabled && (status.backupVersion ?? 0) < 2)}
@@ -368,7 +368,7 @@ export function PhotoBackupHub({ user }: { user: string }) {
         <Row icon={Wifi} title="Use which connection">
           <Segment disabled={busy} value={status.networkMode ?? (status.wifiOnly ? "wifi" : "both")}
                    onChange={value => void apply(() => nativeBackup.setOptions({ networkMode: value }))}
-                   options={[{ value: "wifi", label: "Wi-Fi" }, { value: "mobile", label: "Mobile data" }, { value: "both", label: "Both" }]} />
+                   options={[{ value: "wifi", label: "Wi-Fi" }, { value: "mobile", label: "Mobile" }, { value: "both", label: "Both" }]} />
           <p className="t-xs" style={{ color: "var(--text-3)" }}>You are on {status.networkType ?? "an unknown connection"} now.</p>
         </Row>
         <Row icon={Film} title="Skip files larger than">
