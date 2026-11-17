@@ -25,4 +25,10 @@ saved=[];server=0;globalThis.direct=async function*(){yield new Uint8Array([1]);
 await assert.rejects(run(),/dropped/);assert.equal(server,0,'a mid-file failure must not append server bytes to a partial file');
 
 saved=[];globalThis.linked=false;await run();assert.equal(server,1,'unlinked browser uses the file server');
-console.log('direct-download: direct read, fallback before first byte, no splice mid-file, unlinked passed');
+let nativeBytes=[],ended=0,aborted=0;
+globalThis.window.Capacitor={Plugins:{Backup:{saveBegin:async()=>({id:'n'}),saveWrite:async({data})=>nativeBytes.push(...Buffer.from(data,'base64')),saveEnd:async()=>{ended++;return {path:'Downloads/a'};},saveAbort:async()=>{aborted++;}}}};
+globalThis.linked=true;globalThis.direct=async function*(){yield new Uint8Array([4,5]);yield new Uint8Array([6]);};server=0;
+assert.equal(await run(),'saved');assert.deepEqual(nativeBytes,[4,5,6]);assert.equal(ended,1);assert.equal(server,0);
+globalThis.direct=async function*(){yield new Uint8Array([1]);throw new Error('dropped');};
+await assert.rejects(run(),/dropped/);assert.equal(aborted,1,'native partial file must be deleted');
+console.log('direct-download: direct read, fallback before first byte, no splice mid-file, unlinked, native Downloads sink passed');

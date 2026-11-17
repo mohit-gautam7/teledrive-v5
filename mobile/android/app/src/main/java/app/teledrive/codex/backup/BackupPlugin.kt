@@ -71,7 +71,26 @@ class BackupPlugin : Plugin() {
         try { call.resolve(action()) } catch (error: Exception) { call.reject(error.message ?: "Direct backup failed.") }
     }
 
+    private val downloads by lazy { NativeDownloads(context) }
+
+    @PluginMethod
+    fun saveBegin(call: PluginCall) = directCall(call) {
+        JSObject().put("id", downloads.begin(call.getString("name") ?: "download", call.getString("mimeType") ?: ""))
+    }
+
+    @PluginMethod
+    fun saveWrite(call: PluginCall) = directCall(call) {
+        downloads.write(call.getString("id") ?: "", call.getString("data") ?: ""); JSObject()
+    }
+
+    @PluginMethod
+    fun saveEnd(call: PluginCall) = directCall(call) { JSObject().put("path", downloads.end(call.getString("id") ?: "")) }
+
+    @PluginMethod
+    fun saveAbort(call: PluginCall) = directCall(call) { downloads.abort(call.getString("id") ?: ""); JSObject() }
+
     override fun handleOnDestroy() {
+        downloads.close()
         directSession.close()
         super.handleOnDestroy()
     }
