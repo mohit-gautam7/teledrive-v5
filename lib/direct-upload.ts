@@ -365,6 +365,10 @@ export async function unlinkBrowser(user: string): Promise<void> {
 
 /* ── The download ──────────────────────────────────────────────────────────── */
 
+/** Telegram's largest file request, and how many are kept in flight. */
+const DIRECT_READ_PART = 512 * 1024;
+const DIRECT_READ_PARALLEL = 4;
+
 /**
  * Read a file stored in the user's own Saved Messages straight from Telegram.
  *
@@ -383,16 +387,37 @@ export async function* downloadDirect(user: string, messageId: number, signal?: 
       throw new DirectUploadUnavailable("This file is no longer in your Telegram Saved Messages.");
     }
     const doc = media.document;
-    const parts = client.iterDownload({
-      file: new Api.InputDocumentFileLocation({ id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: "" }),
-      requestSize: 512 * 1024,
-      fileSize: doc.size,
-      dcId: doc.dcId
-    });
-    for await (const part of parts) {
+    const location = new Api.InputDocumentFileLocation({ id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: "" });
+    const { default: bigInt } = await import("big-integer");
+    // Parts are requested a few at a time rather than one after another: each
+    // request is a round trip to Telegram, and waiting for every one in turn
+    // made a 27 MB video take most of a minute on a phone.
+    const sender = await client.getSender(doc.dcId);
+    const total = Number(doc.size?.toString() ?? 0);
+    if (!total) throw new DirectUploadUnavailable("Telegram did not report this file's size.");
+    const count = Math.ceil(total / DIRECT_READ_PART);
+    const inflight = new Map<number, Promise<Uint8Array>>();
+    let next = 0;
+    const fill = () => {
+      while (next < count && inflight.size < DIRECT_READ_PARALLEL) {
+        const index = next++;
+        const request = Promise.resolve(
+          sender.send(new Api.upload.GetFile({ location, offset: bigInt(index * DIRECT_READ_PART), limit: DIRECT_READ_PART }))
+        ).then(result => {
+            if (!(result instanceof Api.upload.File)) throw new DirectUploadUnavailable("Telegram moved this file. Use the file server for it.");
+            return new Uint8Array(result.bytes);
+          });
+        request.catch(() => {}); // awaited below; this only silences an early abort
+        inflight.set(index, request);
+      }
+    };
+    for (let index = 0; index < count; index++) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      fill();
+      const part = await inflight.get(index)!;
+      inflight.delete(index);
       touchIdle();
-      yield new Uint8Array(part as Uint8Array);
+      yield part;
     }
   } catch (err) {
     forgetRevokedSession(user, err);

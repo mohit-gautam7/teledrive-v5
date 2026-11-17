@@ -284,6 +284,11 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
             // A stable key per media item, so a half-finished upload is resumed
             // on the next run rather than started again from byte zero.
             .put("resumeKey", "android-backup:${item.uri}")
+            // Stored in the user's own Saved Messages rather than the bot chat,
+            // so the phone and browser can later read it straight from Telegram
+            // instead of through the file server. The server still uses the
+            // bot when no account is linked.
+            .put("prefer", "account")
             .apply { if (folderId != null) put("folderId", folderId) }
 
         http.newCall(request("/api/upload/init").post(json(body)).build()).execute().use { response ->

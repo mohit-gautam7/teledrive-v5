@@ -23,7 +23,8 @@ import {
   RotateCcw,
   Sun,
   Trash2,
-  Unlink
+  Unlink,
+  CloudUpload
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
@@ -1276,19 +1277,7 @@ function DirectUploadCard({ user }: { user: string }) {
   );
 }
 
-export function SettingsPanel({
-  link,
-  onLinkChanged,
-  backupUser,
-  onBackupNow,
-  backupScanning
-}: {
-  link: TelegramLink | null;
-  onLinkChanged: () => void;
-  backupUser: string;
-  onBackupNow: (options: { everything: boolean }) => void;
-  backupScanning: boolean;
-}) {
+export function SettingsPanel() {
   const prefs = usePreferences();
 
   return (
@@ -1425,13 +1414,67 @@ export function SettingsPanel({
         />
       </section>
 
-      <TelegramLinkCard link={link} onChanged={onLinkChanged} />
+      <AiSection />
 
-      <DirectUploadCard user={backupUser} />
-      <NetworkDiagnostics user={backupUser} />
-      <NativeBackupCard user={backupUser} />
-      <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
+    </div>
+  );
+}
 
+
+/**
+ * Everything about getting files in: the Telegram connections, phone and
+ * folder backup, and how uploads are stored. It used to sit in Settings
+ * between the theme picker and the AI keys, which made both hard to use.
+ */
+export function TransfersPanel({
+  link,
+  onLinkChanged,
+  backupUser,
+  onBackupNow,
+  backupScanning,
+  onUpload
+}: {
+  link: TelegramLink | null;
+  onLinkChanged: () => void;
+  backupUser: string;
+  onBackupNow: (options: { everything: boolean }) => void;
+  backupScanning: boolean;
+  onUpload: () => void;
+}) {
+  const prefs = usePreferences();
+  const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  return (
+    <div className="space-y-4">
+      <section className="panel flex flex-wrap items-center gap-3 p-5">
+        <div className="min-w-0 flex-1">
+          <p className="eyebrow">Getting files in</p>
+          <p className="t-sm mt-1 leading-relaxed" style={{ color: "var(--text-3)" }}>
+            Upload by hand, or let your phone back up on its own. Connect Telegram once and files go straight there.
+          </p>
+        </div>
+        <button className="btn btn-accent" onClick={onUpload}><CloudUpload className="h-4 w-4" /> Upload files</button>
+      </section>
+
+      <nav className="flex gap-2 overflow-x-auto pb-1" aria-label="Sections">
+        {SECTIONS.map(([id, label]) => (
+          <button key={id} className="btn btn-ghost shrink-0" style={{ minHeight: 34, fontSize: 12 }} onClick={() => jump(id)}>{label}</button>
+        ))}
+      </nav>
+
+      <h3 id="tx-telegram" className="eyebrow scroll-mt-24 pt-2">Telegram connections</h3>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <TelegramLinkCard link={link} onChanged={onLinkChanged} />
+        <DirectUploadCard user={backupUser} />
+      </div>
+
+      <h3 id="tx-backup" className="eyebrow scroll-mt-24 pt-2">Phone and folder backup</h3>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <NativeBackupCard user={backupUser} />
+        <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
+      </div>
+
+      <h3 id="tx-storage" className="eyebrow scroll-mt-24 pt-2">Upload options</h3>
+      <div className="grid gap-4 lg:grid-cols-2">
       <section className="panel p-5">
         <h2 className="display t-h2">Upload storage</h2>
         <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
@@ -1473,8 +1516,6 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <AiSection />
-
       <section className="panel p-5 lg:col-span-2">
         <h2 className="display t-h2">Limits</h2>
         <ul className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -1495,10 +1536,20 @@ export function SettingsPanel({
           single message instead.
         </p>
       </section>
+      </div>
+
+      <h3 id="tx-network" className="eyebrow scroll-mt-24 pt-2">Connection check</h3>
+      <NetworkDiagnostics user={backupUser} />
     </div>
   );
 }
 
+const SECTIONS = [
+  ["tx-telegram", "Telegram"],
+  ["tx-backup", "Phone backup"],
+  ["tx-storage", "Upload options"],
+  ["tx-network", "Connection check"]
+] as const;
 
 /**
  * One request for the whole AI section.
