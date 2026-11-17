@@ -990,17 +990,14 @@ export function TransfersPanel({
   return (
     <div className="space-y-4">
       <section className="panel relative overflow-hidden p-5" style={{ background: "linear-gradient(120deg,var(--accent-dim),transparent 65%)" }}>
-        <div className="flex flex-wrap items-center gap-4">
-          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl"
+        <div className="flex items-center gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl"
                 style={{ background: "linear-gradient(135deg,var(--accent),var(--accent-2))", color: "#fff" }}>
-            <CloudUpload className="h-6 w-6" />
+            <CloudUpload className="h-5 w-5" />
           </span>
-          <div className="min-w-0 flex-1">
-            <h2 className="display t-h2">Upload &amp; backup</h2>
-            <p className="t-xs" style={{ color: "var(--text-3)" }}>Add files now, or keep your phone backed up automatically.</p>
-          </div>
-          <button className="btn btn-accent" onClick={onUpload}><CloudUpload className="h-4 w-4" /> Upload files</button>
+          <p className="t-sm min-w-0 flex-1" style={{ color: "var(--text-2)" }}>Add files now, or keep your phone backed up automatically.</p>
         </div>
+        <button className="btn btn-accent mt-3 w-full sm:w-auto" onClick={onUpload}><CloudUpload className="h-4 w-4" /> Upload files</button>
       </section>
 
       <PhotoBackupHub user={backupUser} />
