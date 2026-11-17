@@ -37,7 +37,52 @@ type PickerWindow = Window & {
   showSaveFilePicker?: (options?: SaveFilePickerOptions) => Promise<FileSystemFileHandle>;
 };
 
+type Sink = { write(chunk: Uint8Array): Promise<void>; close(): Promise<void>; abort(): Promise<void> };
+type NativeSave = {
+  saveBegin(o: { name: string; mimeType: string }): Promise<{ id: string }>;
+  saveWrite(o: { id: string; data: string }): Promise<unknown>;
+  saveEnd(o: { id: string }): Promise<{ path: string }>;
+  saveAbort(o: { id: string }): Promise<unknown>;
+};
+
+function nativeSave(): NativeSave | null {
+  if (typeof window === "undefined") return null;
+  const api = (window as unknown as { Capacitor?: { Plugins?: { Backup?: Partial<NativeSave> } } }).Capacitor?.Plugins?.Backup;
+  return api?.saveBegin ? (api as NativeSave) : null;
+}
+
+function base64(bytes: Uint8Array) {
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+
+/**
+ * The Android app's WebView drops link and blob downloads, and its save
+ * picker exists but cannot open, so there the app writes the file natively
+ * into Downloads. Pieces are batched to ~1 MiB per bridge call.
+ */
+async function openNativeSink(api: NativeSave, filename: string): Promise<Sink> {
+  const { id } = await api.saveBegin({ name: filename, mimeType: "" });
+  let pending: Uint8Array[] = [];
+  let size = 0;
+  const flush = async () => {
+    if (!size) return;
+    const joined = new Uint8Array(size);
+    let at = 0;
+    for (const part of pending) { joined.set(part, at); at += part.byteLength; }
+    pending = []; size = 0;
+    await api.saveWrite({ id, data: base64(joined) });
+  };
+  return {
+    async write(chunk) { pending.push(chunk); size += chunk.byteLength; if (size >= 1024 * 1024) await flush(); },
+    async close() { await flush(); await api.saveEnd({ id }); },
+    async abort() { await api.saveAbort({ id }).catch(() => {}); }
+  };
+}
+
 export function canStreamToDisk() {
+  if (nativeSave()) return true;
   return typeof window !== "undefined" && typeof (window as PickerWindow).showSaveFilePicker === "function";
 }
 
@@ -82,11 +127,23 @@ export async function downloadWithProgress({
 
   // Ask where to put it *before* the request starts: the picker needs the user
   // gesture that triggered the download, and a request in flight would expire it.
-  let writable: FileSystemWritableFileStream | null = null;
-  if (streaming) {
+  let writable: Sink | null = null;
+  const native = nativeSave();
+  if (native) {
+    try {
+      writable = await openNativeSink(native, filename);
+    } catch (error) {
+      throw new Error(`Could not save to Downloads: ${(error as Error)?.message || "update the app"}`);
+    }
+  } else if (streaming) {
     try {
       const handle = await (window as PickerWindow).showSaveFilePicker!({ suggestedName: filename });
-      writable = await handle.createWritable();
+      const file = await handle.createWritable();
+      writable = {
+        write: chunk => file.write(chunk as Uint8Array<ArrayBuffer>),
+        close: () => file.close(),
+        abort: () => file.abort()
+      };
     } catch {
       // Dismissed picker means "don't download", not "download some other way".
       return "cancelled";
@@ -103,7 +160,7 @@ export async function downloadWithProgress({
     const parts: Uint8Array[] = [];
     let loaded = 0;
     const collect = async (chunk: Uint8Array, total: number) => {
-      if (writable) await writable.write(chunk as Uint8Array<ArrayBuffer>);
+      if (writable) await writable.write(chunk);
       else parts.push(chunk);
       loaded += chunk.byteLength;
       onProgress({ loaded, total });
