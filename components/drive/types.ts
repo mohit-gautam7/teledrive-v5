@@ -25,7 +25,7 @@ export type DriveFolder = {
   fileCount?: number;
 };
 
-export type AppView = "files" | "shared" | "insights" | "favorites" | "trash" | "settings" | "about";
+export type AppView = "files" | "shared" | "insights" | "favorites" | "trash" | "transfers" | "settings" | "about";
 export type ThemeMode = "light" | "dark" | "system";
 export type SortField = "date" | "name" | "size";
 export type SortDir = "asc" | "desc";

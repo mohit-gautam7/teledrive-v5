@@ -37,15 +37,22 @@ const DIRECT_PREVIEW_LIMIT = 64 * 1024 * 1024;
 function useDirectPreview(file: DriveFile, user: string | undefined, wanted: boolean) {
   const eligible = Boolean(wanted && user && file.backend === "mtproto" && file.telegramMessageId && file.size <= DIRECT_PREVIEW_LIMIT);
   const [state, setState] = useState<{ id: string; url: string | null } | null>(null);
+  const [loadedBytes, setLoadedBytes] = useState(0);
   useEffect(() => {
     if (!eligible || !user) return;
     const abort = new AbortController();
     let blobUrl: string | null = null;
+    setLoadedBytes(0);
     (async () => {
       const { browserLinked, downloadDirect } = await import("@/lib/direct-upload");
       if (!browserLinked(user)) throw new Error("not linked");
       const parts: Uint8Array[] = [];
-      for await (const part of downloadDirect(user, Number(file.telegramMessageId), abort.signal)) parts.push(part);
+      let got = 0;
+      for await (const part of downloadDirect(user, Number(file.telegramMessageId), abort.signal)) {
+        parts.push(part);
+        got += part.byteLength;
+        if (!abort.signal.aborted) setLoadedBytes(got);
+      }
       blobUrl = URL.createObjectURL(new Blob(parts as BlobPart[], { type: file.mimeType }));
       if (!abort.signal.aborted) setState({ id: file.id, url: blobUrl });
     })().catch(() => { if (!abort.signal.aborted) setState({ id: file.id, url: null }); });
@@ -54,8 +61,9 @@ function useDirectPreview(file: DriveFile, user: string | undefined, wanted: boo
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [eligible, user, file.id, file.telegramMessageId, file.mimeType]);
-  if (!eligible) return null;
-  return state?.id === file.id ? state.url : "pending";
+  if (!eligible) return { url: null, percent: 0 };
+  const url = state?.id === file.id ? state.url : "pending";
+  return { url, percent: file.size ? Math.min(100, Math.round((loadedBytes / file.size) * 100)) : 0 };
 }
 
 /** Shown when a file can't be rendered inline — always offers the download. */
@@ -428,9 +436,12 @@ export function Lightbox({
   const audio = isAudio(file);
   // Images come from /api/preview (cacheable); anything time-based streams from
   // /api/stream, which serves HTTP ranges so the player can seek.
-  const direct = useDirectPreview(file, directUser, image || video || audio);
+  const { url: direct, percent: directPercent } = useDirectPreview(file, directUser, image || video || audio);
   const serverSrc = useAssetUrl(direct === null && (image || video || audio) ? (image ? `/api/preview/${file.id}` : `/api/stream/${file.id}`) : "");
   const src = direct === "pending" ? "" : direct ?? serverSrc;
+  // A media element given an empty src reports an error at once, which used
+  // to show "Couldn't load this file" while Telegram was still sending it.
+  const waitingForTelegram = direct === "pending";
   const Icon = image ? ImageIcon : video ? VideoIcon : audio ? Music : FileIcon;
 
   return (
@@ -488,10 +499,15 @@ export function Lightbox({
         }}
       >
         {(image || video || audio) && !loaded && !failed ? (
-          <Loader2 className="absolute h-7 w-7 animate-spin" style={{ color: "var(--accent)" }} />
+          <div className="absolute flex flex-col items-center gap-2">
+            <Loader2 className="h-7 w-7 animate-spin" style={{ color: "var(--accent)" }} />
+            {waitingForTelegram ? (
+              <p className="mono" style={{ color: "var(--text-3)" }}>Loading from Telegram · {directPercent}%</p>
+            ) : null}
+          </div>
         ) : null}
 
-        {failed ? (
+        {waitingForTelegram ? null : failed ? (
           <Unsupported
             icon={<Icon className="h-9 w-9" style={{ color: "var(--danger)" }} />}
             title="Couldn't load this file"

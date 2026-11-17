@@ -19,6 +19,7 @@ import {
   FolderUp,
   Grid2X2,
   Info,
+  CloudUpload,
   Link2,
   List,
   Loader2,
@@ -105,6 +106,7 @@ const panelsChunk = () => import("@/components/drive/panels");
 const modalsChunk = () => import("@/components/drive/modals");
 
 const SettingsPanel = dynamic(() => panelsChunk().then(m => m.SettingsPanel), { ssr: false, loading: () => <PanelFallback rows={4} /> });
+const TransfersPanel = dynamic(() => panelsChunk().then(m => m.TransfersPanel), { ssr: false, loading: () => <PanelFallback rows={4} /> });
 const InsightsPanel = dynamic(() => panelsChunk().then(m => m.InsightsPanel), { ssr: false, loading: () => <PanelFallback rows={2} /> });
 const SharesPanel = dynamic(() => panelsChunk().then(m => m.SharesPanel), { ssr: false, loading: () => <PanelFallback rows={3} /> });
 const AboutPanel = dynamic(() => panelsChunk().then(m => m.AboutPanel), { ssr: false, loading: () => <PanelFallback rows={2} /> });
@@ -124,6 +126,7 @@ const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
   { icon: Link2, label: "Shared", view: "shared" },
   { icon: BarChart3, label: "Insights", view: "insights" },
   { icon: Trash2, label: "Trash", view: "trash" },
+  { icon: CloudUpload, label: "Upload & backup", view: "transfers" },
   { icon: SettingsIcon, label: "Settings", view: "settings" },
   { icon: Info, label: "About", view: "about" }
 ];
@@ -933,6 +936,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       }
     ]);
     setTrayOpen(true);
+    // The tray sits under the viewer, so a download started there needs a
+    // message of its own or it looks as if the button did nothing.
+    const notice = toast.loading(`Downloading "${file.originalName}"…`);
 
     try {
       const outcome = await downloadWithProgress({
@@ -948,19 +954,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       });
 
       if (outcome === "cancelled") {
+        toast.dismiss(notice);
         setDownloads(list => list.filter(d => d.id !== id));
         return;
       }
       if (outcome === "handed-to-browser") {
         setDownloads(list => list.filter(d => d.id !== id));
+        toast.dismiss(notice);
         toast.info(`"${file.originalName}" is too large to track here — your browser is downloading it.`);
         return;
       }
       setDownloads(list =>
         list.map(d => (d.id === id ? { ...d, loaded: d.size, percent: 100, speed: null, eta: null, status: "done" } : d))
       );
+      toast.success(`Saved "${file.originalName}"${"Capacitor" in window ? " to Downloads" : ""}.`, { id: notice });
       window.setTimeout(() => setDownloads(list => list.filter(d => d.id !== id)), 4000);
     } catch (error) {
+      toast.dismiss(notice);
       const message = error instanceof Error ? error.message : "Download failed.";
       setDownloads(list => list.map(d => (d.id === id ? { ...d, status: "error", error: message } : d)));
       toast.error(message);
@@ -1525,7 +1535,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   function selectView(next: AppView) {
     setAppView(next);
     setSidebarOpen(false);
-    if (next !== "settings") {
+    if (next !== "settings" && next !== "transfers") {
       setFolderId(null);
       setFolderTrail([]);
       window.history.pushState(null, "", "?");
@@ -2019,7 +2029,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
           {appView === "files" && !folderId && !debouncedQuery && typeFilter === "all" ? (
             <DriveOverview insights={insights} active={uploadQueue.filter(item => item.status === "uploading" || item.status === "pending").length}
-              onUpload={() => fileInputRef.current?.click()} onSettings={() => selectView("settings")} />
+              onUpload={() => fileInputRef.current?.click()} onSettings={() => selectView("transfers")} />
           ) : null}
 
           {/* Content.
@@ -2030,14 +2040,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               transition feel with none of that risk. */}
           <div key={`${appView}-${folderId ?? "root"}`}>
             <motion.div initial={fadeUp(reduceMotion).initial} animate={{ opacity: 1, y: 0 }} transition={transition}>
-              {appView === "settings" ? (
-                <SettingsPanel
+              {appView === "transfers" ? (
+                <TransfersPanel
                   link={link}
                   onLinkChanged={refreshLink}
                   backupUser={cacheUser}
                   onBackupNow={backupNow}
                   backupScanning={backupScanning}
+                  onUpload={() => fileInputRef.current?.click()}
                 />
+              ) : appView === "settings" ? (
+                <SettingsPanel />
               ) : appView === "about" ? (
                 <AboutPanel maxBytes={maxBytes} />
               ) : appView === "shared" ? (
