@@ -1,5 +1,7 @@
 /** A lazy File: only requested Telegram parts cross the native bridge. */
-export type NativeMedia = { id: string; name: string; size: number; type: string; lastModified: number };
+export type NativeMedia = { id: string; name: string; size: number; type: string; lastModified: number;
+  /** The album's own destination; older app builds leave it out. */
+  folderId?: string };
 type ReadPart = (offset: number, length: number) => Promise<string>;
 const MAX_PART = 512 * 1024;
 

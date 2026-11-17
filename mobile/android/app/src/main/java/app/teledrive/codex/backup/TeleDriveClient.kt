@@ -217,6 +217,9 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
         return Destination(createFolder(BACKUP_FOLDER), BACKUP_FOLDER)
     }
 
+    /** Ids of every folder the account has, to check per-album destinations. */
+    fun folderIds(): Set<String> = listFolders().map { it.id }.toSet()
+
     private fun listFolders(): List<FolderRow> {
         http.newCall(request("/api/folders?flat=1").get().build()).execute().use { response ->
             val array = ok(response, "Could not list folders").optJSONArray("folders") ?: return emptyList()

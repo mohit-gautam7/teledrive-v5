@@ -12,6 +12,7 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import org.json.JSONArray
+import org.json.JSONObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
@@ -149,6 +150,7 @@ class BackupPlugin : Plugin() {
                 .put("intervalHours", prefs.intervalHours)
                 .put("folderName", prefs.folderName)
                 .put("folderId", prefs.folderId)
+                .put("albumFolders", JSONObject(prefs.albumFolders))
                 .put("currentName", prefs.currentName)
                 .put("currentIndex", prefs.currentIndex)
                 .put("currentTotal", prefs.currentTotal)
@@ -323,6 +325,7 @@ class BackupPlugin : Plugin() {
         val oldVideos = prefs.includeVideos
         val oldSize = prefs.maxFileSizeMb
         val oldFolder = prefs.folderId
+        val oldAlbumFolders = prefs.albumFolders
         call.getString("networkMode")?.let {
             if (it !in listOf("wifi", "mobile", "both")) { call.reject("Unknown backup network choice."); return }
             prefs.networkMode = it
@@ -342,7 +345,12 @@ class BackupPlugin : Plugin() {
             if (chosen.isNotEmpty()) prefs.albums = chosen.toSet()
         }
         if (call.data.has("folderId")) prefs.folderId = call.getString("folderId")
-        if (oldAlbums != prefs.albums || oldPhotos != prefs.includePhotos || oldVideos != prefs.includeVideos || oldSize != prefs.maxFileSizeMb || oldFolder != prefs.folderId) {
+        call.getObject("albumFolders")?.let { map ->
+            prefs.albumFolders = map.keys().asSequence()
+                .mapNotNull { path -> map.optString(path).takeIf { it.isNotBlank() && it != "null" }?.let { path to it } }
+                .toMap()
+        }
+        if (oldAlbums != prefs.albums || oldPhotos != prefs.includePhotos || oldVideos != prefs.includeVideos || oldSize != prefs.maxFileSizeMb || oldFolder != prefs.folderId || oldAlbumFolders != prefs.albumFolders) {
             prefs.resetWatermark()
         }
         // Constraints are baked into the enqueued work, so a changed setting

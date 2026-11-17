@@ -2,6 +2,7 @@ package app.teledrive.codex.backup
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONObject
 
 /**
  * Everything the backup remembers between runs.
@@ -191,6 +192,18 @@ class BackupPrefs internal constructor(private val prefs: SharedPreferences) {
     var intervalHours: Int
         get() = prefs.getInt(KEY_INTERVAL_HOURS, 2).coerceIn(1, 24)
         set(value) = prefs.edit().putInt(KEY_INTERVAL_HOURS, value.coerceIn(1, 24)).apply()
+
+    /**
+     * A destination per album, keyed by MediaStore relative path. An album
+     * with no entry goes to [folderId]. A folder that no longer exists also
+     * falls back there rather than failing every file in that album.
+     */
+    var albumFolders: Map<String, String>
+        get() = runCatching {
+            val json = JSONObject(prefs.getString(KEY_ALBUM_FOLDERS, null) ?: "{}")
+            json.keys().asSequence().associateWith { json.getString(it) }
+        }.getOrDefault(emptyMap())
+        set(value) = prefs.edit().putString(KEY_ALBUM_FOLDERS, JSONObject(value).toString()).apply()
 
     /** The destination folder's name, so the card can show it without a lookup. */
     var folderName: String
@@ -397,6 +410,7 @@ class BackupPrefs internal constructor(private val prefs: SharedPreferences) {
         const val KEY_INCLUDE_VIDEOS = "includeVideos"
         const val KEY_MAX_FILE_MB = "maxFileSizeMb"
         const val KEY_FOLDER_NAME = "folderName"
+        const val KEY_ALBUM_FOLDERS = "albumFolders"
         const val KEY_INTERVAL_HOURS = "intervalHours"
         const val KEY_LOCK_UNTIL = "lockUntil"
         const val KEY_LOCK_OWNER = "lockOwner"

@@ -61,7 +61,7 @@ import { DURATION, EASE, fadeUp, stagger, useReducedMotion } from "@/lib/motion"
 import { EmptyState } from "./bits";
 import { browserLinked, checkDirectConnection, forgetDirectSession, linkBrowser, unlinkBrowser } from "@/lib/direct-upload";
 import { BackupDestination, BackupFiles, BackupNetworkSelect } from "./backup-controls";
-import { DirectBackupControls } from "./direct-backup-controls";
+import { PhotoBackupHub } from "./backup-hub";
 import { NetworkDiagnostics } from "./network-diagnostics";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
@@ -414,531 +414,6 @@ function Choice<T extends string | number>({
  * Internet have the File System Access API; Firefox and everything on iOS do
  * not, and saying so is better than a button that opens nothing.
  */
-/**
- * Background backup, which only exists inside the Android app.
- *
- * A web page stops running the moment it is closed, so the browser version of
- * phone backup can only catch up when the user happens to open TeleDrive. The
- * Android shell carries a native WorkManager job that runs on its own clock,
- * and this card is its control panel.
- *
- * Rendered as nothing in a browser. The whole feature is behind
- * nativeBackupAvailable(), so a normal visit never sees a setting it cannot use
- * and never learns there is an app it is not running.
- */
-function NativeBackupCard({user}: {user: string}) {
-  const [status, setStatus] = useState<NativeBackupStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  // null means "not asked yet", which is a different thing from "none found"
-  // and the card says so rather than showing an empty box either way.
-  const [albums, setAlbums] = useState<NativeAlbum[] | null>(null);
-  const available = nativeBackupAvailable();
-  const running = status?.running ?? false;
-
-  // An empty selection in prefs means "not chosen yet", and the native side
-  // falls back to the camera folders - so the UI shows that same fallback
-  // rather than a box of unticked boxes that does not match what will happen.
-  const selectedAlbums =
-    status && status.albums.length > 0
-      ? status.albums
-      : (albums ?? []).filter(a => a.selected).map(a => a.path);
-
-  const refresh = useCallback(async () => {
-    const next = await nativeBackup.status();
-    if (next) setStatus(next);
-    return next;
-  }, []);
-
-  useEffect(() => {
-    if (!available) return;
-    void refresh();
-    // The worker runs outside the page, so the page has to look again rather
-    // than be told. A progress bar refreshed every ten seconds is not a
-    // progress bar, so the idle poll speeds up while something is in flight.
-    const period = running ? 1_500 : 10_000;
-    const timer = window.setInterval(() => void refresh(), period);
-    return () => window.clearInterval(timer);
-  }, [available, refresh, running]);
-
-  // Album names are read separately from the frequent progress poll.
-  useEffect(() => {
-    if (!available || !status?.mediaPermission) return;
-    let cancelled = false;
-    void (async () => {
-      const result = await nativeBackup.albums();
-      if (!cancelled) setAlbums(result?.albums ?? []);
-
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [available, status?.mediaPermission]);
-
-  const toggleAlbum = useCallback(
-    async (path: string, checked: boolean) => {
-      const next = checked ? [...new Set([...selectedAlbums, path])] : selectedAlbums.filter(p => p !== path);
-      if (next.length === 0) {
-        // The native side refuses an empty set, because empty already means
-        // "not chosen yet" there. Saying so beats a checkbox that springs back.
-        toast.error("Keep at least one album, or turn backup off.");
-        return;
-      }
-      const result = await nativeBackup.setOptions({ albums: next });
-      if (result) setStatus(result);
-    },
-    [selectedAlbums]
-  );
-
-  const applyResult = useCallback(
-    async (action: () => Promise<NativeBackupStatus | null>, success?: string) => {
-      setBusy(true);
-      try {
-        const next = await action();
-        if (next) {
-          setStatus(next);
-          if (success) toast.success(success);
-        } else {
-          toast.error("The app refused that. Check its permissions in Android settings.");
-        }
-      } finally {
-        setBusy(false);
-      }
-    },
-    []
-  );
-
-  if (!available) return null;
-
-  const advice = status ? vendorAdvice(status.vendor) : null;
-  const lastRun = status?.lastRunAt ? new Date(status.lastRunAt) : null;
-
-  return (
-    <section className="panel p-5">
-      <div className="flex items-start justify-between gap-3">
-        <h2 className="display t-h2">Photo and video backup</h2>
-        <button
-          onClick={() =>
-            void applyResult(
-              status?.enabled ? nativeBackup.disable : nativeBackup.enable,
-              status?.enabled ? "Backup is off." : "Backup is on."
-            )
-          }
-          disabled={busy || !status || (!status.enabled && (status.backupVersion ?? 0) < 2)}
-          role="switch"
-          aria-checked={status?.enabled ?? false}
-          aria-label="Photo and video backup"
-          className={status?.enabled ? "btn btn-accent" : "btn btn-ghost"}
-          style={{ minHeight: 34, fontSize: 12 }}
-        >
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}{" "}
-          {/*
-            The label names the action, not the state. Reading "On" next to a
-            power icon tells you what is happening and leaves you guessing how
-            to stop it - which is exactly the complaint this answers. A plain
-            verb cannot be misread, and the pressed styling carries the state.
-          */}
-          {!status ? "…" : status.enabled ? "Turn off" : "Turn on"}
-        </button>
-      </div>
-
-      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        Save selected photos and videos into <strong>{status?.folderName || "Camera backup"}</strong>.
-        Choose direct backup while the app is open, or scheduled background backup through your file server.
-        Existing files are checked before saving another copy.
-      </p>
-      {status ? <DirectBackupControls user={user} status={status} busy={busy}
-      onRescan={() => { void applyResult(nativeBackup.rescanAll, "Selected albums will be checked again when you start direct backup."); }}
-      onTransport={transport => {
-        void applyResult(() => nativeBackup.setOptions({ transport }), "Backup route updated.");
-      }} /> : null}
-
-      {status ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {status.running ? (
-            <span className="chip">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running now
-            </span>
-          ) : null}
-          {status.pending >= 0 ? (
-            <span className="chip">
-              <Clock className="h-3.5 w-3.5" />{" "}
-              {status.pending === 0 ? "Nothing waiting" : `${status.pending} waiting`}
-            </span>
-          ) : null}
-          {status.uploadedTotal > 0 ? (
-            <span className="chip">
-              <Check className="h-3.5 w-3.5" /> {status.uploadedTotal} saved so far
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-
-      {/*
-        What is happening right now, by name.
-
-        "Running" on its own is indistinguishable from "stuck", which is the
-        usual reason people switch a backup off: there is no way to tell
-        patience from a bug. Naming the file and showing its bytes makes a slow
-        video obviously a slow video, and gives the two escapes — abandon this
-        one, or stop the run — somewhere to live.
-      */}
-      {status?.running && status.currentName ? (
-        <div className="mt-4 rounded-xl p-3" style={{ background: "var(--surface-2)" }}>
-          <div className="flex items-center justify-between gap-3">
-            <p className="t-sm min-w-0 truncate" style={{ color: "var(--text-1)" }} title={status.currentName}>
-              {status.currentName}
-            </p>
-            {status.currentTotal > 0 ? (
-              <span className="mono t-xs shrink-0" style={{ color: "var(--text-3)" }}>
-                {status.currentIndex} of {status.currentTotal}
-              </span>
-            ) : null}
-          </div>
-
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--border-dim)" }}>
-            <div
-              className="h-full rounded-full transition-[width] duration-500"
-              style={{
-                width: `${status.currentSize > 0 ? Math.min(100, Math.round((status.currentSent / status.currentSize) * 100)) : 0}%`,
-                background: "var(--accent)"
-              }}
-            />
-          </div>
-
-          <p className="mono t-xs mt-1.5" style={{ color: "var(--text-3)" }}>
-            {formatBytes(status.currentSent)} of {formatBytes(status.currentSize)}
-          </p>
-
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              onClick={() => void applyResult(nativeBackup.skipCurrent, "Skipping that one.")}
-              disabled={busy}
-              className="btn btn-ghost"
-              style={{ minHeight: 34, fontSize: 12 }}
-            >
-              <SkipForward className="h-3.5 w-3.5" /> Skip this file
-            </button>
-            <button
-              onClick={() => void applyResult(nativeBackup.stopRun, "Stopped. The next scheduled run still happens.")}
-              disabled={busy}
-              className="btn btn-ghost"
-              style={{ minHeight: 34, fontSize: 12 }}
-            >
-              <Square className="h-3.5 w-3.5" /> Stop this run
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {status && !status.mediaPermission ? (
-        <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-          TeleDrive cannot see your photos yet. Turning backup on will ask for that permission.
-        </p>
-      ) : null}
-
-      {status ? (
-        <div className="mt-5 space-y-5">
-          {/* ── Which albums ───────────────────────────────────────────── */}
-          <div>
-            <p className="t-sm" style={{ color: "var(--text-1)" }}>
-              Albums to back up
-            </p>
-            <p className="t-xs mt-0.5" style={{ color: "var(--text-3)" }}>
-              Counts are what is on the phone, not what is left to upload.
-            </p>
-            {albums === null ? (
-              <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
-                <Loader2 className="inline h-3 w-3 animate-spin" /> Reading your albums…
-              </p>
-            ) : albums.length === 0 ? (
-              <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
-                No albums found. Grant photo access, then reopen this page.
-              </p>
-            ) : (
-              <div
-                className="mt-2 max-h-64 min-w-0 space-y-1.5 overflow-y-auto rounded-xl p-3"
-                style={{ background: "var(--surface-2)" }}
-              >
-                {/*
-                  The count goes under the name, not beside it.
-
-                  Beside it, the count needed shrink-0 to stay readable, which
-                  made the row's minimum width larger than a phone screen. The
-                  settings panels share a column, so that one row stretched the
-                  column and clipped the right-hand edge off every card on the
-                  page - measured at 431px of content in a 361px viewport, and
-                  invisible because body clips rather than scrolls. Two block
-                  children inside a min-w-0 parent cannot do that.
-                */}
-                {albums.map(album => (
-                  <label key={album.path} className="flex items-start gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-                    <input
-                      type="checkbox"
-                      className="mt-1 shrink-0"
-                      checked={selectedAlbums.includes(album.path)}
-                      onChange={event => void toggleAlbum(album.path, event.target.checked)}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate" title={album.path}>
-                        {album.name}
-                      </span>
-                      <span className="mono t-xs block truncate" style={{ color: "var(--text-3)" }}>
-                        {album.photos > 0
-                          ? `${album.photos.toLocaleString()} photo${album.photos === 1 ? "" : "s"}`
-                          : ""}
-                        {album.photos > 0 && album.videos > 0 ? " · " : ""}
-                        {album.videos > 0
-                          ? `${album.videos.toLocaleString()} video${album.videos === 1 ? "" : "s"}`
-                          : ""}
-                      </span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* ── What kind, and how big ─────────────────────────────────── */}
-          <div className="space-y-2">
-            <p className="t-sm" style={{ color: "var(--text-1)" }}>
-              What to include
-            </p>
-            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-              <input
-                type="checkbox"
-                checked={status.includePhotos}
-                onChange={event =>
-                  void applyResult(() => nativeBackup.setOptions({ includePhotos: event.target.checked }))
-                }
-              />
-              Photos
-            </label>
-            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-              <input
-                type="checkbox"
-                checked={status.includeVideos}
-                onChange={event =>
-                  void applyResult(() => nativeBackup.setOptions({ includeVideos: event.target.checked }))
-                }
-              />
-              Videos
-            </label>
-            <div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-              <span>Skip anything larger than</span>
-              {/* The unit travels with the field. Left as separate flex children
-                  they wrap apart, and "MB" alone on the next line reads as a
-                  stray label rather than as part of the control. */}
-              <span className="inline-flex items-center gap-2">
-                <input
-                  type="number"
-                  min={0}
-                  step={50}
-                  inputMode="numeric"
-                  defaultValue={status.maxFileSizeMb || ""}
-                  placeholder="no limit"
-                  onBlur={event => {
-                    const next = Math.max(0, Number(event.target.value) || 0);
-                    if (next !== status.maxFileSizeMb)
-                      void applyResult(() => nativeBackup.setOptions({ maxFileSizeMb: next }));
-                  }}
-                  className="field"
-                  style={{ width: 104, height: 32 }}
-                />
-                <span>MB</span>
-              </span>
-            </div>
-            <p className="t-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
-              Raising the limit later does not go back for what it skipped &mdash; use <em>Re-check everything</em> for
-              that.
-            </p>
-          </div>
-
-          {/* ── When ───────────────────────────────────────────────────── */}
-          <div className="space-y-2">
-            <p className="t-sm" style={{ color: "var(--text-1)" }}>
-              When to run
-            </p>
-            <BackupNetworkSelect value={!status.enabled ? "off" : status.networkMode ?? (status.wifiOnly ? "wifi" : "both")}
-              disabled={busy} onChange={value => {
-                if (value === "off") { void applyResult(nativeBackup.disable, "Automatic backup is off."); return; }
-                if ((status.backupVersion ?? 0) < 2) { toast.error("Update the Android app before enabling backup. The older build can fall back to Vercel."); return; }
-                void applyResult(async () => {
-                  const updated = await nativeBackup.setOptions({networkMode:value});
-                  return updated?.enabled ? updated : updated ? nativeBackup.enable() : null;
-                });
-              }} />
-            <p className="t-xs">Current connection: {status.networkType ?? "unknown"}. File uploads pause when this connection is not allowed.</p>
-            <label className="flex items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-              <input
-                type="checkbox"
-                checked={status.chargingOnly}
-                onChange={event =>
-                  void applyResult(() => nativeBackup.setOptions({ chargingOnly: event.target.checked }))
-                }
-              />
-              Only while charging
-            </label>
-            {status.transport !== "direct" ? <><div className="flex flex-wrap items-center gap-2 t-sm" style={{ color: "var(--text-2)" }}>
-              <span>Check for new photos every</span>
-              <select
-                value={status.intervalHours}
-                onChange={event =>
-                  void applyResult(() => nativeBackup.setOptions({ intervalHours: Number(event.target.value) }))
-                }
-                className="field"
-                style={{ width: 130, height: 32 }}
-              >
-                <option value={1}>hour</option>
-                <option value={2}>2 hours</option>
-                <option value={6}>6 hours</option>
-                <option value={12}>12 hours</option>
-                <option value={24}>day</option>
-              </select>
-            </div>
-            <p className="t-xs leading-relaxed" style={{ color: "var(--text-3)" }}>
-              Android decides the exact moment &mdash; it batches work to save battery, so a run can arrive late.
-            </p>
-            </> : <p className="t-xs" style={{ color: "var(--text-2)" }}>Start a direct backup above and keep TeleDrive visible until it finishes.</p>}
-          </div>
-
-          {/* ── Where it lands ─────────────────────────────────────────── */}
-          <div>
-            <p className="t-sm" style={{ color: "var(--text-1)" }}>
-              Save into
-            </p>
-            <BackupDestination value={status.folderId} automaticName="Camera backup"
-              onChange={(id,name) => void applyResult(() => nativeBackup.setOptions({folderId:id,folderName:name}))} />
-          </div>
-        </div>
-      ) : null}
-
-      {status?.enabled && status.transport !== "direct" ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => void applyResult(nativeBackup.runNow, "Looking for new photos now.")}
-            disabled={busy || status.running}
-            className="btn btn-accent"
-            style={{ minHeight: 34, fontSize: 12 }}
-          >
-            <RefreshCw className="h-3.5 w-3.5" /> Back up now
-          </button>
-          <button
-            onClick={() => void applyResult(nativeBackup.rescanAll, "Re-checking the whole camera roll.")}
-            disabled={busy}
-            className="btn btn-ghost"
-            style={{ minHeight: 34, fontSize: 12 }}
-          >
-            <RotateCcw className="h-3.5 w-3.5" /> Re-check everything
-          </button>
-        </div>
-      ) : null}
-
-      {lastRun ? (
-        <p className="t-xs mt-3" style={{ color: "var(--text-3)" }}>
-          Last run {lastRun.toLocaleString()} &mdash; {status?.lastResult || "no result recorded"}.
-        </p>
-      ) : null}
-
-      {/*
-        Files the backup gave up on, said out loud.
-
-        After three failed runs in a row a file is set aside so it cannot block
-        everything behind it. That is the right call and it is still a file that
-        was not backed up, so it is counted and named here rather than left to
-        be discovered missing later.
-      */}
-      {status && status.problemCount > 0 ? (
-        <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
-          <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
-          {status.problemCount === 1 ? "1 file" : `${status.problemCount} files`} could not be backed up after three
-          tries{status.lastProblemName ? ` (most recently ${status.lastProblemName})` : ""}. <em>Re-check everything</em>{" "}
-          tries again.
-        </p>
-      ) : null}
-
-      {/*
-        Evidence, not a guess. The worker records when it finds the run before
-        it was killed mid-file; within the last three days that is worth saying,
-        because it turns the general warning below into something that actually
-        happened to this phone.
-      */}
-      {status && status.interruptedAt > 0 && Date.now() - status.interruptedAt < 3 * 24 * 3600_000 ? (
-        <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
-          <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
-          Android stopped a backup part-way on {new Date(status.interruptedAt).toLocaleString()}. It picks up where it
-          stopped, and opening this app restarts it &mdash; but the two settings below are what prevent it.
-        </p>
-      ) : null}
-
-      {/*
-        The part that actually decides whether background backup works. Android
-        itself is willing; the manufacturer's battery manager is the obstacle,
-        and there is no way to read its setting - only to open the screen.
-      */}
-      {status?.enabled && (!status.batteryExempt || status.needsStartupPermission) ? (
-        <div className="mt-4 rounded-xl p-3" style={{ background: "var(--surface-2)" }}>
-          <p className="t-sm" style={{ color: "var(--text-2)" }}>
-            <strong>One more step, or this will quietly stop.</strong>
-          </p>
-          <p className="t-xs mt-1 leading-relaxed" style={{ color: "var(--text-3)" }}>
-            {advice
-              ? `${advice.label} stops apps it thinks are idle from running in the background. TeleDrive needs to be excused:`
-              : "Android stops apps it thinks are idle from running in the background. TeleDrive needs to be excused:"}
-          </p>
-          {advice ? (
-            <ul className="t-xs mt-2 list-disc space-y-1 pl-5 leading-relaxed" style={{ color: "var(--text-3)" }}>
-              {advice.steps.map(step => (
-                <li key={step}>{step}</li>
-              ))}
-            </ul>
-          ) : null}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {!status.batteryExempt ? (
-              <button
-                onClick={() => void applyResult(nativeBackup.requestBatteryExemption)}
-                className="btn btn-ghost"
-                style={{ minHeight: 34, fontSize: 12 }}
-              >
-                <Power className="h-3.5 w-3.5" /> Allow background activity
-              </button>
-            ) : null}
-            {status.needsStartupPermission ? (
-              <button
-                onClick={async () => {
-                  const result = await nativeBackup.openStartupSettings();
-                  // Not an error when it falls back. Several ROMs - realme UI
-                  // 16 among them, measured - guard the auto-launch list with a
-                  // privileged permission, so no app can open it and the app
-                  // settings page is the closest honest destination. Saying
-                  // "failed" would read as a bug in TeleDrive; it is a locked
-                  // door, and the steps above are the way through it.
-                  if (!result?.opened) toast("Opened TeleDrive's app settings. This phone won't let apps jump to the auto-launch list — use the steps above.");
-                }}
-                className="btn btn-ghost"
-                style={{ minHeight: 34, fontSize: 12 }}
-              >
-                <Smartphone className="h-3.5 w-3.5" /> Open app settings
-              </button>
-            ) : null}
-            {!status.notificationPermission ? (
-              <button
-                onClick={() => void applyResult(nativeBackup.requestNotificationPermission)}
-                className="btn btn-ghost"
-                style={{ minHeight: 34, fontSize: 12 }}
-              >
-                <AlertCircle className="h-3.5 w-3.5" /> Allow the upload notification
-              </button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-      {status ? <BackupFiles native user={user} folderId={status.folderId} /> : null}
-      <p className="t-xs mt-3" style={{color:"var(--text-3)"}}>Waiting counts update about every 10 seconds.
-        Source albums are combined in the chosen destination. Background backup uses the file server, not browser-direct upload.</p>
-    </section>
-  );
-}
-
 function PhoneBackupCard({ user, onBackupNow, scanning }: {
   user: string; onBackupNow: (options: {everything:boolean}) => void; scanning: boolean;
 }) {
@@ -1279,8 +754,13 @@ function DirectUploadCard({ user }: { user: string }) {
   );
 }
 
-export function SettingsPanel() {
+export function SettingsPanel({ link, onLinkChanged, user }: {
+  link: TelegramLink | null;
+  onLinkChanged: () => void;
+  user: string;
+}) {
   const prefs = usePreferences();
+  const [deviceKey, setDeviceKey] = useState(0);
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -1416,74 +896,17 @@ export function SettingsPanel() {
         />
       </section>
 
-      <AiSection />
+      <h3 className="eyebrow pt-2 lg:col-span-2">Telegram connection</h3>
+      <TelegramLinkCard link={link} onChanged={onLinkChanged} user={user} onDeviceConnected={() => setDeviceKey(k => k + 1)} />
+      <DirectUploadCard key={deviceKey} user={user} />
 
-    </div>
-  );
-}
-
-
-/**
- * Everything about getting files in: the Telegram connections, phone and
- * folder backup, and how uploads are stored. It used to sit in Settings
- * between the theme picker and the AI keys, which made both hard to use.
- */
-export function TransfersPanel({
-  link,
-  onLinkChanged,
-  backupUser,
-  onBackupNow,
-  backupScanning,
-  onUpload
-}: {
-  link: TelegramLink | null;
-  onLinkChanged: () => void;
-  backupUser: string;
-  onBackupNow: (options: { everything: boolean }) => void;
-  backupScanning: boolean;
-  onUpload: () => void;
-}) {
-  const prefs = usePreferences();
-  const [deviceKey, setDeviceKey] = useState(0);
-  const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  return (
-    <div className="space-y-4">
-      <section className="panel flex flex-wrap items-center gap-3 p-5">
-        <div className="min-w-0 flex-1">
-          <p className="eyebrow">Getting files in</p>
-          <p className="t-sm mt-1 leading-relaxed" style={{ color: "var(--text-3)" }}>
-            Upload by hand, or let your phone back up on its own. Connect Telegram once and files go straight there.
-          </p>
-        </div>
-        <button className="btn btn-accent" onClick={onUpload}><CloudUpload className="h-4 w-4" /> Upload files</button>
-      </section>
-
-      <nav className="flex gap-2 overflow-x-auto pb-1" aria-label="Sections">
-        {SECTIONS.map(([id, label]) => (
-          <button key={id} className="btn btn-ghost shrink-0" style={{ minHeight: 34, fontSize: 12 }} onClick={() => jump(id)}>{label}</button>
-        ))}
-      </nav>
-
-      <h3 id="tx-telegram" className="eyebrow scroll-mt-24 pt-2">Telegram connections</h3>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <TelegramLinkCard link={link} onChanged={onLinkChanged} user={backupUser} onDeviceConnected={() => setDeviceKey(k => k + 1)} />
-        <DirectUploadCard key={deviceKey} user={backupUser} />
-      </div>
-
-      <h3 id="tx-backup" className="eyebrow scroll-mt-24 pt-2">Phone and folder backup</h3>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <NativeBackupCard user={backupUser} />
-        <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
-      </div>
-
-      <h3 id="tx-storage" className="eyebrow scroll-mt-24 pt-2">Upload options</h3>
-      <div className="grid gap-4 lg:grid-cols-2">
+      <h3 className="eyebrow pt-2 lg:col-span-2">Uploads</h3>
       <section className="panel p-5">
         <h2 className="display t-h2">Upload storage</h2>
         <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
           {link?.linked
             ? `Anything over ${formatBytes(BOT_DOWNLOAD_LIMIT)} is stored in your own Telegram account as a single message, because that is the largest document a bot can serve back. You can override that.`
-            : "Link your Telegram account above to store big files as one message instead of hundreds of bot chunks."}
+            : "Link your Telegram account in Telegram connection to store big files as one message instead of hundreds of bot chunks."}
         </p>
         <div className={link?.linked ? "mt-4" : "mt-4 opacity-50"}>
           <Choice
@@ -1539,20 +962,52 @@ export function TransfersPanel({
           single message instead.
         </p>
       </section>
-      </div>
 
-      <h3 id="tx-network" className="eyebrow scroll-mt-24 pt-2">Connection check</h3>
-      <NetworkDiagnostics user={backupUser} />
+      <div className="lg:col-span-2"><NetworkDiagnostics user={user} /></div>
+
+      <h3 className="eyebrow pt-2 lg:col-span-2">AI</h3>
+      <AiSection />
     </div>
   );
 }
 
-const SECTIONS = [
-  ["tx-telegram", "Telegram"],
-  ["tx-backup", "Phone backup"],
-  ["tx-storage", "Upload options"],
-  ["tx-network", "Connection check"]
-] as const;
+
+/**
+ * Getting files in: upload by hand, or let the phone back up on its own.
+ * Connection settings (Telegram account, direct upload, limits) live in Settings.
+ */
+export function TransfersPanel({
+  backupUser,
+  onBackupNow,
+  backupScanning,
+  onUpload
+}: {
+  backupUser: string;
+  onBackupNow: (options: { everything: boolean }) => void;
+  backupScanning: boolean;
+  onUpload: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <section className="panel relative overflow-hidden p-5" style={{ background: "linear-gradient(120deg,var(--accent-dim),transparent 65%)" }}>
+        <div className="flex flex-wrap items-center gap-4">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl"
+                style={{ background: "linear-gradient(135deg,var(--accent),var(--accent-2))", color: "#fff" }}>
+            <CloudUpload className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="display t-h2">Upload &amp; backup</h2>
+            <p className="t-xs" style={{ color: "var(--text-3)" }}>Add files now, or keep your phone backed up automatically.</p>
+          </div>
+          <button className="btn btn-accent" onClick={onUpload}><CloudUpload className="h-4 w-4" /> Upload files</button>
+        </div>
+      </section>
+
+      <PhotoBackupHub user={backupUser} />
+      <PhoneBackupCard user={backupUser} onBackupNow={onBackupNow} scanning={backupScanning} />
+    </div>
+  );
+}
 
 /**
  * One request for the whole AI section.

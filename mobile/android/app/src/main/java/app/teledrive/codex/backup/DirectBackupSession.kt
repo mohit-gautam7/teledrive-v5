@@ -20,6 +20,8 @@ class DirectBackupSession(private val context: Context) {
     private var folder: String? = null
     private var revision = 0
     private val items = linkedMapOf<String, MediaItem>()
+    private val destinations = mutableMapOf<String, String>()
+    private var albumFolders: Map<String, String> = emptyMap()
 
     @Synchronized
     fun begin(expectedAccount: String): JSObject {
@@ -38,13 +40,17 @@ class DirectBackupSession(private val context: Context) {
             folder = destination.id
             prefs.folderId = destination.id
             prefs.folderName = destination.name
+            albumFolders = prefs.albumFolders
+            val existing = if (albumFolders.isEmpty()) emptySet() else client.folderIds()
             val pending = MediaScanner(context).scan(prefs, 20)
             val rows = JSONArray()
             pending.forEach { item ->
                 val id = UUID.randomUUID().toString()
                 items[id] = item
+                val target = albumFolders[item.relativePath]?.takeIf { it in existing } ?: destination.id
+                destinations[id] = target
                 rows.put(JSObject().put("id", id).put("name", item.name).put("size", item.size)
-                    .put("type", item.mimeType).put("lastModified", item.addedAt * 1000))
+                    .put("type", item.mimeType).put("lastModified", item.addedAt * 1000).put("folderId", target))
             }
             prefs.lastResult = if (pending.isEmpty()) "Up to date." else "Direct backup running while the app is open."
             return JSObject().put("runId", owner).put("accountId", account)
@@ -59,7 +65,7 @@ class DirectBackupSession(private val context: Context) {
     private fun requireRun(owner: String) {
         check(owner == runId) { "Direct backup session expired. Start again." }
         check(prefs.transport == "direct" && prefs.enabled) { "Direct backup was switched off." }
-        check(prefs.sourceRevision == revision && prefs.folderId == folder) { "Backup settings changed. Start again." }
+        check(prefs.sourceRevision == revision && prefs.folderId == folder && prefs.albumFolders == albumFolders) { "Backup settings changed. Start again." }
         BackupNetwork.requireAllowed(context, prefs, allowDirect = true)
         if (prefs.chargingOnly) {
             val battery = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
@@ -93,13 +99,14 @@ class DirectBackupSession(private val context: Context) {
         val item = items[id] ?: error("Unknown backup file.")
         check(client.whoAmI() == account) { "Your account changed. Backup is paused." }
         // Check the drive, rather than trusting a success claimed by JavaScript.
-        check(client.findExisting(listOf(item), folder).contains(0)) { "The drive has not confirmed this file. Retry to confirm it." }
+        check(client.findExisting(listOf(item), destinations[id] ?: folder).contains(0)) { "The drive has not confirmed this file. Retry to confirm it." }
         requireRun(owner)
         prefs.markProcessed(item, revision)
         prefs.recordActivity(item, "completed", accountId = account)
         prefs.uploadedTotal = prefs.uploadedTotal + 1
         prefs.lastRunAt = System.currentTimeMillis()
         items.remove(id)
+        destinations.remove(id)
         return JSObject().put("ok", true)
     }
 
@@ -109,6 +116,7 @@ class DirectBackupSession(private val context: Context) {
         prefs.lastResult = if (items.isEmpty()) "Direct backup batch finished." else "Direct backup paused. Open the app and continue."
         prefs.releaseLock(owner)
         items.clear()
+        destinations.clear()
         runId = null
         return JSObject().put("ok", true)
     }

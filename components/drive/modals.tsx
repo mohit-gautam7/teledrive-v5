@@ -10,7 +10,7 @@ import type { DriveFolder, PropsTarget } from "./types";
 
 /** Shared modal chrome: dimmed backdrop, escape-to-close, click-outside-to-close.
  *  Uses dvh so the sheet is never clipped by mobile browser chrome. */
-function Shell({ onClose, children, wide }: { onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+export function Shell({ onClose, children, wide }: { onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   const reduceMotion = useReducedMotion();
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

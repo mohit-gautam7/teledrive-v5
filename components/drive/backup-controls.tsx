@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { apiFetch } from "@/lib/api-client";
+import { DestinationTile, useFolders } from "./folder-picker";
 import { nativeBackup } from "@/lib/native-backup";
 import { uploads } from "@/lib/upload-manager";
 import { readBackupState } from "@/lib/photo-backup";
@@ -22,68 +23,13 @@ export function BackupNetworkSelect({ value, onChange, disabled = false }: {
   </label>;
 }
 
-type Folder = { id: string; name: string; parentId: string | null };
-function folderPath(folder: Folder, folders: Folder[]) {
-  const parts = [folder.name], seen = new Set([folder.id]);
-  let parent = folder.parentId;
-  while (parent && !seen.has(parent)) {
-    seen.add(parent);
-    const node = folders.find(item => item.id === parent);
-    if (!node) break;
-    parts.unshift(node.name); parent = node.parentId;
-  }
-  return "My Drive / " + parts.join(" / ");
-}
-
+/** Where browser backups land, chosen with the folder browser. */
 export function BackupDestination({ value, automaticName, onChange }: {
   value: string | null; automaticName: string; onChange: (id: string | null, name: string) => void;
 }) {
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [error, setError] = useState("");
-  const [newName, setNewName] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const load = useCallback(async () => {
-    try { const data = await apiFetch<{folders: Folder[]}>("/api/folders?flat=1"); setFolders(data.folders); setError(""); }
-    catch { setError("Could not load destination folders. Try Refresh folders."); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-  return <div className="space-y-2">
-    <label className="block t-sm">Save backups into
-      <select aria-label="Save backups into" className="field mt-1.5 w-full" value={value ?? ""}
-        onChange={event => {
-          const folder = folders.find(item => item.id === event.target.value);
-          onChange(folder?.id ?? null, folder ? folderPath(folder, folders) : automaticName);
-        }}>
-        <option value="">{automaticName} (created when backup starts)</option>
-        {value && !folders.some(folder => folder.id === value) ? <option value={value}>Current destination</option> : null}
-        {folders.map(folder => <option key={folder.id} value={folder.id}>{folderPath(folder, folders)}</option>)}
-      </select>
-    </label>
-    <div className="flex flex-wrap gap-2">
-      <button className="btn btn-ghost" onClick={() => void load()}>Refresh folders</button>
-      <button className="btn btn-ghost" onClick={() => setCreating(!creating)}>New destination folder</button>
-      {value ? <a className="btn btn-ghost" href={`/drive?folder=${encodeURIComponent(value)}`}>Open destination</a> : null}
-    </div>
-    {creating ? <form className="flex flex-wrap gap-2" onSubmit={async event => {
-      event.preventDefault();
-      if (saving || !newName.trim()) return;
-      setSaving(true);
-      try {
-        const data = await apiFetch<{ folder: Folder }>("/api/folders", {method:"POST",headers:{"content-type":"application/json"},
-          body:JSON.stringify({name:newName.trim(),parentId:value})});
-        await load(); onChange(data.folder.id, data.folder.name); setNewName(""); setCreating(false);
-      } catch { setError("Could not create that folder. Check its name and try again."); }
-      finally { setSaving(false); }
-    }}>
-      <input aria-label="New backup folder name" className="field min-w-0 flex-1" value={newName} required maxLength={80}
-        placeholder="Folder name" onChange={event => setNewName(event.target.value)} />
-      <button className="btn btn-accent" type="submit" disabled={saving}>{saving ? "Creating…" : "Create folder"}</button>
-    </form> : null}
-    {error ? <p role="alert" className="t-xs">{error}</p> : null}
-    <p className="t-xs" style={{color:"var(--text-3)"}}>Destination changes apply to new transfers or runs. Already queued files keep their destination.
-      Use Re-check all if you want old source files copied into a new destination.</p>
-  </div>;
+  const { folders, reload } = useFolders();
+  return <DestinationTile label="Save backups into" value={value} automaticName={automaticName}
+    folders={folders} onReload={reload} onChange={onChange} />;
 }
 
 type Row = { name: string; size: number; status: string; error?: string; time?: number; path?: string };
