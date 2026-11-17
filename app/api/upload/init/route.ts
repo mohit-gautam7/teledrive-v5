@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { safeName } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
 import { rateLimit } from "@/lib/rate-limit";
+import { userMtprotoSession } from "@/lib/mtproto-session";
 import {
   CHUNK_SIZE,
   MTPROTO_PART_TTL_MS,
@@ -90,7 +91,7 @@ export async function POST(request: NextRequest) {
     // Anything other than the two named overrides is "auto", so a stale or
     // hand-crafted value cannot steer storage anywhere unexpected.
     const preference: BackendPreference = prefer === "account" || prefer === "bot" ? prefer : "auto";
-    const useMtproto = backendFor(fileSize, Boolean(config?.mtprotoSession), preference) === "mtproto";
+    const useMtproto = backendFor(fileSize, Boolean(config?.mtprotoSession && (await userMtprotoSession(user.id))), preference) === "mtproto";
 
     // Resume: an unfinished session for the same file+destination is reused, so
     // a dropped connection costs only the chunks that were still in flight.

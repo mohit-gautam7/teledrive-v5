@@ -1270,8 +1270,9 @@ function DirectUploadCard({ user }: { user: string }) {
       </p>
       <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
         This protects manual browser uploads, including small files. Android automatic background backup uses the file
-        server, not this browser connection. Downloads and thumbnails also use the file server; metadata requests still
-        reach the website. Telegram&apos;s file-size and rate limits, and your internet data allowance, still apply.
+        server, not this browser connection. Files saved to your own account also download, and preview up to 64 MB,
+        straight from Telegram; bot-stored files, thumbnails and larger previews use the file server. Metadata requests
+        still reach the website. Telegram&apos;s file-size and rate limits, and your internet data allowance, still apply.
       </p>
     </section>
   );

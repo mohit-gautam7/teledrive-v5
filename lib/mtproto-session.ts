@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import { isKnownDeadSession } from "@/lib/telegram-user";
 
 /** Decrypted MTProto session for a user, or null when they haven't linked one. */
 export async function userMtprotoSession(userId: string): Promise<string | null> {
@@ -7,7 +8,23 @@ export async function userMtprotoSession(userId: string): Promise<string | null>
     where: { userId },
     select: { mtprotoSession: true }
   });
-  return decryptSecret(config?.mtprotoSession) || null;
+  return (await dropIfDead(config?.mtprotoSession)) ? null : decryptSecret(config?.mtprotoSession) || null;
+}
+
+/**
+ * Clear a stored (encrypted) session once Telegram has revoked it in this
+ * process; it can never work again. Only that exact value is cleared, so a link
+ * made since is left alone, and mtprotoUserId stays to show which account to
+ * link again. Returns true when it was dead.
+ */
+export async function dropIfDead(encrypted: string | null | undefined): Promise<boolean> {
+  const session = decryptSecret(encrypted);
+  if (!encrypted || !session || !isKnownDeadSession(session)) return false;
+  await prisma.storageConfig.updateMany({
+    where: { mtprotoSession: encrypted },
+    data: { mtprotoSession: null, mtprotoPremium: false }
+  });
+  return true;
 }
 
 export async function saveMtprotoSession(userId: string, session: string, telegramUserId: string, premium: boolean) {
