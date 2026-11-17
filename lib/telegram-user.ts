@@ -203,6 +203,24 @@ export async function withUserClient<T>(sessionString: string, fn: (client: Tele
   return fn(client);
 }
 
+/** Approve another device's QR login (tg://login?token=...) from this session. */
+export async function approveLoginToken(sessionString: string, qrUrl: string): Promise<void> {
+  const match = /^tg:\/\/login\?token=([A-Za-z0-9_-]+)$/.exec(qrUrl);
+  if (!match) throw new Error("Not a Telegram login link.");
+  const client = await connect(sessionString);
+  await withTimeout(
+    client.invoke(new Api.auth.AcceptLoginToken({ token: Buffer.from(match[1], "base64url") })),
+    20_000,
+    "acceptLoginToken"
+  );
+}
+
+/** Open the user's chat with the bot, which a bot cannot do itself. */
+export async function startBotChat(sessionString: string, botUsername: string): Promise<void> {
+  const client = await connect(sessionString);
+  await withTimeout(client.sendMessage(botUsername, { message: "/start" }), 20_000, "start bot chat");
+}
+
 // ── Authorisation: QR ────────────────────────────────────────────────────────
 
 export type QrStart = { pendingSession: string; qrUrl: string; expiresAt: number };
@@ -236,7 +254,7 @@ export type QrPoll =
    *  progress, so the panel can say which rather than spinning identically. */
   | { status: "pending"; pendingSession: string; qrUrl?: string; expiresAt?: number; state?: "waiting" | "migrating" }
   | { status: "password"; pendingSession: string }
-  | { status: "authorized"; session: string; userId: string; premium: boolean; name: string };
+  | { status: "authorized"; session: string; userId: string; premium: boolean; name: string; username?: string | null };
 
 /**
  * Diagnostics for the QR handshake, off unless DEBUG_TG_LINK=1.
@@ -481,7 +499,8 @@ async function authorizedResult(client: TelegramClient, previousKey?: string): P
     session,
     userId: String(me.id),
     premium: Boolean(me.premium),
-    name: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "Telegram user"
+    name: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || "Telegram user",
+    username: me.username ?? null
   };
 }
 
@@ -538,7 +557,7 @@ export async function startPhoneLogin(
   }
 }
 
-export type Authorized = { status: "authorized"; session: string; userId: string; premium: boolean; name: string };
+export type Authorized = { status: "authorized"; session: string; userId: string; premium: boolean; name: string; username?: string | null };
 export type SignInResult = { status: "password"; pendingSession: string } | Authorized;
 
 export async function signInWithCode(

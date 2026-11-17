@@ -75,6 +75,37 @@ export function clearPendingLinkCookie(response: NextResponse) {
   response.cookies.set(LINK_COOKIE, "", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 0 });
 }
 
+/**
+ * For ten minutes after a real Telegram sign-in, the server's fresh session may
+ * approve this browser's own Telegram login, so the user scans or types a code
+ * once instead of twice. Outside that window a stolen TeleDrive cookie can never
+ * be turned into a Telegram login. No `id` claim, so it can never pass as a session.
+ */
+const APPROVE_COOKIE = "teledrive_tg_approve";
+const APPROVE_SCOPE = "tg-approve";
+
+export function setBrowserApprovalCookie(response: NextResponse, userId: string) {
+  const token = jwt.sign({ uid: userId, scope: APPROVE_SCOPE }, String(requireEnv("JWT_SECRET")), { expiresIn: "10m" });
+  response.cookies.set(APPROVE_COOKIE, token, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production" && process.env.SECURE_COOKIES !== "false",
+    path: "/api/telegram/approve-browser",
+    maxAge: 600
+  });
+}
+
+export async function browserApprovalOpen(userId: string): Promise<boolean> {
+  const token = (await cookies()).get(APPROVE_COOKIE)?.value;
+  if (!token) return false;
+  try {
+    const claims = jwt.verify(token, String(requireEnv("JWT_SECRET"))) as { uid?: string; scope?: string };
+    return claims.scope === APPROVE_SCOPE && claims.uid === userId;
+  } catch {
+    return false;
+  }
+}
+
 export function signSession(user: SessionUser) {
   return jwt.sign(user, String(requireEnv("JWT_SECRET")), { expiresIn: "30d" });
 }

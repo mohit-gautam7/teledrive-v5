@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
+import { connectThisDevice, QrCanvas, TelegramLoginFlow } from "@/components/telegram-login-flow";
 import {
   nativeBackup,
   nativeBackupAvailable,
@@ -1443,6 +1444,7 @@ export function TransfersPanel({
   onUpload: () => void;
 }) {
   const prefs = usePreferences();
+  const [deviceKey, setDeviceKey] = useState(0);
   const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   return (
     <div className="space-y-4">
@@ -1464,8 +1466,8 @@ export function TransfersPanel({
 
       <h3 id="tx-telegram" className="eyebrow scroll-mt-24 pt-2">Telegram connections</h3>
       <div className="grid gap-4 lg:grid-cols-2">
-        <TelegramLinkCard link={link} onChanged={onLinkChanged} />
-        <DirectUploadCard user={backupUser} />
+        <TelegramLinkCard link={link} onChanged={onLinkChanged} user={backupUser} onDeviceConnected={() => setDeviceKey(k => k + 1)} />
+        <DirectUploadCard key={deviceKey} user={backupUser} />
       </div>
 
       <h3 id="tx-backup" className="eyebrow scroll-mt-24 pt-2">Phone and folder backup</h3>
@@ -2472,125 +2474,20 @@ function AiKeysCard({ overview, refresh }: { overview: AiOverview; refresh: () =
  * wait. Give-up is generous because a cold free-tier instance can take tens of
  * seconds to answer the first request.
  */
-const QR_POLL_MS = 4_000;
-const QR_GIVE_UP_MS = 3 * 60_000;
-const QR_MAX_FAILURES = 5;
-
-/** Link the user's own Telegram account over MTProto (QR or phone code). */
-function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onChanged: () => void }) {
-  const [mode, setMode] = useState<"idle" | "qr" | "phone">("idle");
-  const [qrUrl, setQrUrl] = useState("");
-  const [phone, setPhone] = useState("");
-  const [code, setCode] = useState("");
-  const [password, setPassword] = useState("");
-  const [step, setStep] = useState<"start" | "code" | "password">("start");
+function TelegramLinkCard({ link, onChanged, user, onDeviceConnected }: {
+  link: TelegramLink | null;
+  onChanged: () => void;
+  user: string;
+  onDeviceConnected: () => void;
+}) {
   const [busy, setBusy] = useState(false);
-  const [qrError, setQrError] = useState("");
-  /** What the handshake is actually doing, so the panel never just spins. */
-  const [qrState, setQrState] = useState<"waiting" | "migrating">("waiting");
-  /** Which channel Telegram actually used for the login code. */
-  const [delivery, setDelivery] = useState<string>("");
-
-  const post = useCallback(async (body: Record<string, unknown>) => {
-    return apiFetch<{ status?: string; state?: string; delivery?: string; qrUrl?: string; expiresAt?: number; premium?: boolean; name?: string }>("/api/telegram/link", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body)
-    });
-  }, []);
-
-  /**
-   * Poll while a QR is on screen.
-   *
-   * Every poll asks Telegram for the current login token, and Telegram issues a
-   * *new* one each time — so the answer always carries the QR that is actually
-   * live, and it is redrawn here. Without that the code on screen goes stale
-   * within one interval: the phone reports a successful scan while this panel
-   * waits forever for an acceptance that can never arrive.
-   *
-   * A self-scheduling timeout rather than setInterval, so a slow response on a
-   * cold Render instance cannot stack overlapping requests.
-   */
-  useEffect(() => {
-    if (mode !== "qr") return;
-
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let failures = 0;
-    const startedAt = Date.now();
-
-    const tick = async () => {
-      if (cancelled) return;
-
-      if (Date.now() - startedAt > QR_GIVE_UP_MS) {
-        setQrError("This QR code expired. Start again, or use your phone number.");
-        return;
-      }
-
-      try {
-        const result = await post({ action: "qr-poll" });
-        if (cancelled) return;
-        failures = 0;
-        setQrError("");
-        if (result.state === "migrating" || result.state === "waiting") setQrState(result.state);
-        if (typeof window !== "undefined" && window.localStorage.getItem("td:debugLink") === "1") {
-          // Opt-in client trace, paired with DEBUG_TG_LINK=1 on the server.
-          console.log("[tg-link] poll ->", result.status, result.state ?? "", "qr=", Boolean(result.qrUrl));
-        }
-
-        if (result.status === "linked") {
-          toast.success(`Telegram account linked${result.premium ? " (Premium — 4 GB files)" : ""}`);
-          setMode("idle");
-          setQrUrl("");
-          onChanged();
-          return;
-        }
-        if (result.status === "password") {
-          // A 2FA account gets this far and then needs the cloud password.
-          setStep("password");
-          setMode("phone");
-          setQrUrl("");
-          toast.info("Two-step verification is on — enter your cloud password.");
-          return;
-        }
-        // Still waiting. Redraw whatever token is current now.
-        if (result.qrUrl) setQrUrl(result.qrUrl);
-      } catch (err) {
-        if (cancelled) return;
-        // A 409 means the server has no half-finished login left (restart, or
-        // it was cleared) — polling can never succeed, so say so and stop.
-        if (err instanceof ApiError && err.status === 409) {
-          setQrError("This login attempt expired. Start again.");
-          return;
-        }
-        // Anything else — a cold instance, a dropped connection — is worth
-        // retrying, backing off so a sleeping host is not hammered.
-        failures += 1;
-        if (failures >= QR_MAX_FAILURES) {
-          // The actual message, not a generic one — it is usually a Telegram
-          // error worth reading (a flood wait, a dead session).
-          setQrError(err instanceof Error ? err.message : "Lost contact with the server. Start again.");
-          return;
-        }
-      }
-
-      timer = setTimeout(tick, failures ? Math.min(QR_POLL_MS * 2 ** failures, 15_000) : QR_POLL_MS);
-    };
-
-    timer = setTimeout(tick, QR_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [mode, post, onChanged]);
 
   if (!link) return <section className="panel p-5"><PanelSkeleton rows={1} /></section>;
 
   const missing = link.missingEnv ?? [];
 
   // Naming the variables matters: the same build behaves differently per host
-  // purely on environment, and "unavailable" with no reason is indistinguishable
-  // from a bug when it works on localhost.
+  // purely on environment, and "unavailable" with no reason looks like a bug.
   if (!link.available || missing.length) {
     return (
       <section className="panel p-5">
@@ -2615,12 +2512,6 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
           )}{" "}
           Bot storage still handles files up to {formatBytes(MAX_FILE_SIZE)}.
         </p>
-        {missing.includes("SESSION_ENCRYPTION_KEY") ? (
-          <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-            <span className="mono">SESSION_ENCRYPTION_KEY</span> encrypts the stored Telegram session. Linking is
-            blocked without it rather than saving your session in clear text.
-          </p>
-        ) : null}
       </section>
     );
   }
@@ -2639,7 +2530,7 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
       <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
         {link.linked
           ? `Big files are stored as a single message in your Saved Messages — up to ${formatBytes(link.maxBytes)} each.`
-          : `Link your account to store large files as one message instead of hundreds of 4 MB chunks. Raises the per-file ceiling to ${formatBytes(MAX_FILE_SIZE)} (4 GB with Premium).`}
+          : `Sign in once with your Telegram number or QR. That links your account for big files (up to ${formatBytes(MAX_FILE_SIZE)}, 4 GB with Premium) and connects this device for direct uploads and downloads — no second scan.`}
       </p>
 
       {link.linked ? (
@@ -2649,7 +2540,11 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
           onClick={async () => {
             setBusy(true);
             try {
-              await post({ action: "unlink" });
+              await apiFetch("/api/telegram/link", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ action: "unlink" })
+              });
               toast.success("Account unlinked");
               onChanged();
             } catch (err) {
@@ -2661,226 +2556,18 @@ function TelegramLinkCard({ link, onChanged }: { link: TelegramLink | null; onCh
         >
           <Unlink className="h-4 w-4" /> Unlink account
         </button>
-      ) : mode === "idle" ? (
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                const result = await post({ action: "qr-start" });
-                setQrUrl(result.qrUrl || "");
-                setQrError("");
-                setMode("qr");
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : "Could not start QR login.");
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Link with QR
-          </button>
-          <button className="btn btn-ghost" onClick={() => { setMode("phone"); setStep("start"); }}>
-            <Smartphone className="h-4 w-4" /> Use phone number
-          </button>
-        </div>
-      ) : mode === "qr" ? (
-        <div className="mt-4">
-          <p className="t-sm" style={{ color: "var(--text-2)" }}>
-            In Telegram: <b>Settings → Devices → Link Desktop Device</b>, then scan this.
-          </p>
-          <div className="mt-3 inline-block rounded-xl bg-white p-3">
-            {/* Rendered from the tg:// login URL Telegram returned. */}
-            <QrCanvas value={qrUrl} />
-          </div>
-          <div className="mt-3">
-            <button className="btn btn-accent" onClick={() => { setMode("phone"); setStep("start"); setQrUrl(""); }}>
-              <Smartphone className="h-3.5 w-3.5" /> Use phone number instead
-            </button>
-          </div>
-          {qrError ? (
-            <p className="t-sm mt-3 rounded-xl px-3.5 py-3 leading-relaxed"
-               style={{ background: "var(--danger-dim)", border: "1px solid var(--danger-border)", color: "var(--danger)" }}>
-              {qrError}
-            </p>
-          ) : (
-            <p className="t-xs mt-2 flex items-center gap-2" style={{ color: "var(--text-3)" }}>
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {qrState === "migrating"
-                ? "Scanned — moving your session to your account's data centre…"
-                : "Waiting for the scan — the code refreshes itself."}
-            </p>
-          )}
-          <div className="mt-3 flex gap-2">
-            <button className="btn btn-ghost" onClick={() => { setMode("idle"); setQrUrl(""); setQrError(""); }}>
-              {qrError ? "Back" : "Cancel"}
-            </button>
-            {qrError ? (
-              <button
-                className="btn btn-primary"
-                disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const result = await post({ action: "qr-start" });
-                    setQrUrl(result.qrUrl || "");
-                    setQrError("");
-                  } catch (err) {
-                    toast.error(err instanceof Error ? err.message : "Could not start QR login.");
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Try again
-              </button>
-            ) : null}
-          </div>
-        </div>
       ) : (
-        <div className="mt-4 space-y-3">
-          {step === "start" ? (
-            <>
-              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98765 43210" className="field" inputMode="tel" aria-label="Phone number" />
-              <div className="flex gap-2">
-                <button className="btn btn-ghost" onClick={() => setMode("idle")}>Back</button>
-                <button
-                  className="btn btn-primary"
-                  disabled={busy || phone.trim().length < 6}
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      const sent = await post({ action: "phone-start", phone: phone.replace(/\s/g, "") });
-                      setDelivery(sent.delivery || "");
-                      setStep("code");
-                      toast.success(
-                        sent.delivery === "sms"
-                          ? "Code sent by SMS."
-                          : sent.delivery === "call"
-                            ? "Telegram is calling you with the code."
-                            : "Code sent to your Telegram app."
-                      );
-                    } catch (err) {
-                      toast.error(err instanceof Error ? err.message : "Could not send a code.");
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Send code
-                </button>
-              </div>
-            </>
-          ) : step === "code" ? (
-            <>
-              <p className="t-sm leading-relaxed" style={{ color: "var(--text-2)" }}>
-                {delivery === "sms" ? (
-                  <>Telegram sent the code by <b>SMS</b> to that number.</>
-                ) : delivery === "call" ? (
-                  <>Telegram is <b>calling</b> that number and will read the code aloud.</>
-                ) : (
-                  <>
-                    Telegram sent the code to your <b>Telegram app</b>, not by SMS — open any device where you are
-                    already signed in and look for the message from <b>Telegram</b>. SMS is only used when the account
-                    has no active session.
-                  </>
-                )}
-              </p>
-              <input value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} placeholder="Login code" className="field mono" inputMode="numeric" aria-label="Login code" />
-              <button
-                className="btn btn-primary"
-                disabled={busy || code.length < 3}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const result = await post({ action: "phone-code", code });
-                    if (result.status === "password") {
-                      setStep("password");
-                      toast.info("Two-step verification is on — enter your cloud password.");
-                    } else {
-                      toast.success("Telegram account linked");
-                      setMode("idle");
-                      onChanged();
-                    }
-                  } catch (err) {
-                    toast.error(err instanceof Error ? err.message : "That code didn't work.");
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Confirm
-              </button>
-            </>
-          ) : (
-            <>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Cloud password" className="field" aria-label="Telegram cloud password" />
-              <button
-                className="btn btn-primary"
-                disabled={busy || !password}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await post({ action: "password", password });
-                    toast.success("Telegram account linked");
-                    setMode("idle");
-                    onChanged();
-                  } catch (err) {
-                    toast.error(err instanceof Error ? err.message : "Password rejected.");
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Confirm
-              </button>
-            </>
-          )}
-        </div>
+        <TelegramLoginFlow
+          endpoint="/api/telegram/link"
+          onDone={result => {
+            toast.success(`Telegram account linked${result.premium ? " (Premium — 4 GB files)" : ""}`);
+            onChanged();
+            void connectThisDevice(user, result.password).then(onDeviceConnected);
+          }}
+        />
       )}
     </section>
   );
-}
-
-/** Renders the tg:// login URL Telegram returned. The encoder is imported lazily
- *  so it only ships to users who actually open the linking flow. */
-function QrCanvas({ value }: { value: string }) {
-  const [dataUrl, setDataUrl] = useState("");
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (!value) return;
-    let cancelled = false;
-    import("qrcode")
-      .then(mod => mod.toDataURL(value, { margin: 0, width: 208, errorCorrectionLevel: "L" }))
-      .then(url => {
-        if (!cancelled) setDataUrl(url);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [value]);
-
-  if (failed) {
-    return (
-      <a href={value} className="t-xs break-all" style={{ color: "#000" }}>
-        {value}
-      </a>
-    );
-  }
-  if (!dataUrl) {
-    return (
-      <div style={{ width: 208, height: 208, display: "grid", placeItems: "center" }}>
-        <Loader2 className="h-5 w-5 animate-spin" style={{ color: "#000" }} />
-      </div>
-    );
-  }
-  return <img src={dataUrl} width={208} height={208} alt="Telegram login QR code" />;
 }
 
 // ── About ───────────────────────────────────────────────────────────────────

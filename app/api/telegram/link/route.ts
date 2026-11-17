@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/auth";
+import { requireUser, setBrowserApprovalCookie } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonError } from "@/lib/api-response";
 import { rateLimit } from "@/lib/rate-limit";
@@ -54,6 +54,13 @@ export async function GET() {
   } catch (error) {
     return jsonError(error, "Could not read Telegram link status.");
   }
+}
+
+/** A successful link also lets this browser be connected without a second scan. */
+function approved(userId: string, payload: Record<string, unknown>) {
+  const response = NextResponse.json(payload);
+  setBrowserApprovalCookie(response, userId);
+  return response;
 }
 
 export async function POST(request: NextRequest) {
@@ -114,7 +121,7 @@ export async function POST(request: NextRequest) {
           select: { mtprotoSession: true }
         });
         tgLog("saveMtprotoSession stored=", Boolean(check?.mtprotoSession));
-        return NextResponse.json({ status: "linked", premium: result.premium, name: result.name });
+        return approved(user.id, { status: "linked", premium: result.premium, name: result.name });
       }
       if (result.status === "password") {
         await savePendingLogin(user.id, result.pendingSession);
@@ -142,13 +149,13 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ status: "password" });
       }
       await saveMtprotoSession(user.id, result.session, result.userId, result.premium);
-      return NextResponse.json({ status: "linked", premium: result.premium, name: result.name });
+      return approved(user.id, { status: "linked", premium: result.premium, name: result.name });
     }
 
     // action === "password"
     const result = await signInWithPassword(pending.session, input.password);
     await saveMtprotoSession(user.id, result.session, result.userId, result.premium);
-    return NextResponse.json({ status: "linked", premium: result.premium, name: result.name });
+    return approved(user.id, { status: "linked", premium: result.premium, name: result.name });
   } catch (error) {
     // Telegram's own failures are expected here (rate limits, wrong codes, 2FA)
     // and each has an answer the user can act on — surface it rather than a 500.

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Check, Infinity as InfinityIcon, KeyRound, Loader2, Lock, MessageCircle, ShieldCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { connectThisDevice, TelegramLoginFlow } from "@/components/telegram-login-flow";
 import { Logo } from "@/components/logo";
 import { DURATION, EASE, SPRING, useReducedMotion } from "@/lib/motion";
 
@@ -15,8 +16,8 @@ declare global {
 
 const BOT_USERNAME = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || "";
 
-type Providers = { botCode: boolean; widget: boolean; google: boolean; ownerKey: boolean };
-type Tab = "code" | "widget";
+type Providers = { botCode: boolean; widget: boolean; google: boolean; ownerKey: boolean; telegramAccount?: boolean };
+type Tab = "account" | "code" | "widget";
 
 const PILLARS = [
   { icon: Lock, title: "Your account, your bytes", body: "Files land in your own Telegram chat. No third-party bucket, nothing to trust but Telegram." },
@@ -28,7 +29,8 @@ export default function Login() {
   const reduceMotion = useReducedMotion();
 
   const [providers, setProviders] = useState<Providers | null>(null);
-  const [tab, setTab] = useState<Tab>("code");
+  const [tab, setTab] = useState<Tab>("account");
+  const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [linking, setLinking] = useState(false);
@@ -169,6 +171,15 @@ export default function Login() {
     }
   }
 
+  const tabs = ([
+    ["account", "Telegram account", Boolean(providers?.telegramAccount)],
+    ["code", "Bot code", true],
+    ["widget", "One tap", Boolean(providers?.widget)]
+  ] as [Tab, string, boolean][])
+    .filter(([, , on]) => on)
+    .map(([id, label]) => [id, label] as [Tab, string]);
+  const activeTab: Tab = linking ? (providers?.telegramAccount ? "account" : "code") : tabs.some(([id]) => id === tab) ? tab : "code";
+
   const fade = reduceMotion
     ? {}
     : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, ease: EASE } };
@@ -280,16 +291,16 @@ export default function Login() {
                 )}
 
                 {/* Tabs */}
-                {providers?.widget && !linking ? (
+                {providers && !linking && tabs.length > 1 ? (
                   <div className="mb-5 flex gap-1 rounded-xl p-1" style={{ background: "var(--surface)" }}>
-                    {([["code", "Bot code"], ["widget", "One tap"]] as [Tab, string][]).map(([id, label]) => (
+                    {tabs.map(([id, label]) => (
                       <button
                         key={id}
                         onClick={() => { setTab(id); setError(""); }}
                         className="t-sm relative flex-1 rounded-lg py-2 font-semibold transition"
-                        style={{ color: tab === id ? "var(--text-1)" : "var(--text-3)" }}
+                        style={{ color: activeTab === id ? "var(--text-1)" : "var(--text-3)" }}
                       >
-                        {tab === id ? (
+                        {activeTab === id ? (
                           <motion.span
                             layoutId="auth-tab"
                             className="absolute inset-0 rounded-lg"
@@ -304,7 +315,36 @@ export default function Login() {
                 ) : null}
 
                 <AnimatePresence mode="wait" initial={false}>
-                  {tab === "code" || linking || !providers?.widget ? (
+                  {activeTab === "account" ? (
+                    <motion.div
+                      key="account"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: DURATION.base, ease: EASE }}
+                    >
+                      <p className="t-sm leading-relaxed" style={{ color: "var(--text-2)" }}>
+                        Sign in once with your Telegram number or QR. It signs you in, links your account for big files,
+                        and connects this device so uploads and downloads go straight to Telegram.
+                      </p>
+                      {finishing ? (
+                        <p className="t-sm mt-4 flex items-center gap-2" style={{ color: "var(--text-2)" }}>
+                          <Loader2 className="h-4 w-4 animate-spin" /> Connecting this device to Telegram…
+                        </p>
+                      ) : (
+                        <TelegramLoginFlow
+                          endpoint="/api/auth/telegram-account"
+                          primaryLabel="Use QR code"
+                          onDone={async result => {
+                            setFinishing(true);
+                            const key = result.user?.username || result.user?.name;
+                            if (key) await connectThisDevice(key, result.password);
+                            window.location.href = "/drive";
+                          }}
+                        />
+                      )}
+                    </motion.div>
+                  ) : activeTab === "code" ? (
                     <motion.div
                       key="code"
                       initial={{ opacity: 0, y: 8 }}

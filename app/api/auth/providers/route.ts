@@ -13,6 +13,7 @@ export async function GET() {
     botCode: Boolean(process.env.BOT_TOKEN),
     widget: Boolean(process.env.BOT_TOKEN && process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME),
     google: googleConfigured(),
-    ownerKey: Boolean(process.env.OWNER_LOGIN_KEY)
+    ownerKey: Boolean(process.env.OWNER_LOGIN_KEY),
+    telegramAccount: Boolean(process.env.API_ID && process.env.API_HASH && process.env.SESSION_ENCRYPTION_KEY)
   });
 }
