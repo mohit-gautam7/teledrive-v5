@@ -6,7 +6,7 @@ import { toPublicFile } from "@/lib/file-router";
 import { jsonError } from "@/lib/api-response";
 import { rateLimit } from "@/lib/rate-limit";
 import { aiEnabled } from "@/lib/feature-flags";
-import { verifyStoredDocument } from "@/lib/telegram-user";
+import { forgetSession, verifyStoredDocument } from "@/lib/telegram-user";
 import { userMtprotoSession } from "@/lib/mtproto-session";
 
 export const runtime = "nodejs";
@@ -76,7 +76,9 @@ export async function POST(request: NextRequest, props: { params: Promise<{ file
       return NextResponse.json({ error: "Your Telegram account is no longer linked." }, { status: 409 });
     }
 
-    const check = await verifyStoredDocument(session, msgId, Number(file.size));
+    // This runs on the website host, not the file host: release the key right
+    // after, so it is never left open in two places (Telegram may revoke it).
+    const check = await verifyStoredDocument(session, msgId, Number(file.size)).finally(() => forgetSession(session));
     if (!check.ok) {
       // Leave the session open: /api/upload/init hands it back and the browser
       // retries, either directly or down the relay path.

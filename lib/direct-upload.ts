@@ -327,6 +327,56 @@ export async function linkBrowser(user: string, handlers: QrHandlers): Promise<s
   }
 }
 
+/**
+ * Connect this browser right after the account was signed in on the server,
+ * without a second scan: the browser shows its QR token to the server, and the
+ * server's fresh session approves it. The server only does that for a few
+ * minutes after a real sign-in. `password` is the two-step password the user
+ * just typed, if any; a QR login needs it again.
+ *
+ * Resolves "connected", "already" or "off" (direct upload switched off).
+ */
+export async function autoConnectBrowser(user: string, password?: string): Promise<"connected" | "already" | "off"> {
+  if (browserLinked(user)) return "already";
+  forgetDirectSession();
+  if (!(await directConfig())) return "off";
+  const controller = new AbortController();
+  let approving: Promise<void> | null = null;
+  const timeout = setTimeout(() => controller.abort(), 90_000);
+  try {
+    await linkBrowser(user, {
+      signal: controller.signal,
+      onQr: url => {
+        // Each refreshed token is a new request to approve; the latest wins.
+        approving = fetch("/api/telegram/approve-browser", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ qrUrl: url })
+        }).then(async res => {
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            controller.abort();
+            throw new DirectUploadUnavailable(body.error || "The server could not approve this device.");
+          }
+        });
+        approving.catch(() => {});
+      },
+      onPassword: async () => {
+        if (password) return password;
+        throw new DirectUploadUnavailable("Enter your Telegram cloud password under Direct upload to finish connecting this device.");
+      }
+    });
+    return "connected";
+  } catch (error) {
+    // Prefer the server's reason over the generic "Login cancelled.".
+    await (approving as Promise<void> | null)?.catch(reason => { throw reason; });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Check the saved connection without uploading a file. */
 export async function checkDirectConnection(user: string): Promise<string> {
   try {

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { isKnownDeadSession } from "@/lib/telegram-user";
+import { forgetSession, isKnownDeadSession } from "@/lib/telegram-user";
 
 /** Decrypted MTProto session for a user, or null when they haven't linked one. */
 export async function userMtprotoSession(userId: string): Promise<string | null> {
@@ -41,6 +41,10 @@ export async function saveMtprotoSession(userId: string, session: string, telegr
     update: data,
     create: { userId, ...data }
   });
+  // The login usually happens on the website host while files are served from
+  // the file host. Telegram can revoke a key it sees used from two places at
+  // once, so the host that made the login lets go of its socket now.
+  forgetSession(session);
 }
 
 export async function savePendingLogin(userId: string, pendingSession: string, hash?: string, phone?: string) {
