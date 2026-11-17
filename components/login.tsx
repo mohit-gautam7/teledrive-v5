@@ -315,7 +315,11 @@ export default function Login() {
                 ) : null}
 
                 <AnimatePresence mode="wait" initial={false}>
-                  {activeTab === "account" ? (
+                  {!providers ? (
+                    <div key="loading" className="flex justify-center py-6">
+                      <Loader2 className="h-5 w-5 animate-spin" style={{ color: "var(--text-3)" }} />
+                    </div>
+                  ) : activeTab === "account" ? (
                     <motion.div
                       key="account"
                       initial={{ opacity: 0, y: 8 }}
