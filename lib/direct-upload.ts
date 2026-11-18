@@ -570,8 +570,8 @@ export function telegramPhone(input: string): string | null {
   return digits.length >= 8 && digits.length <= 15 ? digits : null;
 }
 
-/** Forward a Saved Messages file to a @username or phone number; returns who got it. */
-export async function sendViaTelegram(user: string, messageId: number, to: string): Promise<string> {
+/** Forward Saved Messages files to a @username or phone number; returns who got them. */
+export async function sendViaTelegram(user: string, messageIds: number[], to: string): Promise<string> {
   const phone = telegramPhone(to);
   const username = to.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
   if (!phone && !/^[A-Za-z0-9_]{4,32}$/.test(username)) throw new Error("Enter a Telegram @username or a phone number.");
@@ -585,7 +585,10 @@ export async function sendViaTelegram(user: string, messageId: number, to: strin
       const found = await client.invoke(new Api.contacts.ResolvePhone({ phone }));
       target = found.users[0] ?? found.peer;
     }
-    await client.forwardMessages(target, { messages: [messageId], fromPeer: "me" });
+    // Telegram forwards at most 100 messages per request, in the order given.
+    for (let i = 0; i < messageIds.length; i += 100) {
+      await client.forwardMessages(target, { messages: messageIds.slice(i, i + 100), fromPeer: "me" });
+    }
     return shown;
   } catch (error) {
     forgetRevokedSession(user, error);

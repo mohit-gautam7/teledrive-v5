@@ -21,6 +21,7 @@ import {
   Info,
   CloudUpload,
   Link2,
+  Send,
   List,
   Loader2,
   LogOut,
@@ -1561,11 +1562,29 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   }
 
   async function sendTelegram(to: string) {
-    if (!shareTarget?.messageId || !cacheUser) return;
+    if (!shareTarget || !cacheUser) return;
     try {
+      let ids = shareTarget.messageId ? [shareTarget.messageId] : [];
+      let skipped = 0;
+      if (shareTarget.folderId) {
+        // Same listing the device-built zip uses: every file under the folder.
+        const plan = await apiFetch<{ entries: Array<{ path: string; backend: string; telegramMessageId: string | null }> }>(
+          "/api/files/zip-plan",
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folderIds: [shareTarget.folderId], name: shareTarget.name }) }
+        );
+        const sendable = plan.entries.filter(e => e.backend === "mtproto" && e.telegramMessageId);
+        skipped = plan.entries.length - sendable.length;
+        ids = sendable.sort((a, b) => a.path.localeCompare(b.path)).map(e => Number(e.telegramMessageId));
+        if (!ids.length) {
+          toast.error(plan.entries.length ? "None of these files are in your Telegram (they were saved by the old bot)." : "This folder is empty.");
+          return;
+        }
+      }
+      if (!ids.length) return;
       const { sendViaTelegram } = await import("@/lib/direct-upload");
-      const name = await sendViaTelegram(cacheUser, shareTarget.messageId, to);
-      toast.success(`Sent to ${name} in Telegram`);
+      const name = await sendViaTelegram(cacheUser, ids, to);
+      const what = shareTarget.folderId ? `${ids.length} file${ids.length === 1 ? "" : "s"}` : "File";
+      toast.success(`${what} sent to ${name} in Telegram${skipped ? ` (${skipped} old bot file${skipped === 1 ? "" : "s"} skipped)` : ""}`);
       setShareTarget(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not send it in Telegram.");
@@ -2342,6 +2361,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                                 <DropdownMenu.Item onSelect={() => copyFolder(folder)} className="menu-item">
                                   <Copy className="h-4 w-4" style={{ color: "var(--accent)" }} /> Make a copy
                                 </DropdownMenu.Item>
+                                <DropdownMenu.Item onSelect={() => setShareTarget({ folderId: folder.id, name: folder.name })} className="menu-item">
+                                  <Send className="h-4 w-4" style={{ color: "var(--accent)" }} /> Send in Telegram
+                                </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => deleteFolder(folder.id)} className="menu-item menu-item-danger">
                                   <Trash2 className="h-4 w-4" /> Delete
                                 </DropdownMenu.Item>
@@ -2612,8 +2634,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>{propsTarget ? <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} /> : null}</AnimatePresence>
       <AnimatePresence>
         {shareTarget ? <ShareModal targetName={shareTarget.name} onClose={() => setShareTarget(null)}
-                                   onSendTelegram={shareTarget.messageId && cacheUser && !deviceUnlinked ? sendTelegram : undefined}
-                                   unavailable={!shareTarget.messageId
+                                   onSendTelegram={(shareTarget.messageId || shareTarget.folderId) && cacheUser && !deviceUnlinked ? sendTelegram : undefined}
+                                   unavailable={!shareTarget.messageId && !shareTarget.folderId
                                      ? "This file was saved by the old bot, not in your Telegram, so it can't be sent from here. Download it and send it in Telegram."
                                      : "Connect this device to Telegram first (the banner at the top), then you can send files."} /> : null}
       </AnimatePresence>
