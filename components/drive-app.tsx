@@ -510,14 +510,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     return () => (idle ? window.cancelIdleCallback(id) : window.clearTimeout(id));
   }, []);
 
-  /** Warm a folder's listing so clicking it paints instantly. */
+  /** Warm a folder's (or Trash/Favourites') listing so opening it paints instantly. */
   const prefetchFolder = useCallback(
-    async (targetFolderId: string) => {
-      const key = filesCacheKey(targetFolderId, "files", "");
+    async (targetFolderId: string | null, targetView: AppView = "files") => {
+      const key = filesCacheKey(targetFolderId, targetView, "");
       if (window.localStorage.getItem(key) || prefetched.current.has(key)) return;
       prefetched.current.add(key);
       try {
-        const params = new URLSearchParams({ folderId: targetFolderId, sort: sortField, dir: sortDir, skip: "0" });
+        const params = new URLSearchParams({ sort: sortField, dir: sortDir, skip: "0" });
+        if (targetFolderId) params.set("folderId", targetFolderId);
+        if (targetView !== "files") params.set("view", targetView);
         if (typeFilter !== "all") params.set("type", typeFilter);
         const data = await apiFetch<{ files: DriveFile[] }>(`/api/files?${params}`, { cache: "no-store" });
         window.localStorage.setItem(key, JSON.stringify(data.files.slice(0, 48)));
@@ -527,6 +529,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     },
     [filesCacheKey, sortField, sortDir, typeFilter]
   );
+
+  // Trash and Favourites are one tap away and usually tiny: warm both a few
+  // seconds after load, so the first visit paints from cache, not a blank page.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      void prefetchFolder(null, "trash");
+      void prefetchFolder(null, "favorites");
+    }, 3000);
+    return () => window.clearTimeout(id);
+  }, [prefetchFolder]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
@@ -1939,7 +1951,9 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
         <nav className="mt-4 flex-1 space-y-0.5 overflow-y-auto pb-3">
           {NAV.map(({ icon: Icon, label, view: navView }) => (
-            <button key={navView} onClick={() => selectView(navView)} className="nav-item" data-active={appView === navView}>
+            <button key={navView} onClick={() => selectView(navView)} className="nav-item" data-active={appView === navView}
+                    onMouseEnter={navView === "trash" || navView === "favorites" ? () => void prefetchFolder(null, navView) : undefined}
+                    onTouchStart={navView === "trash" || navView === "favorites" ? () => void prefetchFolder(null, navView) : undefined}>
               {appView === navView ? (
                 <motion.span
                   layoutId="nav-rail"
@@ -2418,7 +2432,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                         ))}
                       </AnimatePresence>
                     </div>
-                  ) : folders.length ? null : (
+                  ) : appView === "files" && folders.length ? null : (
                     <EmptyState
                       icon={<Cloud className="h-7 w-7" style={{ color: "var(--accent)" }} />}
                       title={appView === "trash" ? "Trash is empty" : appView === "favorites" ? "No favourites yet" : "Nothing here yet"}
