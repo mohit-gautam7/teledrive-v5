@@ -15,6 +15,7 @@ import {
   Video as VideoIcon,
   X
 } from "lucide-react";
+import { toast } from "sonner";
 import { formatBytes } from "@/lib/utils";
 import { fadeIn, useReducedMotion } from "@/lib/motion";
 import { useAssetUrl } from "@/lib/use-file-auth";
@@ -87,6 +88,26 @@ function useDirectStream(file: DriveFile, user: string | undefined, wanted: bool
   const fail = useCallback(() => setState({ id: file.id, url: null }), [file.id]);
   if (!eligible) return { url: null, fail };
   return { url: state?.id === file.id ? state.url : ("pending" as const), fail };
+}
+
+/**
+ * Why a video is coming through the file server, when it could play straight
+ * from Telegram: "connect" — it is in the user's own account but this device
+ * is not connected; "move" — it is bot-stored and the account is linked, so
+ * moving it would make it direct. null when there is nothing to suggest.
+ */
+function useDirectHint(file: DriveFile, user: string | undefined, viaServer: boolean, accountLinked?: boolean) {
+  const [deviceLinked, setDeviceLinked] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!user) return;
+    let live = true;
+    import("@/lib/direct-upload").then(m => { if (live) setDeviceLinked(m.browserLinked(user)); }).catch(() => {});
+    return () => { live = false; };
+  }, [user]);
+  if (!viaServer || !user) return null;
+  if (file.backend === "mtproto" && file.telegramMessageId && deviceLinked === false) return "connect" as const;
+  if (file.backend === "bot" && accountLinked) return "move" as const;
+  return null;
 }
 
 /** Shown when a file can't be rendered inline — always offers the download. */
@@ -393,7 +414,10 @@ export function Lightbox({
   onClose,
   onNavigate,
   onDownload,
-  directUser
+  directUser,
+  accountLinked,
+  onConnectDevice,
+  onMoved
 }: {
   file: DriveFile;
   allFiles: DriveFile[];
@@ -403,6 +427,12 @@ export function Lightbox({
   onDownload: (file: DriveFile) => void;
   /** Whose browser Telegram session may read previews directly. */
   directUser?: string;
+  /** The account has its own Telegram linked, so bot files can be moved there. */
+  accountLinked?: boolean;
+  /** Take the user to where this device can be connected to Telegram. */
+  onConnectDevice?: () => void;
+  /** A bot file was moved to the account; this is its new shape. */
+  onMoved?: (file: DriveFile) => void;
 }) {
   const reduceMotion = useReducedMotion();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -473,6 +503,22 @@ export function Lightbox({
   const direct = image ? directImage : streamed;
   const serverSrc = useAssetUrl(direct === null && (image || video || audio) ? (image ? `/api/preview/${file.id}` : `/api/stream/${file.id}`) : "");
   const src = direct === "pending" ? "" : direct ?? serverSrc;
+  const hint = useDirectHint(file, directUser, (video || audio) && streamed === null, accountLinked);
+  const [moving, setMoving] = useState(false);
+  const moveToAccount = useCallback(async () => {
+    setMoving(true);
+    try {
+      const res = await fetch(`/api/files/${file.id}/to-account`, { method: "POST", credentials: "same-origin" });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; messageId?: number; error?: string };
+      if (!res.ok || !body.ok) throw new Error(body.error || "Could not move this file.");
+      toast.success("Moved to your Telegram account — it now plays straight from Telegram.");
+      onMoved?.({ ...file, backend: "mtproto", telegramMessageId: String(body.messageId) });
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setMoving(false);
+    }
+  }, [file, onMoved]);
   // The direct stream failed before playing anything: use the file server.
   const fallBackToServer = streamed && streamed !== "pending" ? () => { streamFailed(); return true; } : undefined;
   // A media element given an empty src reports an error at once, which used
@@ -516,6 +562,29 @@ export function Lightbox({
           </button>
         </div>
       </div>
+
+      {hint ? (
+        <div
+          className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2"
+          style={{ background: "var(--accent-dim)", borderBottom: "1px solid var(--accent-border)" }}
+          onClick={e => e.stopPropagation()}
+        >
+          <p className="t-xs min-w-0" style={{ color: "var(--text-2)" }}>
+            {hint === "connect"
+              ? "Playing through the server. Connect this device to Telegram to play it straight from Telegram — much faster."
+              : "Stored by the bot, so it plays through the server. Move it to your Telegram account to play it directly."}
+          </p>
+          {hint === "connect" ? (
+            onConnectDevice ? (
+              <button className="btn btn-accent shrink-0" onClick={onConnectDevice}>Connect</button>
+            ) : null
+          ) : (
+            <button className="btn btn-accent shrink-0" disabled={moving} onClick={() => void moveToAccount()}>
+              {moving ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Move to my account
+            </button>
+          )}
+        </div>
+      ) : null}
 
       {/* Stage */}
       <div
