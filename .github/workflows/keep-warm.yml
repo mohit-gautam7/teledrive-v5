@@ -39,7 +39,7 @@ jobs:
         env:
           # Overridable without editing this file: set a repository variable
           # named RENDER_URL if the service ever moves.
-          TARGET: ${{ vars.RENDER_URL || 'https://teledrive-v5.onrender.com' }}
+          TARGET: ${{ vars.RENDER_URL || 'https://teledrive-sg.onrender.com' }}
         run: |
           set -u
           for attempt in 1 2 3; do
