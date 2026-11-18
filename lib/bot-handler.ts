@@ -1,8 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { sendMessageBot } from "@/lib/telegram-bot";
-import { safeName } from "@/lib/file-router";
-import { StorageMode } from "@prisma/client";
 
 /**
  * Shared handling for Telegram updates — used by both the production webhook
@@ -110,33 +108,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ") || "User";
   const username = message.from.username ?? null;
 
-  // ── A file sent to the bot → save it straight into the sender's drive ──────
-  const incoming = pickIncomingFile(message);
-  if (incoming) {
-    const user = await upsertUser(telegramId, name, username);
-    const record = await prisma.file.create({
-      data: {
-        userId: user.id,
-        filename: safeName(incoming.name),
-        originalName: incoming.name,
-        mimeType: incoming.mime,
-        size: BigInt(incoming.size),
-        storageMode: StorageMode.BOT,
-        storageChatId: chatId,
-        isChunked: true,
-        totalChunks: 1,
-        uploadStatus: "complete",
-        chunks: {
-          create: { chunkIndex: 0, telegramMsgId: 0, telegramFileId: incoming.fileId, chunkSize: incoming.size }
-        }
-      }
-    });
-    const overLimit = incoming.size > 20 * 1024 * 1024;
+  // ── A file sent to the bot is no longer saved ─────────────────────────────
+  // New files are stored only in the user's own Telegram account, which this
+  // bot cannot write to — so point people at the site or app instead.
+  if (pickIncomingFile(message)) {
     await sendMessageBot(
       chatId,
-      overLimit
-        ? `✅ "${record.originalName}" saved to your TeleDrive.\n⚠️ Files over 20 MB sent this way can't be downloaded back through the site (Telegram bot limit) — upload big files on the site instead.`
-        : `✅ "${record.originalName}" saved to your TeleDrive. It will appear on the site instantly.`
+      "📵 Files sent here are no longer saved to TeleDrive.\n\nUpload them on the TeleDrive website or app instead — they're stored in your own Telegram account and play straight from Telegram."
     );
     return;
   }
@@ -149,9 +127,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   await sendMessageBot(
     chatId,
     (isStart
-      ? `👋 Welcome to TeleDrive, ${safeDisplayName}!\n\nYour files are stored here in this chat — in *your* Telegram, under your control.\n\n`
+      ? `👋 Welcome to TeleDrive, ${safeDisplayName}!\n\nSign in on the TeleDrive website or app with your Telegram number — your files are stored in your own Telegram account.\n\n`
       : "") +
-      `🔑 *Login code*\n\n\`${code}\`\n\nEnter it on the TeleDrive site. Valid for 10 minutes — don't share it.\n\n💡 Tip: send me any file and it lands in your drive.`,
+      `🔑 *Login code*\n\n\`${code}\`\n\nOnly needed if the site asks for a bot code. Valid for 10 minutes — don't share it.`,
     { parse_mode: "Markdown" }
   );
 }
