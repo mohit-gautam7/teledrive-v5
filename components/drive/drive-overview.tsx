@@ -1,12 +1,12 @@
 "use client";
 
-import { ArrowUpRight, CloudUpload, Settings2 } from "lucide-react";
+import { ArrowUpRight, CloudUpload, FolderUp, Settings2 } from "lucide-react";
 import { CloudSculpture } from "./cloud-sculpture";
 import { formatBytes } from "@/lib/utils";
 import type { Insights } from "./types";
 
-export function DriveOverview({ insights, active, onUpload, onSettings }: {
-  insights: Insights | null; active: number; onUpload: () => void; onSettings: () => void;
+export function DriveOverview({ insights, active, onUpload, onUploadFolder, onSettings }: {
+  insights: Insights | null; active: number; onUpload: () => void; onUploadFolder: () => void; onSettings: () => void;
 }) {
   return <section className="drive-overview mb-6" aria-label="Drive overview">
     <div className="overview-copy">
@@ -15,6 +15,7 @@ export function DriveOverview({ insights, active, onUpload, onSettings }: {
       <p className="t-sm mt-3 max-w-[40ch]" style={{ color: "var(--text-2)" }}>Photos, ideas, and the files that matter. All together, in your Telegram.</p>
       <div className="mt-5 flex flex-wrap gap-2">
         <button className="btn btn-accent" onClick={onUpload}><CloudUpload className="h-4 w-4" /> Upload files <ArrowUpRight className="h-4 w-4" /></button>
+        <button className="btn btn-ghost" onClick={onUploadFolder}><FolderUp className="h-4 w-4" /> Upload folder</button>
         <button className="btn btn-ghost" onClick={onSettings}><Settings2 className="h-4 w-4" /> Backup & connections</button>
       </div>
     </div>
