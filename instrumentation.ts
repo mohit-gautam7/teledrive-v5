@@ -1,4 +1,13 @@
 export async function register() {
+  // Node gives each address only 250 ms to connect before trying the next
+  // (happy eyeballs). From Render Singapore the Bot API in Europe sometimes
+  // needs longer, so fetch failed with ETIMEDOUT while Telegram was fine —
+  // health went 503 and real bot downloads broke. Give each attempt 2.5 s.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const net = await import("node:net");
+    net.setDefaultAutoSelectFamilyAttemptTimeout(2500);
+  }
+
   // Dev-only bot polling. In production (Vercel) the bot is driven by the
   // /api/bot/webhook route — polling there would conflict with the webhook.
   if (
