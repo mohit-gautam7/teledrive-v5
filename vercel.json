@@ -2,6 +2,7 @@
   "framework": "nextjs",
   "buildCommand": "pnpm build",
   "installCommand": "pnpm install",
+  "regions": ["hnd1"],
   "crons": [
     {
       "path": "/api/cron/keepalive",

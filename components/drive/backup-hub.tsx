@@ -180,7 +180,7 @@ export function PhotoBackupHub({ user }: { user: string }) {
             </span>
             <div className="min-w-0 flex-1">
               <p className="eyebrow">Photo &amp; video backup</p>
-              <h2 className="display text-xl leading-tight" style={{ color: "var(--text-1)" }}>{stateLook.title}</h2>
+              <h2 className="display text-lg leading-tight" style={{ color: "var(--text-1)" }}>{stateLook.title}</h2>
               <p className="t-xs mt-0.5 line-clamp-2" style={{ color: "var(--text-3)" }}>{stateLook.sub}</p>
             </div>
             <Toggle label="Photo and video backup" on={status.enabled}
