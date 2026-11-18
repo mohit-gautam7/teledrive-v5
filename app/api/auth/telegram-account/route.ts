@@ -98,10 +98,10 @@ async function finish(result: Authorized) {
   }
 
   await saveMtprotoSession(user.id, result.session, result.userId, result.premium);
-  // "One login, everything direct" for a new account: this device's downloads,
-  // previews and uploads go straight to Telegram once it is connected. An
-  // existing account keeps the setting it chose.
-  if (!existing) await prisma.storageConfig.update({ where: { userId: user.id }, data: { directUpload: true } });
+  // "One login, everything direct": this device's downloads, previews and
+  // uploads go straight to Telegram once it is connected — for older accounts
+  // signing in again too, so nobody stays routed through the file server.
+  await prisma.storageConfig.update({ where: { userId: user.id }, data: { directUpload: true } });
 
   const pendingLink = await readPendingLink();
   if (pendingLink) {
