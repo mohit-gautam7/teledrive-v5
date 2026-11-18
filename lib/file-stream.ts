@@ -3,6 +3,7 @@ import { StorageMode } from "@prisma/client";
 import { fetchBotFile } from "@/lib/telegram-bot";
 import { downloadChunkFromTelegram, legacySessionAvailable } from "@/lib/telegram";
 import { downloadRange, isKnownDeadSession } from "@/lib/telegram-user";
+import { buildRangeStream } from "@/lib/range-stream";
 import { dropIfDead } from "@/lib/mtproto-session";
 import { decryptSecret } from "@/lib/crypto";
 import { BOT_DOWNLOAD_LIMIT } from "@/lib/upload-config";
@@ -33,9 +34,6 @@ export type StreamableFile = {
   } | null;
 };
 
-/** How much of an MTProto file we pull per read. Big enough to amortise the
- *  round trip, small enough that a 2 GB file never sits in function memory. */
-const MTPROTO_WINDOW = 4 * 1024 * 1024;
 
 /**
  * Which stored types may be handed to the browser to *render*, rather than save.
@@ -156,40 +154,6 @@ function buildChunkStream(
   });
 }
 
-/** Pull-based stream over an arbitrary byte range, one window at a time. */
-function buildRangeStream(
-  rangeStart: number,
-  rangeEnd: number,
-  read: (start: number, end: number) => Promise<Buffer>
-): ReadableStream<Uint8Array> {
-  let cursor = rangeStart;
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (cursor > rangeEnd) {
-        controller.close();
-        return;
-      }
-      const end = Math.min(cursor + MTPROTO_WINDOW - 1, rangeEnd);
-      try {
-        const buf = await read(cursor, end);
-        // Advance by what actually arrived, not by what was asked for. A short
-        // read — Telegram returning a partial window near a part boundary — used
-        // to skip the missing bytes *and* leave the body shorter than the
-        // Content-Length already promised in the headers. The browser sees a
-        // truncated 206, throws the whole response away and restarts from zero,
-        // which is the reload loop.
-        if (!buf.length) {
-          throw new Error(`Upstream returned no data at byte ${cursor}.`);
-        }
-        cursor += buf.length;
-        controller.enqueue(new Uint8Array(buf));
-      } catch (err) {
-        controller.error(err);
-      }
-    }
-  });
-}
-
 /** The user's own bot token, decrypted. Stored ciphertext since the token
  *  stopped being kept in the clear; decryptSecret passes older plaintext
  *  through untouched, so existing rows keep working. */
@@ -215,7 +179,9 @@ export async function readEntireFile(file: StreamableFile): Promise<Buffer | nul
   if (file.backend === "mtproto" && file.telegramMessageId) {
     const session = decryptSecret(file.user?.storageConfig?.mtprotoSession);
     if (!session) return null;
-    return downloadRange(session, Number(file.telegramMessageId), 0, totalSize - 1);
+    const msgId = Number(file.telegramMessageId);
+    const stream = buildRangeStream(0, totalSize - 1, (from, to) => downloadRange(session, msgId, from, to));
+    return Buffer.from(await new Response(stream).arrayBuffer());
   }
 
   if (file.isChunked) {
