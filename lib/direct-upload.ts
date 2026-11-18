@@ -399,6 +399,9 @@ export async function unlinkBrowser(user: string): Promise<void> {
   // browser unlinked rather than stuck holding a key it cannot drop.
   forgetStoredSession(user);
   forgetDirectSession();
+  // The Android app keeps a copy for background backup; drop that too.
+  const app = (window as unknown as { Capacitor?: { Plugins?: { Backup?: { directCredentials?: (o: object) => Promise<unknown> } } } }).Capacitor;
+  await app?.Plugins?.Backup?.directCredentials?.({ session: "", apiId: 0 })?.catch(() => {});
   let client: TelegramClient | undefined;
   try {
     const config = await configRequest;
@@ -545,6 +548,29 @@ export async function readDirectRange(user: string, messageId: number, start: nu
     }
   } catch (error) {
     forgetRevokedSession(user, error);
+    throw error;
+  } finally {
+    touchIdle();
+  }
+}
+
+/* ── Sending to someone ────────────────────────────────────────────────────── */
+
+/**
+ * Forward a Saved Messages file to another Telegram user or chat, from this
+ * device. The recipient gets the real file in Telegram; no server carries it,
+ * which a share link cannot offer (its viewer is not in the owner's account).
+ */
+export async function sendViaTelegram(user: string, messageId: number, to: string): Promise<void> {
+  const target = to.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
+  if (!/^[A-Za-z0-9_]{4,32}$/.test(target)) throw new Error("Enter a Telegram username, like @name.");
+  const client = await connected(user);
+  try {
+    await client.forwardMessages(target, { messages: [messageId], fromPeer: "me" });
+  } catch (error) {
+    forgetRevokedSession(user, error);
+    const reason = (error as { errorMessage?: string })?.errorMessage || (error as Error)?.message || "";
+    if (/USERNAME_(NOT_OCCUPIED|INVALID)|No user has/i.test(reason)) throw new Error(`No Telegram user is called @${target}.`);
     throw error;
   } finally {
     touchIdle();

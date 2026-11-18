@@ -402,6 +402,55 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
     }
 
     /**
+     * Send one file straight to the user's Saved Messages from this phone, then
+     * tell the drive which message it became. Only metadata (and a 30 KB
+     * thumbnail) goes to the app host; no file bytes touch any server.
+     *
+     * The message id is kept until the drive confirms it, so a lost
+     * confirmation is retried without uploading the file a second time.
+     */
+    fun uploadDirect(item: MediaItem, folderId: String?, telegram: () -> MtprotoClient, onProgress: (Long) -> Unit) {
+        val body = JSONObject()
+            .put("fileName", item.name)
+            .put("mimeType", item.mimeType)
+            .put("fileSize", item.size)
+            .put("resumeKey", "direct|android-backup:${item.uri}")
+            .put("prefer", "account")
+            .apply { if (folderId != null) put("folderId", folderId) }
+        val init = try {
+            http.newCall(request("/api/upload/init").post(json(body)).build()).execute().use { ok(it, "Could not start ${item.name}") }
+        } catch (unlinked: PermanentUploadException) {
+            // "Link your Telegram account first" is about the account, not this file.
+            if ("Link your Telegram" in (unlinked.message ?: "")) throw IOException(unlinked.message)
+            throw unlinked
+        }
+        val fileId = init.getString("fileId")
+        if (init.optString("backend") != "mtproto") throw IOException("Link your Telegram account in TeleDrive first.")
+
+        val receipts = appContext.getSharedPreferences("teledrive.direct-receipts", Context.MODE_PRIVATE)
+        var messageId = receipts.getInt(fileId, 0)
+        if (messageId == 0) {
+            messageId = openStream(item).use { input ->
+                telegram().uploadToSavedMessages(input, item.size, item.name,
+                    item.mimeType.ifBlank { "application/octet-stream" }, "📄 ${item.name}") { sent ->
+                    BackupNetwork.requireAllowed(appContext, BackupPrefs(appContext), allowDirect = true)
+                    onProgress(sent)
+                }
+            }
+            receipts.edit().putInt(fileId, messageId).commit()
+        }
+        http.newCall(request("/api/upload/direct/$fileId").post(json(JSONObject().put("messageId", messageId))).build())
+            .execute().use { ok(it, "Telegram stored ${item.name}, but the drive could not confirm it") }
+        receipts.edit().remove(fileId).apply()
+
+        runCatching {
+            Thumbnailer.make(appContext, item)?.let { webp ->
+                http.newCall(request("/api/upload/thumb/$fileId").post(thumbPart(webp)).build()).execute().use { ok(it, "Thumbnail upload failed") }
+            }
+        }.onFailure { Log.i(TAG, "no thumbnail for ${item.name}: ${it.message}") }
+    }
+
+    /**
      * Hand the server a thumbnail made on the phone.
      *
      * The server builds thumbnails lazily by downloading the original back out
@@ -412,14 +461,15 @@ class TeleDriveClient(context: Context, private val baseUrl: String) {
      * natively. Thirty kilobytes sent now replaces all of it.
      */
     private fun uploadThumb(session: Session, webp: ByteArray) {
-        val part = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("thumb", "thumb.webp", webp.toRequestBody("image/webp".toMediaType()))
-            .build()
         callFileServer(session.fileOrigin, "/api/upload/thumb/${session.fileId}", "Thumbnail upload failed") {
-            it.post(part)
+            it.post(thumbPart(webp))
         }
     }
+
+    private fun thumbPart(webp: ByteArray) = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart("thumb", "thumb.webp", webp.toRequestBody("image/webp".toMediaType()))
+        .build()
 
     /**
      * Open the item for reading, or say plainly that the phone could not.

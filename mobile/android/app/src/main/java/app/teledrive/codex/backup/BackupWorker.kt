@@ -46,14 +46,13 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         if (!prefs.enabled) return@withContext Result.success()
-        if (prefs.transport == "direct") {
-            // Never quietly relay a user's direct-only backup. The upload needs
-            // the app's own Telegram session, so the most this run can do is
-            // say there is something new; tapping opens the app, which starts
-            // the backup and keeps it going after it is minimised.
+        if (prefs.transport == "direct" && !TelegramSessionStore.has(applicationContext)) {
+            // Never quietly relay a user's direct-only backup. Without this
+            // phone's Telegram session (the app hands it over once connected)
+            // the most this run can do is say there is something new.
             val pending = runCatching { scanner.pendingCount(prefs) }.getOrDefault(0)
             if (pending > 0) notifyPending(pending)
-            prefs.lastResult = if (pending > 0) "$pending new to back up. Tap the notification or open TeleDrive." else "Direct backup is up to date."
+            prefs.lastResult = if (pending > 0) "$pending new to back up. Open TeleDrive once to connect this phone." else "Direct backup is up to date."
             return@withContext Result.success()
         }
 
@@ -72,6 +71,8 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         try {
             runBatch(me)
         } finally {
+            telegram?.close()
+            telegram = null
             // One release for every way out, instead of one per early return —
             // six of them, each a chance to forget. The next batch is queued
             // behind this one and cannot start until this has returned.
@@ -79,7 +80,17 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
     }
 
+    /** This run's Telegram connection, opened on the first direct upload. */
+    private var telegram: MtprotoClient? = null
+
+    private fun telegram(): MtprotoClient = telegram ?: run {
+        val (apiId, dcId, key) = TelegramSessionStore.load(applicationContext)
+            ?: throw TelegramSessionGone("Open TeleDrive to connect this phone to Telegram.")
+        MtprotoClient(apiId, dcId, key).also { telegram = it }
+    }
+
     private suspend fun runBatch(me: String): Result {
+        val direct = prefs.transport == "direct"
         // A run that ends normally clears its progress. Finding it still set
         // means the last run never reached its end: the process was killed
         // mid-file. Worth recording, because it is direct evidence of what the
@@ -91,7 +102,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
 
         try {
-            BackupNetwork.requireAllowed(applicationContext, prefs)
+            BackupNetwork.requireAllowed(applicationContext, prefs, allowDirect = direct)
         } catch (waiting: IOException) {
             finish(waiting.message ?: "Waiting for network")
             return Result.retry()
@@ -187,10 +198,10 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             }
 
             try {
-                BackupNetwork.requireAllowed(applicationContext, prefs)
+                BackupNetwork.requireAllowed(applicationContext, prefs, allowDirect = direct)
                 prefs.recordActivity(item, "uploading", accountId = accountId)
                 prefs.beginItem(item.name, index + 1, pending.size, item.size)
-                client.upload(item, destinationOf(item)) { sent ->
+                val progress: (Long) -> Unit = { sent ->
                     if (prefs.sourceRevision != revision) throw SourceChanged()
                     prefs.currentSent = sent
                     // Per chunk, not per file: a video that takes longer than
@@ -204,6 +215,10 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                         BackupPrefs.CONTROL_STOP -> throw StopRequested()
                     }
                 }
+                // Direct: the bytes go from this phone to the user's own
+                // Telegram; the server only records where they landed.
+                if (direct) client.uploadDirect(item, destinationOf(item), ::telegram, progress)
+                else client.upload(item, destinationOf(item), progress)
                 stored++
                 prefs.addUploaded(1)
                 prefs.recordActivity(item, "completed", accountId = accountId)
@@ -223,6 +238,11 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             } catch (stop: StopRequested) {
                 prefs.recordActivity(item, "paused", accountId = accountId)
                 stopped = true
+                break
+            } catch (gone: TelegramSessionGone) {
+                prefs.recordActivity(item, "paused", gone.message, accountId)
+                TelegramSessionStore.clear(applicationContext)
+                signedOut = true
                 break
             } catch (gone: NotSignedInException) {
                 prefs.recordActivity(item, "failed", gone.message, accountId)

@@ -173,7 +173,7 @@ export function PhotoBackupHub({ user }: { user: string }) {
     : running
       ? { title: "Backing up…", sub: (directRunning ? directRun.name : status.currentName) || "Working through your albums", color: "var(--accent)", icon: RefreshCw }
       : status.pending > 0
-        ? { title: `${status.pending.toLocaleString()} waiting`, sub: direct ? "Tap Back up directly now and keep the app open." : "They go up on the next scheduled run.", color: "#f5a524", icon: Clock }
+        ? { title: `${status.pending.toLocaleString()} waiting`, sub: direct && (status.backupVersion ?? 0) < 5 ? "Tap Back up directly now and keep the app open." : "They go up on the next run.", color: "#f5a524", icon: Clock }
         : { title: "All backed up", sub: lastRun ? `Last checked ${lastRun.toLocaleString()}` : "Nothing waiting.", color: "var(--emerald)", icon: CheckCircle2 };
 
   return (
@@ -227,7 +227,9 @@ export function PhotoBackupHub({ user }: { user: string }) {
           <span className="min-w-0">
             <span className="t-sm block font-semibold" style={{ color: "var(--text-1)" }}>Straight to your Telegram</span>
             <span className="t-xs block" style={{ color: "var(--text-3)" }}>
-              {(status.backupVersion ?? 0) >= 4
+              {(status.backupVersion ?? 0) >= 5
+                ? "Runs in the background, even with TeleDrive closed. Photos go from this phone to your Telegram; no server carries them."
+                : (status.backupVersion ?? 0) >= 4
                 ? "Starts when you open TeleDrive and keeps going after you switch apps. New photos while it's closed? A notification lets you start it."
                 : "Starts when you open TeleDrive. Update the app to keep it going after you switch apps."}
             </span>

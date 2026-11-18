@@ -98,6 +98,16 @@ class BackupPlugin : Plugin() {
         super.handleOnDestroy()
     }
 
+    /**
+     * The page's Telegram session for this phone ("" forgets it), so the
+     * background worker can upload straight to Telegram with the app closed.
+     */
+    @PluginMethod
+    fun directCredentials(call: PluginCall) = directCall(call) {
+        TelegramSessionStore.save(context, call.getString("session") ?: "", call.getInt("apiId") ?: 0)
+        JSObject().put("directReady", TelegramSessionStore.has(context))
+    }
+
     /** Keep the app alive (foreground service) while a direct backup runs. */
     @PluginMethod
     fun directService(call: PluginCall) {
@@ -149,7 +159,8 @@ class BackupPlugin : Plugin() {
         call.resolve(
             JSObject()
                 .put("available", true)
-                .put("backupVersion", 4)
+                .put("backupVersion", 5)
+                .put("directReady", TelegramSessionStore.has(context))
                 .put("transport", prefs.transport)
                 .put("networkMode", prefs.networkMode)
                 .put("networkType", BackupNetwork.type(context))
@@ -254,8 +265,8 @@ class BackupPlugin : Plugin() {
             call.reject("Backup is switched off.")
             return
         }
-        if (prefs.transport == "direct") {
-            call.reject("Use Back up directly now and keep TeleDrive open.")
+        if (prefs.transport == "direct" && !TelegramSessionStore.has(context)) {
+            call.reject("Connect this phone to Telegram first.")
             return
         }
         BackupScheduler.runNow(context, prefs)
