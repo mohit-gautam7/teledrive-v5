@@ -2198,7 +2198,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
           {appView === "files" && !folderId && !debouncedQuery && typeFilter === "all" ? (
             <DriveOverview insights={insights} active={uploadQueue.filter(item => item.status === "uploading" || item.status === "pending").length}
-              onUpload={() => fileInputRef.current?.click()} onSettings={() => selectView("transfers")} />
+              onUpload={() => fileInputRef.current?.click()} onUploadFolder={() => void pickFolder()} onSettings={() => selectView("transfers")} />
           ) : null}
 
           {/* Content.
