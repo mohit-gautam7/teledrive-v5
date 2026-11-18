@@ -22,6 +22,9 @@ import {
 } from "@/lib/upload-store";
 import { sampleRate, type DriveFile, type UploadItem } from "@/components/drive/types";
 
+/** Only browsers with showDirectoryPicker ever stored a handle we could recall. */
+const hasDirectoryHandles = () => typeof window !== "undefined" && "showDirectoryPicker" in window;
+
 /**
  * The upload queue, owned by the module rather than by a component.
  *
@@ -237,10 +240,12 @@ class UploadManager {
     if (!item || item.status === "uploading" || item.status === "skipped") return;
     this.pausedGlobally = false;
     if (!item.file) {
-      // No bytes in this tab. A Resume click is a real user gesture, which is the
-      // one moment `requestPermission` on a stored handle is legal — so ask for
-      // the handle back before falling back to a file dialog.
-      void this.reattach(item);
+      // No bytes in this tab. A file dialog only opens inside the click itself,
+      // so where no stored handle can exist (Brave, Firefox, Safari) open it now.
+      // Otherwise a Resume click is also the one moment `requestPermission` on
+      // a stored handle is legal, so ask for the handle back first.
+      if (!hasDirectoryHandles() || this.needsPick.has(id)) this.repick(item);
+      else void this.reattach(item);
       return;
     }
     this.patch(id, { status: "pending", error: undefined });
@@ -255,6 +260,53 @@ class UploadManager {
       }
     }
     void this.pump();
+    // After a reload the bytes are gone. Pick the folder (or the files) once and
+    // every waiting row is matched back by path, then name and size.
+    const orphans = this.items.filter(it => (it.status === "paused" || it.status === "error") && !it.file);
+    if (!orphans.length) return;
+    if (!hasDirectoryHandles() || this.needsFolderPick) {
+      this.needsFolderPick = false;
+      this.repickMany(orphans, orphans.some(it => it.path?.includes("/")));
+      return;
+    }
+    void (async () => {
+      for (const item of orphans) await this.reattach(item, false);
+      const left = this.items.filter(it => (it.status === "paused" || it.status === "error") && !it.file).length;
+      if (left) {
+        this.needsFolderPick = true;
+        toast.info(`${left} file${left === 1 ? "" : "s"} still need${left === 1 ? "s" : ""} picking. Tap Resume all again and choose the same folder.`);
+      }
+    })();
+  }
+
+  /** Rows whose stored handle could not be recalled; their next Resume opens a dialog straight away. */
+  private needsPick = new Set<string>();
+  private needsFolderPick = false;
+
+  /** Hand the bytes back to many restored rows from one folder (or multi-file) pick. */
+  private repickMany(orphans: UploadItem[], folder: boolean) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    if (folder) input.setAttribute("webkitdirectory", "");
+    input.onchange = () => {
+      const files = [...(input.files ?? [])];
+      const byPath = new Map(files.map(f => [(f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name, f]));
+      const bySig = new Map(files.map(f => [`${f.name}|${f.size}`, f]));
+      let matched = 0;
+      for (const item of orphans) {
+        const file = (item.path ? byPath.get(item.path) : undefined) ?? bySig.get(`${item.name}|${item.size}`);
+        if (!file || file.size !== item.size) continue;
+        this.needsPick.delete(item.id);
+        this.patch(item.id, { file, status: "pending", error: undefined });
+        matched++;
+      }
+      const missing = orphans.length - matched;
+      if (matched) toast.success(`Resuming ${matched} upload${matched === 1 ? "" : "s"}.`);
+      if (missing) toast.error(`${missing} file${missing === 1 ? " was" : "s were"} not in what you picked. Pick the same folder you uploaded.`);
+      void this.pump();
+    };
+    input.click();
   }
 
   retry(id: string) {
@@ -608,7 +660,7 @@ class UploadManager {
   }
 
   /** Resume with the file the browser already knows about, or ask for it. */
-  private async reattach(item: UploadItem) {
+  private async reattach(item: UploadItem, pickIfMissing = true) {
     if (item.resumeKey && item.lastModified) {
       const file = await this.recall(
         {
@@ -625,7 +677,10 @@ class UploadManager {
         return;
       }
     }
-    this.repick(item);
+    // The click's moment has passed after the awaits above, so a dialog opened
+    // now would be blocked silently. Arm the row so its next Resume opens one.
+    this.needsPick.add(item.id);
+    if (pickIfMissing) toast.info(`Tap Resume again and pick "${item.name}".`);
   }
 
   /** Hand the file back by picking it again — the fallback when no handle exists. */
@@ -646,6 +701,7 @@ class UploadManager {
       if (item.lastModified && picked.lastModified !== item.lastModified) {
         toast.info(`"${picked.name}" has changed since the upload started, so it will be sent from the beginning.`);
       }
+      this.needsPick.delete(item.id);
       this.attach(item.id, picked);
     };
     input.click();

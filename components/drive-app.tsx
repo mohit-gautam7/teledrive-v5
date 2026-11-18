@@ -1922,6 +1922,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           onToggle={() => setTrayOpen(o => !o)}
           onCancelUpload={id => uploads.cancel(id)}
           onCancelAll={() => {
+            const left = transfers.filter(t => t.status !== "done" && t.status !== "skipped").length;
+            if (left > 5 && !window.confirm(`Cancel ${left} unfinished transfers? Files already finished stay in your drive.`)) return;
             uploads.cancelAll();
             downloadControllers.current.forEach(c => c.abort());
             downloadControllers.current.clear();

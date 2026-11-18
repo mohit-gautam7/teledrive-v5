@@ -103,7 +103,7 @@ export function TransferPanel({
                 Resume all
               </button>
             ) : null}
-            {active.length ? (
+            {transfers.some(t => t.status !== "done" && t.status !== "skipped") ? (
               <button onClick={onCancelAll} className="t-xs font-semibold" style={{ color: "var(--danger)" }}>
                 Cancel all
               </button>
@@ -126,9 +126,19 @@ export function TransferPanel({
       </div>
 
       {open ? (
-        <div className="max-h-56 space-y-1.5 overflow-y-auto p-2">
+        <div className="max-h-72 space-y-1.5 overflow-y-auto p-2">
+          {/* What is moving right now, then everything else, so the live rows
+              are never buried under hundreds of waiting ones. */}
+          {[
+            { label: "Uploading now", rows: active },
+            { label: active.length ? "Waiting, paused and finished" : "", rows: transfers.filter(t => !active.includes(t)) }
+          ].map(section => section.rows.length ? (
+            <div key={section.label || "rest"} className="space-y-1.5">
+              {section.label ? (
+                <p className="eyebrow px-1 pt-1" style={{ color: "var(--text-3)" }}>{section.label} · {section.rows.length}</p>
+              ) : null}
           <AnimatePresence initial={false}>
-            {transfers.map(item => (
+            {section.rows.map(item => (
               <motion.div
                 key={item.id}
                 layout={reduceMotion ? false : "position"}
@@ -147,6 +157,8 @@ export function TransferPanel({
               </motion.div>
             ))}
           </AnimatePresence>
+            </div>
+          ) : null)}
         </div>
       ) : null}
     </motion.div>
