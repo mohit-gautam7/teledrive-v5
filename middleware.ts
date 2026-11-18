@@ -80,6 +80,7 @@ export const config = {
     "/api/download/:path*",
     "/api/stream/:path*",
     "/api/preview/:path*",
-    "/api/public/:path*"
+    "/api/public/:path*",
+    "/api/files/:id/to-account"
   ]
 };

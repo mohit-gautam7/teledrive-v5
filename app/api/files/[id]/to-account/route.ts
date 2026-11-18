@@ -42,8 +42,13 @@ export async function POST(request: NextRequest, props: { params: Promise<{ id: 
     session = await userMtprotoSession(user.id);
     if (!session) return NextResponse.json({ error: "Link your Telegram account first." }, { status: 409 });
 
+    if (Number(file.size) > MAX_COPY_BYTES) {
+      return NextResponse.json({ error: "This file is too large to copy here." }, { status: 413 });
+    }
     const original = await readEntireFile(file, MAX_COPY_BYTES);
-    if (!original) return NextResponse.json({ error: "This file is too large to copy here." }, { status: 413 });
+    if (!original) {
+      return NextResponse.json({ error: "The bot has no readable copy of this file to move." }, { status: 422 });
+    }
     if (original.length !== Number(file.size)) {
       return NextResponse.json({ error: `Read ${original.length} bytes, expected ${file.size}.` }, { status: 502 });
     }
