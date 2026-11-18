@@ -39,6 +39,7 @@ export default function Login() {
   const [codeLoading, setCodeLoading] = useState(false);
 
   const [showOwner, setShowOwner] = useState(false);
+  const [ownerHatch, setOwnerHatch] = useState(false);
   const [ownerKey, setOwnerKey] = useState("");
   const [ownerLoading, setOwnerLoading] = useState(false);
 
@@ -51,6 +52,8 @@ export default function Login() {
     setOrigin(window.location.origin);
 
     const params = new URLSearchParams(window.location.search);
+    // The owner key is the admin's way back in; hidden from everyone else.
+    if (params.has("owner")) setOwnerHatch(true);
     const urlError = params.get("error");
     if (urlError) setError(urlError);
     if (params.get("link") === "google") {
@@ -171,10 +174,15 @@ export default function Login() {
     }
   }
 
+  // Sign-in is by Telegram account only: it also links the account, so every
+  // upload goes straight to the user's own Telegram rather than the bot. The
+  // bot code is offered only if that sign-in is switched off on the server,
+  // so nobody can be locked out.
+  const accountOnly = Boolean(providers?.telegramAccount);
   const tabs = ([
-    ["account", "Telegram account", Boolean(providers?.telegramAccount)],
-    ["code", "Bot code", true],
-    ["widget", "One tap", Boolean(providers?.widget)]
+    ["account", "Telegram account", accountOnly],
+    ["code", "Bot code", !accountOnly],
+    ["widget", "One tap", false]
   ] as [Tab, string, boolean][])
     .filter(([, , on]) => on)
     .map(([id, label]) => [id, label] as [Tab, string]);
@@ -196,7 +204,7 @@ export default function Login() {
             <Logo size={30} />
             <span className="display text-[17px] tracking-tight">TeleDrive</span>
           </div>
-          {BOT_USERNAME ? (
+          {BOT_USERNAME && providers && !accountOnly ? (
             <a href={`https://t.me/${BOT_USERNAME}`} target="_blank" rel="noopener noreferrer" className="link-underline t-sm hidden sm:inline-flex">
               @{BOT_USERNAME}
             </a>
@@ -227,8 +235,8 @@ export default function Login() {
               style={{ color: "var(--text-2)" }}
               {...(reduceMotion ? {} : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, delay: 0.14, ease: EASE } })}
             >
-              Upload, browse, preview and share from anywhere. Every file is chunked and stored in your
-              private chat with the bot — so the storage is yours, and so is the account holding it.
+              Upload, browse, preview and share from anywhere. Every file is stored in your own Telegram
+              account — so the storage is yours, and so is the account holding it.
             </motion.p>
 
             <ul className="mt-8 grid gap-px overflow-hidden rounded-2xl sm:grid-cols-3" style={{ background: "var(--border-dim)" }}>
@@ -274,7 +282,7 @@ export default function Login() {
                 ) : null}
 
                 {/* Google — a second way in that maps onto a Telegram identity. */}
-                {providers?.google && !linking ? (
+                {providers?.google && !linking && !accountOnly ? (
                   <>
                     <a href="/api/auth/google/start" className="btn btn-ghost mt-5 w-full" style={{ minHeight: 44 }}>
                       <GoogleMark />
@@ -463,7 +471,7 @@ export default function Login() {
               </div>
 
               {/* Owner key — deliberately quiet. */}
-              {providers?.ownerKey ? (
+              {providers?.ownerKey && (!accountOnly || ownerHatch) ? (
                 <div className="px-5 pb-5 sm:px-7 sm:pb-6" style={{ borderTop: "1px solid var(--border-dim)", paddingTop: 14 }}>
                   <button type="button" onClick={() => setShowOwner(v => !v)} className="link-underline t-xs mx-auto flex items-center gap-1.5">
                     <KeyRound className="h-3 w-3" />

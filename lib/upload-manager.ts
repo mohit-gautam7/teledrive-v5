@@ -1,11 +1,10 @@
 "use client";
 
 import { toast } from "sonner";
-import { ApiError, UploadAbortedError, fileFetch, uploadFile } from "@/lib/api-client";
+import { ApiError, UploadAbortedError, fileFetch } from "@/lib/api-client";
 import { DuplicateFileError, uploadFileInChunks } from "@/lib/chunked-upload";
 import { resumeKeyFor } from "@/lib/file-identity";
 import type { QueuedUpload, SkippedUpload } from "@/lib/duplicate-plan";
-import { SINGLE_SHOT_LIMIT } from "@/lib/upload-config";
 import { browserLinked, directConfig, DirectUploadUnavailable } from "@/lib/direct-upload";
 import { backupConnection, backupNetworkAllowed, BackupPausedError } from "@/lib/backup-network";
 import { readBackupState, recordBrowserBackup } from "@/lib/photo-backup";
@@ -365,7 +364,9 @@ class UploadManager {
         throw new DirectUploadUnavailable("Direct upload is on, but this browser is not connected. Open Settings → Direct upload and sign in. No file bytes were relayed.");
       }
       this.patch(item.id, { transport: directOnly ? "direct" : "relay" });
-      if (directOnly || source.size > SINGLE_SHOT_LIMIT) {
+      // Always the chunked path: it is the one that stores in the user's own
+      // Telegram. The old one-request path wrote small files to the bot.
+      {
         const result = await uploadFileInChunks({
           file: source,
           user: this.user,
@@ -381,8 +382,6 @@ class UploadManager {
           signal: controller.signal
         });
         created = (result.file as DriveFile) ?? null;
-      } else {
-        created = await this.uploadSmall(source, target, item, controller.signal);
       }
 
       // Store the thumbnail *before* the tile mounts: the tile immediately
@@ -463,21 +462,6 @@ class UploadManager {
     }
   }
 
-  /** The one-request path for anything a bot can hold as a single document. */
-  private async uploadSmall(source: File, target: string | null, item: UploadItem, signal: AbortSignal) {
-    const form = new FormData();
-    form.append("file", source);
-    if (target) form.append("folderId", target);
-    if (item.contentHash) form.append("contentHash", item.contentHash);
-    if (item.allowDuplicate) form.append("allowDuplicate", "1");
-    const result = await uploadFile<{ file: DriveFile }>(
-      "/api/upload",
-      form,
-      percent => this.progress(item.id, Math.round((percent / 100) * item.size), item.size),
-      signal
-    );
-    return result.data.file ?? null;
-  }
 
   private fail(id: string, error: unknown) {
     const message = error instanceof Error ? error.message : "Upload failed";

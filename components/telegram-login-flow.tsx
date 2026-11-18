@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ExternalLink, Loader2, QrCode, Smartphone } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api-client";
+import { PhoneInput } from "@/components/phone-input";
 
 const QR_POLL_MS = 4_000;
 const QR_GIVE_UP_MS = 3 * 60_000;
@@ -229,13 +230,12 @@ export function TelegramLoginFlow({
     <div className="mt-4 space-y-3">
       {step === "start" ? (
         <>
-          <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98765 43210" className="field w-full"
-                 inputMode="tel" autoComplete="tel" aria-label="Telegram phone number" />
+          <PhoneInput onChange={setPhone} disabled={busy} autoFocus />
           <div className="flex gap-2">
             <button className="btn btn-ghost" onClick={() => setMode("idle")}>Back</button>
             <button
               className="btn btn-primary"
-              disabled={busy || phone.trim().length < 6}
+              disabled={busy || !/^\+[1-9]\d{6,14}$/.test(phone)}
               onClick={async () => {
                 setBusy(true);
                 try {

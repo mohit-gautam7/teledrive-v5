@@ -41,9 +41,10 @@ assert.ok(SINGLE_SHOT_LIMIT <= CHUNK_SIZE);
 // file back, because a preference must not be able to make a file unreachable.
 assert.equal(backendFor(30 * MB, true, "account"), "mtproto");
 assert.equal(backendFor(1 * MB, true, "account"), "mtproto", "always-my-account applies below the bot limit too");
-assert.equal(backendFor(1 * MB, true, "bot"), "bot");
-assert.equal(backendFor(BOT_DOWNLOAD_LIMIT, true, "bot"), "bot");
-assert.equal(backendFor(30 * MB, true, "bot"), "mtproto", "a preference must not mint an unreachable file");
+// "Always the bot" is retired: a linked account always stores in the account.
+assert.equal(backendFor(1 * MB, true, "bot"), "mtproto", "the bot preference is ignored");
+assert.equal(backendFor(BOT_DOWNLOAD_LIMIT, true, "bot"), "mtproto");
+assert.equal(backendFor(30 * MB, true, "bot"), "mtproto");
 assert.equal(backendFor(30 * MB, false, "account"), "bot", "no session, no choice");
 
 assert.equal(SAVED_MESSAGES, "me");

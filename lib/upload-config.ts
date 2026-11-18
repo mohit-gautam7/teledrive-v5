@@ -123,13 +123,11 @@ export function backendFor(
   hasMtprotoSession: boolean,
   prefer: BackendPreference = "auto"
 ): UploadBackend {
-  if (!hasMtprotoSession) return "bot";
-  // Everything goes to the user's own account by default: those files play and
-  // download straight from Telegram on a connected device, where bot-stored
-  // ones must come through the file server. "Always the bot" is still honoured
-  // where the bot can serve the file back.
-  if (prefer === "bot" && fileSize <= BOT_DOWNLOAD_LIMIT) return "bot";
-  return "mtproto";
+  // Everything goes to the user's own account: those files play and download
+  // straight from Telegram on a connected device, where bot-stored ones must
+  // come through the file server. The old "Always the bot" setting is ignored.
+  void fileSize; void prefer;
+  return hasMtprotoSession ? "mtproto" : "bot";
 }
 
 /**
