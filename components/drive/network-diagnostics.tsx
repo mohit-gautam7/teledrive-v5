@@ -37,8 +37,8 @@ export function NetworkDiagnostics({ user }: { user: string }) {
   }
   return <section className="panel p-5">
     <h2 className="display t-h2 flex items-center gap-2"><Activity className="h-5 w-5" /> Connection health</h2>
-    <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
-      Test this device’s route to the website and file server. Useful when the drive opens but previews, downloads, or background backup do not.
+    <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>
+      Drive opens but previews or downloads don’t? Check the route.
     </p>
     <div className="mt-4 flex flex-wrap gap-2">
       <button className="btn btn-accent" disabled={busy} onClick={() => void run()}>
@@ -61,9 +61,5 @@ export function NetworkDiagnostics({ user }: { user: string }) {
         <div><p className="t-sm font-medium">{row.name}</p><p className="t-xs mt-1" style={{ color: "var(--text-2)" }}>{row.detail}</p></div>
       </div>)}
     </div>
-    <p className="t-xs mt-3" style={{ color: "var(--text-2)" }}>
-      Direct uploads and direct album backup do not need the file server. Previews and downloads still do.
-      A custom domain changes the address; it cannot guarantee access through a college firewall.
-    </p>
   </section>;
 }

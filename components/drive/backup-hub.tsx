@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { nativeDirectBackup } from "@/lib/native-direct-backup";
 import { toast } from "sonner";
 import {
   AlertCircle, ArrowRight, BatteryCharging, Camera, Check, CheckCircle2, Clock, Cloud, Film, Folder as FolderIcon,
@@ -91,7 +92,10 @@ export function PhotoBackupHub({ user }: { user: string }) {
   const [query, setQuery] = useState("");
   const [pickFor, setPickFor] = useState<NativeAlbum | null>(null);
   const { folders, reload } = useFolders();
-  const running = status?.running ?? false;
+  const directRun = useSyncExternalStore(nativeDirectBackup.subscribe, nativeDirectBackup.getSnapshot, nativeDirectBackup.getServerSnapshot);
+  const directRunning = directRun.running && directRun.user === user;
+  // Either route counts: the direct run lives in the page, not in the native worker.
+  const running = (status?.running ?? false) || directRunning;
 
   const refresh = useCallback(async () => {
     const next = await nativeBackup.status();
@@ -159,7 +163,7 @@ export function PhotoBackupHub({ user }: { user: string }) {
   const stateLook = !status.enabled
     ? { title: "Backup is off", sub: "Turn it on to save new photos and videos automatically.", color: "var(--text-3)", icon: Power }
     : running
-      ? { title: "Backing up…", sub: status.currentName || "Working through your albums", color: "var(--accent)", icon: RefreshCw }
+      ? { title: "Backing up…", sub: (directRunning ? directRun.name : status.currentName) || "Working through your albums", color: "var(--accent)", icon: RefreshCw }
       : status.pending > 0
         ? { title: `${status.pending.toLocaleString()} waiting`, sub: direct ? "Tap Back up directly now and keep the app open." : "They go up on the next scheduled run.", color: "#f5a524", icon: Clock }
         : { title: "All backed up", sub: lastRun ? `Last checked ${lastRun.toLocaleString()}` : "Nothing waiting.", color: "var(--emerald)", icon: CheckCircle2 };
@@ -184,7 +188,7 @@ export function PhotoBackupHub({ user }: { user: string }) {
                     onChange={() => void apply(status.enabled ? nativeBackup.disable : nativeBackup.enable, status.enabled ? "Backup is off." : "Backup is on.")} />
           </div>
 
-          {running && status.currentName ? (
+          {status.running && status.currentName ? (
             <div className="mt-4">
               <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--border-dim)" }}>
                 <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${percent}%`, background: "linear-gradient(90deg,var(--accent),var(--accent-2))" }} />
