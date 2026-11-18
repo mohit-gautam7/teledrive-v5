@@ -960,7 +960,7 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
         <h2 className="display t-h2">Upload storage</h2>
         <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>
           {link?.linked
-            ? `Over ${formatBytes(BOT_DOWNLOAD_LIMIT)} goes to your own account as one message.`
+            ? "New uploads go to your own Telegram account, so they play and download straight from Telegram."
             : "Link your Telegram account to store big files as one message."}
         </p>
         <div className={link?.linked ? "mt-4" : "mt-4 opacity-50"}>

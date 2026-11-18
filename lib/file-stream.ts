@@ -171,9 +171,9 @@ async function fetchBotChunkBuffer(fileId: string, botToken?: string | null): Pr
  * Returns null for storage kinds we don't want to buffer (legacy MTProto,
  * or anything over ~25 MB) — the caller falls back to normal streaming.
  */
-export async function readEntireFile(file: StreamableFile): Promise<Buffer | null> {
+export async function readEntireFile(file: StreamableFile, maxBytes = 25 * 1024 * 1024): Promise<Buffer | null> {
   const totalSize = Number(file.size);
-  if (totalSize > 25 * 1024 * 1024) return null;
+  if (totalSize > maxBytes) return null;
   const botToken = userBotToken(file);
 
   if (file.backend === "mtproto" && file.telegramMessageId) {

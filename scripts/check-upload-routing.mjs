@@ -22,9 +22,10 @@ assert.equal(backendFor(30 * MB, true), "mtproto", "30 MB on a linked account mu
 assert.equal(backendFor(BOT_DOWNLOAD_LIMIT + 1, true), "mtproto", "one byte over the bot limit must use MTProto");
 assert.equal(backendFor(2048 * MB, true), "mtproto");
 
-// At or under the limit the bot can hold it and serve it back, so it stays.
-assert.equal(backendFor(BOT_DOWNLOAD_LIMIT, true), "bot");
-assert.equal(backendFor(1 * MB, true), "bot");
+// Everything goes to a linked account by default, so it can play and
+// download straight from Telegram on a connected device.
+assert.equal(backendFor(BOT_DOWNLOAD_LIMIT, true), "mtproto");
+assert.equal(backendFor(1 * MB, true), "mtproto", "small files go to the account too");
 
 // No session, no choice — bot chunking is the only storage there is.
 assert.equal(backendFor(2048 * MB, false), "bot");
