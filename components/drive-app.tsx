@@ -2421,6 +2421,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
             onNavigate={setPreviewFile}
             onDownload={target => void startDownload(target)}
             directUser={cacheUser}
+            accountLinked={Boolean(link?.linked)}
+            onConnectDevice={() => {
+              setPreviewFile(null);
+              selectView("settings");
+              window.setTimeout(() => document.getElementById("settings-telegram")?.scrollIntoView({ behavior: "smooth" }), 350);
+            }}
+            onMoved={moved => {
+              setPreviewFile(moved);
+              void refresh();
+            }}
           />
         ) : null}
       </AnimatePresence>
