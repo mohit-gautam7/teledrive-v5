@@ -47,6 +47,12 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!-- Keeps the app alive while a direct backup runs after it is minimised. -->
+        <service
+            android:name=".backup.DirectBackupService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!--
             WorkManager already restores its own periodic work after a reboot. This
             exists for the first run after an update or a force-stop, where the

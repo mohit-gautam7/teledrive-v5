@@ -14,6 +14,8 @@ type Bridge = {
   directRead(options: { runId: string; id: string; offset: number; length: number }): Promise<{ data: string }>;
   directAcknowledge(options: { runId: string; id: string }): Promise<unknown>;
   directEnd(options: { runId: string }): Promise<unknown>;
+  /** App version 4+: keep the app alive (foreground service) during a run. */
+  directService?(options: { running: boolean; text?: string }): Promise<unknown>;
 };
 type State = { user: string; running: boolean; name: string; sent: number; size: number; saved: number; message: string };
 const EMPTY: State = { user: "", running: false, name: "", sent: 0, size: 0, saved: 0, message: "Ready for direct backup." };
@@ -39,10 +41,14 @@ export const nativeDirectBackup = {
     const active = new AbortController();
     controller = active;
     publish({ ...EMPTY, user, running: true, message: "Checking Telegram and selected albums…" });
-    const pauseWhenHidden = () => { if (document.visibilityState === "hidden") active.abort(); };
+    // An app that can keep itself alive (version 4+, foreground service) keeps
+    // backing up after it is minimised; an older one pauses when hidden, since
+    // Android would freeze it part-way anyway.
+    let background = false;
+    const pauseWhenHidden = () => { if (!background && document.visibilityState === "hidden") active.abort(); };
     document.addEventListener("visibilitychange", pauseWhenHidden);
     const ensureActive = () => {
-      if (active.signal.aborted || document.visibilityState === "hidden") throw new DOMException("Paused", "AbortError");
+      if (active.signal.aborted || (!background && document.visibilityState === "hidden")) throw new DOMException("Paused", "AbortError");
     };
     let batch: Batch | null = null;
     try {
@@ -57,6 +63,10 @@ export const nativeDirectBackup = {
       ensureActive();
       await nativeBackup.keepAwake(true, "backup");
       const api = bridge();
+      if ((status.backupVersion ?? 0) >= 4 && api.directService) {
+        await api.directService({ running: true });
+        background = true;
+      }
       for (;;) {
         ensureActive();
         batch = await api.directBegin({ accountId });
@@ -105,6 +115,7 @@ export const nativeDirectBackup = {
       try {
         if (batch) await bridge().directEnd({ runId: batch.runId });
       } catch { /* The native lock also expires if the bridge has gone away. */ }
+      if (background) await bridge().directService?.({ running: false }).catch(() => {});
       try { await nativeBackup.keepAwake(false, "backup"); }
       finally {
         document.removeEventListener("visibilitychange", pauseWhenHidden);

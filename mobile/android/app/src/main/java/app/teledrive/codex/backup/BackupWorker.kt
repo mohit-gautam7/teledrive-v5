@@ -47,8 +47,13 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         if (!prefs.enabled) return@withContext Result.success()
         if (prefs.transport == "direct") {
-            // Never quietly relay a user's direct-only backup.
-            prefs.lastResult = "Direct backup is ready. Open TeleDrive to continue."
+            // Never quietly relay a user's direct-only backup. The upload needs
+            // the app's own Telegram session, so the most this run can do is
+            // say there is something new; tapping opens the app, which starts
+            // the backup and keeps it going after it is minimised.
+            val pending = runCatching { scanner.pendingCount(prefs) }.getOrDefault(0)
+            if (pending > 0) notifyPending(pending)
+            prefs.lastResult = if (pending > 0) "$pending new to back up. Tap the notification or open TeleDrive." else "Direct backup is up to date."
             return@withContext Result.success()
         }
 
@@ -357,6 +362,23 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         runCatching { setForeground(notification(done, total, current)) }
     }
 
+    private fun notifyPending(count: Int) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(applicationContext, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val note = NotificationCompat.Builder(applicationContext, DirectBackupService.channel(applicationContext))
+            .setContentTitle("$count new to back up")
+            .setContentText("Tap to save them straight to your Telegram.")
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(DirectBackupService.openApp(applicationContext))
+            .build()
+        manager.notify(PENDING_NOTIFICATION_ID, note)
+    }
+
     private fun notification(done: Int, total: Int, current: String?): ForegroundInfo {
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -390,6 +412,7 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         const val TAG = "TeleDriveBackup"
         const val CHANNEL = "teledrive-backup"
         const val NOTIFICATION_ID = 4821
+        const val PENDING_NOTIFICATION_ID = 4823
 
         /**
          * Files per run. WorkManager gives a worker about ten minutes before it

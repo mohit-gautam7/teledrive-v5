@@ -93,7 +93,17 @@ class BackupPlugin : Plugin() {
     override fun handleOnDestroy() {
         downloads.close()
         directSession.close()
+        // The page that drives a direct run dies with the activity.
+        DirectBackupService.stop(context)
         super.handleOnDestroy()
+    }
+
+    /** Keep the app alive (foreground service) while a direct backup runs. */
+    @PluginMethod
+    fun directService(call: PluginCall) {
+        if (call.getBoolean("running") == true) DirectBackupService.start(context, call.getString("text"))
+        else DirectBackupService.stop(context)
+        call.resolve()
     }
 
     @PluginMethod
@@ -129,7 +139,7 @@ class BackupPlugin : Plugin() {
         call.resolve(
             JSObject()
                 .put("available", true)
-                .put("backupVersion", 3)
+                .put("backupVersion", 4)
                 .put("transport", prefs.transport)
                 .put("networkMode", prefs.networkMode)
                 .put("networkType", BackupNetwork.type(context))

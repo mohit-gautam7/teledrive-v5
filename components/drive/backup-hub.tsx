@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import { nativeDirectBackup } from "@/lib/native-direct-backup";
 import { toast } from "sonner";
 import {
-  AlertCircle, ArrowRight, BatteryCharging, Camera, Check, CheckCircle2, Clock, Cloud, Film, Folder as FolderIcon,
+  AlertCircle, ArrowRight, BatteryCharging, Camera, Check, CheckCircle2, Clock, Film, Folder as FolderIcon,
   Image as ImageIcon, Images, Loader2, MessageCircle, Monitor, Power, RefreshCw, RotateCcw, Search, SkipForward,
   Smartphone, Square, Wifi, Zap
 } from "lucide-react";
@@ -144,6 +144,14 @@ export function PhotoBackupHub({ user }: { user: string }) {
     void apply(() => nativeBackup.setOptions({ albumFolders: map }), id ? `${album.name} has its own folder now.` : `${album.name} uses the main folder.`);
   }, [status, apply]);
 
+  // Backup is direct-only: the "in the background" route sent every photo
+  // through the file server. A phone still on it is moved over once.
+  useEffect(() => {
+    if (status && status.transport !== "direct" && (status.backupVersion ?? 0) >= 3) {
+      void nativeBackup.setOptions({ transport: "direct" }).then(next => next && setStatus(next)).catch(() => {});
+    }
+  }, [status]);
+
   if (!available) return null;
   if (!status) {
     return <section className="panel grid place-items-center p-10"><Loader2 className="h-6 w-6 animate-spin" style={{ color: "var(--accent)" }} /></section>;
@@ -213,26 +221,17 @@ export function PhotoBackupHub({ user }: { user: string }) {
           </div>
         </div>
 
-        {/* Route: two big choices instead of a dropdown. */}
-        <div className="grid gap-2 p-5 pt-4 sm:grid-cols-2">
-          {([
-            ["direct", Zap, "Direct to Telegram", "Fastest. Keep the app open while it runs."],
-            ["relay", Cloud, "In the background", "Runs on a schedule, even when the app is closed."]
-          ] as const).map(([value, Icon, title, sub]) => {
-            const active = (value === "direct") === direct;
-            return (
-              <button key={value} disabled={busy || (status.backupVersion ?? 0) < 3}
-                      onClick={() => !active && void apply(() => nativeBackup.setOptions({ transport: value }), "Backup route updated.")}
-                      className="flex items-start gap-3 rounded-2xl p-3 text-left transition"
-                      style={{ background: active ? "var(--accent-dim)" : "var(--surface)", border: `1px solid ${active ? "var(--accent-border)" : "var(--border-dim)"}` }}>
-                <Icon className="mt-0.5 h-5 w-5 shrink-0" style={{ color: active ? "var(--accent)" : "var(--text-3)" }} />
-                <span className="min-w-0">
-                  <span className="t-sm block font-semibold" style={{ color: "var(--text-1)" }}>{title}</span>
-                  <span className="t-xs block" style={{ color: "var(--text-3)" }}>{sub}</span>
-                </span>
-              </button>
-            );
-          })}
+        {/* Route: direct only. */}
+        <div className="flex items-start gap-3 p-5 pt-4">
+          <Zap className="mt-0.5 h-5 w-5 shrink-0" style={{ color: "var(--accent)" }} />
+          <span className="min-w-0">
+            <span className="t-sm block font-semibold" style={{ color: "var(--text-1)" }}>Straight to your Telegram</span>
+            <span className="t-xs block" style={{ color: "var(--text-3)" }}>
+              {(status.backupVersion ?? 0) >= 4
+                ? "Starts when you open TeleDrive and keeps going after you switch apps. New photos while it's closed? A notification lets you start it."
+                : "Starts when you open TeleDrive. Update the app to keep it going after you switch apps."}
+            </span>
+          </span>
         </div>
 
         <div className="px-5 pb-5">

@@ -59,10 +59,9 @@ object BackupScheduler {
      */
     @JvmOverloads
     fun schedule(context: Context, prefs: BackupPrefs, replaceExisting: Boolean = true) {
-        if (prefs.transport == "direct") {
-            cancel(context)
-            return
-        }
+        // Direct mode is scheduled too: the run cannot upload by itself (the
+        // Telegram session lives in the app), so it only notifies about new
+        // photos — see BackupWorker.
         // The flex window is a third of the period, so a long interval keeps a
         // sensible amount of slack for the system to batch the wake-up with
         // other work instead of waking the radio on its own.
