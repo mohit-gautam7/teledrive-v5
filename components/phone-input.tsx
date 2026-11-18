@@ -24,7 +24,7 @@ export function PhoneInput({ onChange, disabled, autoFocus }: { onChange: (full:
   return (
     <div className="flex w-full gap-2">
       {/* Shows just "🇮🇳 +91"; the native list underneath has full names. */}
-      <label className="field relative flex shrink-0 cursor-pointer items-center gap-1.5 px-3" style={{ minWidth: "5.75rem" }}>
+      <label className="field relative flex cursor-pointer items-center gap-1.5 px-3" style={{ width: "auto", flex: "0 0 auto" }}>
         <span aria-hidden>{flag(iso)}</span>
         <span className="mono">+{dial}</span>
         <span aria-hidden style={{ color: "var(--text-3)" }}>▾</span>
@@ -46,7 +46,8 @@ export function PhoneInput({ onChange, disabled, autoFocus }: { onChange: (full:
         autoFocus={autoFocus}
         onChange={e => update(iso, e.target.value)}
         placeholder={iso === "IN" ? "98765 43210" : "Phone number"}
-        className="field min-w-0 flex-1"
+        className="field min-w-0"
+        style={{ flex: "1 1 auto", width: "auto" }}
         inputMode="tel"
         autoComplete="tel-national"
         aria-label={`Telegram phone number, after +${dial}`}
