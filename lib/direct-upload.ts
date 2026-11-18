@@ -561,16 +561,39 @@ export async function readDirectRange(user: string, messageId: number, start: nu
  * device. The recipient gets the real file in Telegram; no server carries it,
  * which a share link cannot offer (its viewer is not in the owner's account).
  */
-export async function sendViaTelegram(user: string, messageId: number, to: string): Promise<void> {
-  const target = to.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
-  if (!/^[A-Za-z0-9_]{4,32}$/.test(target)) throw new Error("Enter a Telegram username, like @name.");
+/** "+91 98765 43210" → "919876543210"; a bare 10-digit number is taken as Indian (+91). */
+export function telegramPhone(input: string): string | null {
+  const raw = input.trim();
+  if (!/^\+?[\d\s()-]+$/.test(raw)) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (!raw.startsWith("+") && digits.length === 10) return `91${digits}`;
+  return digits.length >= 8 && digits.length <= 15 ? digits : null;
+}
+
+/** Forward a Saved Messages file to a @username or phone number; returns who got it. */
+export async function sendViaTelegram(user: string, messageId: number, to: string): Promise<string> {
+  const phone = telegramPhone(to);
+  const username = to.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
+  if (!phone && !/^[A-Za-z0-9_]{4,32}$/.test(username)) throw new Error("Enter a Telegram @username or a phone number.");
+  const shown = phone ? `+${phone}` : `@${username}`;
   const client = await connected(user);
   try {
+    const { Api } = await import("telegram");
+    let target: Parameters<TelegramClient["forwardMessages"]>[0] = username;
+    if (phone) {
+      // resolvePhone finds them without adding them to the user's contacts.
+      const found = await client.invoke(new Api.contacts.ResolvePhone({ phone }));
+      target = found.users[0] ?? found.peer;
+    }
     await client.forwardMessages(target, { messages: [messageId], fromPeer: "me" });
+    return shown;
   } catch (error) {
     forgetRevokedSession(user, error);
     const reason = (error as { errorMessage?: string })?.errorMessage || (error as Error)?.message || "";
-    if (/USERNAME_(NOT_OCCUPIED|INVALID)|No user has/i.test(reason)) throw new Error(`No Telegram user is called @${target}.`);
+    if (/PHONE_NOT_OCCUPIED|PHONE_NUMBER_INVALID/i.test(reason)) {
+      throw new Error(`No Telegram account can be found for ${shown}. They may hide their number; try their @username.`);
+    }
+    if (/USERNAME_(NOT_OCCUPIED|INVALID)|No user has/i.test(reason)) throw new Error(`No Telegram user is called ${shown}.`);
     throw error;
   } finally {
     touchIdle();

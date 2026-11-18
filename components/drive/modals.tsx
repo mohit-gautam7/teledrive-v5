@@ -244,91 +244,57 @@ export function PropertiesModal({ target, onClose }: { target: PropsTarget; onCl
   );
 }
 
-/** Create a share with optional password + expiry, in one step. */
+/** Send a file straight from the user's Telegram to someone else's. */
 export function ShareModal({
   targetName,
-  onCreate,
   onSendTelegram,
+  unavailable,
   onClose
 }: {
   targetName: string;
-  onCreate: (options: { password?: string; expiryDays?: number }) => Promise<void>;
   /** Present when this device can forward the file straight from Telegram. */
   onSendTelegram?: (to: string) => Promise<void>;
+  /** Why sending is not possible here, when onSendTelegram is absent. */
+  unavailable?: string;
   onClose: () => void;
 }) {
   const [recipient, setRecipient] = useState("");
   const [sending, setSending] = useState(false);
-  const [password, setPassword] = useState("");
-  const [expiryDays, setExpiryDays] = useState(0);
-  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    if (!onSendTelegram || sending || recipient.trim().length < 4) return;
+    setSending(true);
+    try { await onSendTelegram(recipient); } finally { setSending(false); }
+  };
 
   return (
     <Shell onClose={onClose}>
       <div className="p-5 sm:p-6">
-        <h2 className="display t-h2">Share link</h2>
+        <h2 className="display t-h2">Send in Telegram</h2>
         <p className="t-sm mt-1 break-words" style={{ color: "var(--text-3)" }}>{targetName}</p>
 
         {onSendTelegram ? (
-          <div className="mt-5 rounded-xl p-3" style={{ border: "1px solid var(--border-dim)" }}>
-            <label className="eyebrow block">Send in Telegram (direct)</label>
-            <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>Goes from your Telegram to theirs. No server carries it.</p>
-            <div className="mt-2 flex gap-2">
-              <input value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="@username" className="field min-w-0 flex-1"
-                     autoCapitalize="none" autoCorrect="off" spellCheck={false} />
-              <button className="btn btn-accent" disabled={sending || recipient.trim().length < 4}
-                      onClick={async () => { setSending(true); try { await onSendTelegram(recipient); } finally { setSending(false); } }}>
-                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Send
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        <label className="eyebrow mt-5 block">{onSendTelegram ? "Or create a link · " : ""}Password (optional)</label>
-        <input
-          type="password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          placeholder="Leave empty for no password"
-          className="field mt-2"
-          minLength={4}
-        />
-
-        <label className="eyebrow mt-4 block">Expires</label>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {[
-            [0, "Never"],
-            [1, "1 day"],
-            [7, "7 days"],
-            [30, "30 days"]
-          ].map(([days, label]) => (
-            <button
-              key={String(days)}
-              onClick={() => setExpiryDays(days as number)}
-              className={expiryDays === days ? "btn btn-accent" : "btn btn-ghost"}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+          <>
+            <p className="t-xs mt-4" style={{ color: "var(--text-3)" }}>
+              Goes from your Telegram straight to theirs. No server carries it.
+            </p>
+            <input value={recipient} onChange={e => setRecipient(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void send(); }}
+                   placeholder="@username or phone number" className="field mt-3 w-full" inputMode="text"
+                   autoCapitalize="none" autoCorrect="off" spellCheck={false} autoFocus />
+            <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
+              A phone number works only if that person lets others find them by number in Telegram.
+            </p>
+          </>
+        ) : (
+          <p className="t-sm mt-4" style={{ color: "var(--text-2)" }}>{unavailable}</p>
+        )}
 
         <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onClose} className="btn btn-ghost">Cancel</button>
-          <button
-            className="btn btn-primary"
-            disabled={busy || (password.length > 0 && password.length < 4)}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await onCreate({ password: password || undefined, expiryDays: expiryDays || undefined });
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            Create &amp; copy
-          </button>
+          <button onClick={onClose} className="btn btn-ghost">{onSendTelegram ? "Cancel" : "Close"}</button>
+          {onSendTelegram ? (
+            <button className="btn btn-primary" disabled={sending || recipient.trim().length < 4} onClick={() => void send()}>
+              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Send
+            </button>
+          ) : null}
         </div>
       </div>
     </Shell>

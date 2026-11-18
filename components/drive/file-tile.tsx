@@ -12,7 +12,7 @@ import {
   FolderInput,
   Image as ImageIcon,
   Info,
-  Link2,
+  Send,
   MoreVertical,
   Pencil,
   RotateCw,
@@ -100,7 +100,7 @@ function FileTileBase({
         {!inTrash ? (
           <>
             <DropdownMenu.Item onSelect={actions.onShare} className="menu-item">
-              <Link2 className="h-4 w-4" style={{ color: "var(--accent)" }} /> Share link
+              <Send className="h-4 w-4" style={{ color: "var(--accent)" }} /> Send in Telegram
             </DropdownMenu.Item>
             <DropdownMenu.Item onSelect={actions.onFavorite} className="menu-item">
               <Star className="h-4 w-4" style={{ color: "var(--amber)", fill: file.isFavorite ? "var(--amber)" : "none" }} />
@@ -293,8 +293,8 @@ function FileTileBase({
               <Download className="h-4 w-4" />
             </button>
             {!inTrash ? (
-              <button onClick={actions.onShare} className="icon-btn flex-1" style={{ width: "auto" }} aria-label="Share">
-                <Link2 className="h-4 w-4" />
+              <button onClick={actions.onShare} className="icon-btn flex-1" style={{ width: "auto" }} aria-label="Send in Telegram">
+                <Send className="h-4 w-4" />
               </button>
             ) : (
               <button onClick={actions.onRestore} className="icon-btn flex-1" style={{ width: "auto", color: "var(--emerald)" }} aria-label="Restore">
