@@ -2129,6 +2129,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     <span className="hidden sm:inline">New folder</span>
                   </button>
                 )}
+                {appView === "files" ? (
+                  <button onClick={() => void pickFolder()} className="btn btn-ghost" title="Upload a folder into this one">
+                    <FolderUp className="h-4 w-4" />
+                    <span className="hidden sm:inline">Upload folder</span>
+                  </button>
+                ) : null}
 
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger asChild>
@@ -2445,9 +2451,14 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                       }
                       action={
                         appView === "files" ? (
-                          <button onClick={() => fileInputRef.current?.click()} className="btn btn-primary">
-                            <Upload className="h-4 w-4" /> Upload files
-                          </button>
+                          <div className="flex flex-wrap justify-center gap-2">
+                            <button onClick={() => fileInputRef.current?.click()} className="btn btn-primary">
+                              <Upload className="h-4 w-4" /> Upload files
+                            </button>
+                            <button onClick={() => void pickFolder()} className="btn btn-ghost">
+                              <FolderUp className="h-4 w-4" /> Upload folder
+                            </button>
+                          </div>
                         ) : undefined
                       }
                     />
