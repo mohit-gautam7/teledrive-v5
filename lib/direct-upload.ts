@@ -475,6 +475,82 @@ export async function* downloadDirect(user: string, messageId: number, signal?: 
   }
 }
 
+/** Where a Saved Messages file lives, so each seek is one round trip, not two. */
+type DocRef = { location: unknown; dcId: number; size: number };
+const docRefs = new Map<string, Promise<DocRef>>();
+
+async function resolveDoc(client: TelegramClient, user: string, messageId: number): Promise<DocRef> {
+  const key = `${user}:${messageId}`;
+  let pending = docRefs.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const { Api } = await import("telegram");
+      const [message] = await client.getMessages("me", { ids: [messageId] });
+      const media = message?.media;
+      if (!(media instanceof Api.MessageMediaDocument) || !(media.document instanceof Api.Document)) {
+        throw new DirectUploadUnavailable("This file is no longer in your Telegram Saved Messages.");
+      }
+      const doc = media.document;
+      return {
+        location: new Api.InputDocumentFileLocation({ id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: "" }),
+        dcId: doc.dcId,
+        size: Number(doc.size?.toString() ?? 0)
+      };
+    })();
+    pending.catch(() => docRefs.delete(key));
+    docRefs.set(key, pending);
+  }
+  return pending;
+}
+
+/**
+ * Bytes `start`–`end` (inclusive) of a Saved Messages file, read on this device.
+ *
+ * This is what lets a video play straight from Telegram: the service worker
+ * turns the player's Range requests into calls to this. Telegram only serves
+ * whole 512 KB-aligned parts, so the window is widened to part boundaries,
+ * fetched in parallel, and trimmed. A file reference goes stale after a while;
+ * that is refreshed once rather than failing the seek.
+ */
+export async function readDirectRange(user: string, messageId: number, start: number, end: number): Promise<Uint8Array> {
+  const client = await connected(user);
+  const { Api } = await import("telegram");
+  const { default: bigInt } = await import("big-integer");
+  const read = async (doc: DocRef) => {
+    const last = Math.min(end, doc.size - 1);
+    const first = Math.floor(start / DIRECT_READ_PART);
+    const sender = await client.getSender(doc.dcId);
+    const parts = await Promise.all(
+      Array.from({ length: Math.floor(last / DIRECT_READ_PART) - first + 1 }, async (_, i) => {
+        const result = await sender.send(
+          new Api.upload.GetFile({ location: doc.location as InstanceType<typeof Api.InputDocumentFileLocation>, offset: bigInt((first + i) * DIRECT_READ_PART), limit: DIRECT_READ_PART })
+        );
+        if (!(result instanceof Api.upload.File)) throw new DirectUploadUnavailable("Telegram moved this file. Use the file server for it.");
+        return new Uint8Array(result.bytes);
+      })
+    );
+    const joined = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+    let at = 0;
+    for (const p of parts) { joined.set(p, at); at += p.byteLength; }
+    const from = start - first * DIRECT_READ_PART;
+    return joined.subarray(from, from + (last - start + 1));
+  };
+  try {
+    try {
+      return await read(await resolveDoc(client, user, messageId));
+    } catch (error) {
+      if (!/FILE_REFERENCE/i.test((error as { errorMessage?: string })?.errorMessage || (error as Error)?.message || "")) throw error;
+      docRefs.delete(`${user}:${messageId}`);
+      return await read(await resolveDoc(client, user, messageId));
+    }
+  } catch (error) {
+    forgetRevokedSession(user, error);
+    throw error;
+  } finally {
+    touchIdle();
+  }
+}
+
 /* ── The upload ────────────────────────────────────────────────────────────── */
 
 /**
