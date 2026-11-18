@@ -101,8 +101,18 @@ class BackupPlugin : Plugin() {
     /** Keep the app alive (foreground service) while a direct backup runs. */
     @PluginMethod
     fun directService(call: PluginCall) {
-        if (call.getBoolean("running") == true) DirectBackupService.start(context, call.getString("text"))
+        val running = call.getBoolean("running") == true
+        if (running) DirectBackupService.start(context, call.getString("text"))
         else DirectBackupService.stop(context)
+        // The service keeps the app's process alive, but the page runs in the
+        // WebView's own renderer process, which Android freezes once it is off
+        // screen — stalling the upload. Keep the renderer important (not
+        // waived when hidden) only for the length of a run.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            activity.runOnUiThread {
+                bridge.webView.setRendererPriorityPolicy(android.webkit.WebView.RENDERER_PRIORITY_IMPORTANT, !running)
+            }
+        }
         call.resolve()
     }
 
