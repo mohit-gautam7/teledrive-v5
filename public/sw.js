@@ -130,6 +130,13 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
+
+  // A video read straight from Telegram on this device (lib/direct-stream).
+  if (url.pathname.startsWith('/__direct/')) {
+    event.respondWith(directRange(event, url));
+    return;
+  }
+
   if (isNeverCached(url.pathname)) return;
 
   if (request.mode === 'navigate') {
@@ -236,6 +243,83 @@ async function staleWhileRevalidate(request) {
     return hit;
   }
   return (await fresh) || Response.error();
+}
+
+/* ── Direct-from-Telegram media ──────────────────────────────────────────── */
+
+/**
+ * Serve one Range of a file the page reads from Telegram itself.
+ *
+ * The worker has no Telegram connection — the page does — so each request is
+ * handed to the page that asked (falling back to any open window) over a
+ * MessageChannel. An open-ended range gets a bounded slice, like the file
+ * server does: the player asks for the next piece itself, and a seek never
+ * waits behind bytes nobody will watch.
+ */
+const DIRECT_WINDOW = 2 * 1024 * 1024;
+const DIRECT_MAX = 8 * 1024 * 1024;
+const DIRECT_TIMEOUT_MS = 45000;
+
+/** Parse a Range header against `size`; null when it cannot be satisfied. */
+function parseDirectRange(header, size) {
+  const m = /bytes=(\d*)-(\d*)/.exec(header || '');
+  let start = 0;
+  let end;
+  if (m && m[1] === '' && m[2]) {
+    start = Math.max(0, size - Number(m[2]));
+    end = size - 1;
+  } else {
+    start = m && m[1] ? Number(m[1]) : 0;
+    end = m && m[2] ? Math.min(Number(m[2]), start + DIRECT_MAX - 1) : start + DIRECT_WINDOW - 1;
+  }
+  end = Math.min(end, size - 1);
+  return start > end ? null : { start, end };
+}
+
+function askPage(client, message) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => reject(new Error('timeout')), DIRECT_TIMEOUT_MS);
+    channel.port1.onmessage = (e) => {
+      clearTimeout(timer);
+      if (e.data && e.data.ok) resolve(e.data.bytes);
+      else reject(new Error((e.data && e.data.error) || 'read failed'));
+    };
+    client.postMessage(message, [channel.port2]);
+  });
+}
+
+async function directRange(event, url) {
+  const messageId = url.pathname.split('/')[2];
+  const size = Number(url.searchParams.get('size'));
+  const type = url.searchParams.get('type') || 'application/octet-stream';
+  const range = parseDirectRange(event.request.headers.get('range'), size);
+  if (!messageId || !size || !range) {
+    return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size || 0}` } });
+  }
+  const own = event.clientId ? await self.clients.get(event.clientId) : null;
+  const clients = own ? [own] : await self.clients.matchAll({ type: 'window' });
+  for (const client of clients) {
+    try {
+      const bytes = await askPage(client, { type: 'td-direct-range', messageId, start: range.start, end: range.end });
+      const end = range.start + bytes.byteLength - 1;
+      return new Response(bytes, {
+        status: 206,
+        headers: {
+          'Content-Type': type,
+          'Content-Length': String(bytes.byteLength),
+          'Content-Range': `bytes ${range.start}-${end}/${size}`,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'no-store'
+        }
+      });
+    } catch {
+      /* try the next window, then give up */
+    }
+  }
+  // The player treats this as a network error; the page then falls back to
+  // the file server.
+  return new Response(null, { status: 502 });
 }
 
 /* ── Share target ────────────────────────────────────────────────────────── */

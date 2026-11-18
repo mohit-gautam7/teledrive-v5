@@ -66,6 +66,29 @@ function useDirectPreview(file: DriveFile, user: string | undefined, wanted: boo
   return { url, percent: file.size ? Math.min(100, Math.round((loadedBytes / file.size) * 100)) : 0 };
 }
 
+/**
+ * A URL that streams a video or audio file straight from the user's own
+ * Telegram on this device (lib/direct-stream), "pending" while that is being
+ * decided, or null when the file server must serve it. `fail()` drops back to
+ * the file server for this file.
+ */
+function useDirectStream(file: DriveFile, user: string | undefined, wanted: boolean) {
+  const eligible = Boolean(wanted && user && file.backend === "mtproto" && file.telegramMessageId);
+  const [state, setState] = useState<{ id: string; url: string | null } | null>(null);
+  useEffect(() => {
+    if (!eligible || !user) return;
+    let live = true;
+    import("@/lib/direct-stream")
+      .then(({ directStreamUrl }) => directStreamUrl(user, file))
+      .catch(() => null)
+      .then(url => { if (live) setState({ id: file.id, url }); });
+    return () => { live = false; };
+  }, [eligible, user, file]);
+  const fail = useCallback(() => setState({ id: file.id, url: null }), [file.id]);
+  if (!eligible) return { url: null, fail };
+  return { url: state?.id === file.id ? state.url : ("pending" as const), fail };
+}
+
 /** Shown when a file can't be rendered inline — always offers the download. */
 function Unsupported({
   icon,
@@ -148,14 +171,19 @@ function VideoStage({
   fileId,
   onLoaded,
   onUnrecoverable,
-  onDownload
+  onDownload,
+  onFirstError
 }: {
   src: string;
   fileId: string;
   onLoaded: () => void;
   onUnrecoverable: () => void;
   onDownload: () => void;
+  /** Called on an error before anything played; return true if handled (e.g.
+   *  by switching from the direct Telegram stream to the file server). */
+  onFirstError?: () => boolean;
 }) {
+  const everLoaded = useRef(false);
   const ref = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<"idle" | "buffering" | "reconnecting" | "stalled">("buffering");
   const [slow, setSlow] = useState(false);
@@ -207,6 +235,7 @@ function VideoStage({
   }, []);
 
   const handleError = useCallback(() => {
+    if (!everLoaded.current && onFirstError?.()) return;
     const el = ref.current;
     const code = el?.error?.code;
     // A format the browser cannot decode will fail identically every time, so
@@ -234,7 +263,7 @@ function VideoStage({
     // helps, and the delay is invisible next to the stall the viewer already saw.
     setState("reconnecting");
     window.setTimeout(resume, 400 * recoveries.current);
-  }, [onUnrecoverable, resume]);
+  }, [onUnrecoverable, resume, onFirstError]);
 
   return (
     <div className="relative flex max-h-full max-w-full flex-col items-center justify-center gap-2">
@@ -247,6 +276,7 @@ function VideoStage({
         // seeking then issues Range requests against /api/stream.
         preload="metadata"
         onLoadedMetadata={() => {
+          everLoaded.current = true;
           setState("idle");
           onLoaded();
         }}
@@ -436,9 +466,15 @@ export function Lightbox({
   const audio = isAudio(file);
   // Images come from /api/preview (cacheable); anything time-based streams from
   // /api/stream, which serves HTTP ranges so the player can seek.
-  const { url: direct, percent: directPercent } = useDirectPreview(file, directUser, image || video || audio);
+  // Images are small: read whole from Telegram. Video and audio stream from
+  // Telegram through the service worker so they start at once and can seek.
+  const { url: directImage, percent: directPercent } = useDirectPreview(file, directUser, image);
+  const { url: streamed, fail: streamFailed } = useDirectStream(file, directUser, video || audio);
+  const direct = image ? directImage : streamed;
   const serverSrc = useAssetUrl(direct === null && (image || video || audio) ? (image ? `/api/preview/${file.id}` : `/api/stream/${file.id}`) : "");
   const src = direct === "pending" ? "" : direct ?? serverSrc;
+  // The direct stream failed before playing anything: use the file server.
+  const fallBackToServer = streamed && streamed !== "pending" ? () => { streamFailed(); return true; } : undefined;
   // A media element given an empty src reports an error at once, which used
   // to show "Couldn't load this file" while Telegram was still sending it.
   const waitingForTelegram = direct === "pending";
@@ -501,7 +537,7 @@ export function Lightbox({
         {(image || video || audio) && !loaded && !failed ? (
           <div className="absolute flex flex-col items-center gap-2">
             <Loader2 className="h-7 w-7 animate-spin" style={{ color: "var(--accent)" }} />
-            {waitingForTelegram ? (
+            {waitingForTelegram && image ? (
               <p className="mono" style={{ color: "var(--text-3)" }}>Loading from Telegram · {directPercent}%</p>
             ) : null}
           </div>
@@ -546,6 +582,7 @@ export function Lightbox({
             onLoaded={() => setLoaded(true)}
             onUnrecoverable={() => setFailed(true)}
             onDownload={() => onDownload(file)}
+            onFirstError={fallBackToServer}
           />
         ) : audio ? (
           <div className="w-full max-w-lg text-center">
@@ -558,7 +595,7 @@ export function Lightbox({
               controls
               preload="metadata"
               onLoadedMetadata={() => setLoaded(true)}
-              onError={() => setFailed(true)}
+              onError={() => { if (!loaded && fallBackToServer) fallBackToServer(); else setFailed(true); }}
               className="w-full"
             />
           </div>
