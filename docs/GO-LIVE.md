@@ -6,7 +6,7 @@ in, with the commands and your real values filled in.
 | | URL |
 | --- | --- |
 | App origin (Vercel) | `https://teledrive-codex.vercel.app` |
-| File origin (Render) | `https://teledrive-v5.onrender.com` |
+| File origin (Render) | `https://teledrive-sg.onrender.com` |
 
 Both projects already exist and are connected to the repo, so this is a push and
 two environment variables — not a fresh set-up.
@@ -14,6 +14,12 @@ two environment variables — not a fresh set-up.
 **Function region.** `vercel.json` pins functions to `hnd1` (Tokyo), next to the
 Supabase database in `ap-northeast-1`. From the default `bom1` every query
 crossed Mumbai→Tokyo, which made a one-row lookup take about a second.
+
+**Render region.** The file origin runs in Singapore (`teledrive-sg`), next to
+Telegram's DC5 where MTProto files live. From Oregon each 512 KB part crossed the
+Pacific and videos took 40–50 s to start. Its env vars live in the
+`teledrive-shared` environment group; the old Oregon service `teledrive-v5` is
+suspended, not deleted, as a fallback.
 
 **Keeping Render awake.** GitHub runs `.github/workflows/keep-warm.yml` only every
 few hours despite its 10-minute cron, so Render slept between runs. The real
@@ -77,7 +83,7 @@ start building here. Let them finish before step 4.
 **Vercel** → project → Settings → Environment Variables → Production:
 
 ```
-NEXT_PUBLIC_FILE_ORIGIN = https://teledrive-v5.onrender.com
+NEXT_PUBLIC_FILE_ORIGIN = https://teledrive-sg.onrender.com
 ```
 
 **Render** → `teledrive-v5` → Environment:
@@ -130,7 +136,7 @@ curl -s "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
    console now names the reason — look for `[upload] duplicate check failed`.
 3. **Traffic is split.** Devtools → Network, open a folder with images, download
    something. Thumbnails, uploads and downloads should show
-   `teledrive-v5.onrender.com`; `/api/files`, `/api/folders` and
+   `teledrive-sg.onrender.com`; `/api/files`, `/api/folders` and
    `/api/upload/check` should show `teledrive-codex.vercel.app`.
 4. **Video seeks.** Open a video and drag the scrub bar. Seeking uses Range
    requests across the origin, which is the part CORS most often gets wrong.
