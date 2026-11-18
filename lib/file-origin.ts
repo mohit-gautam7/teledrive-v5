@@ -37,7 +37,8 @@ export const FILE_ORIGIN = RAW.trim().replace(/\/+$/, "");
 const HEAVY = [
   // Direct confirmation is metadata only. Sending it to Render strands a
   // successfully uploaded file when that host is unreachable on campus Wi-Fi.
-  /^\/api\/upload(\/(?!check(?:\/|$)|direct(?:\/|$))|$)/,
+  // The ~30 KB thumbnail sent after an upload is light too: app origin.
+  /^\/api\/upload(\/(?!check(?:\/|$)|direct(?:\/|$)|thumb(?:\/|$))|$)/,
   /^\/api\/download(\/|$)/,
   /^\/api\/stream(\/|$)/,
   /^\/api\/preview(\/|$)/,
