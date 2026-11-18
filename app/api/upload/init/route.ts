@@ -92,6 +92,14 @@ export async function POST(request: NextRequest) {
     // hand-crafted value cannot steer storage anywhere unexpected.
     const preference: BackendPreference = prefer === "account" || prefer === "bot" ? prefer : "auto";
     const useMtproto = backendFor(fileSize, Boolean(config?.mtprotoSession && (await userMtprotoSession(user.id))), preference) === "mtproto";
+    // New files go to the user's own Telegram only — never the bot. Without a
+    // linked account there is nowhere to put them yet, so say how to fix that.
+    if (!useMtproto) {
+      return NextResponse.json(
+        { error: "Link your Telegram account first: Settings → Telegram connection (or sign out and sign in with your Telegram number)." },
+        { status: 409 }
+      );
+    }
 
     // Resume: an unfinished session for the same file+destination is reused, so
     // a dropped connection costs only the chunks that were still in flight.

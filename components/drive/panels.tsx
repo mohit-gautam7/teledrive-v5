@@ -73,6 +73,7 @@ import { EmptyState } from "./bits";
 import { browserLinked, checkDirectConnection, forgetDirectSession, linkBrowser, unlinkBrowser } from "@/lib/direct-upload";
 import { BackupDestination, BackupFiles, BackupNetworkSelect } from "./backup-controls";
 import { PhotoBackupHub } from "./backup-hub";
+import { PhoneInput } from "@/components/phone-input";
 import { NetworkDiagnostics } from "./network-diagnostics";
 import type { AiKeyRow, AiProvider, AiUsage, Insights, ShareRow, SortField, TelegramLink, ThemeMode } from "./types";
 
@@ -742,9 +743,9 @@ function DirectUploadCard({ user }: { user: string }) {
           ) : phoneMode ? (
             <form onSubmit={event => { event.preventDefault(); void connect(true); }} className="flex flex-wrap items-center gap-2">
               <p className="t-sm w-full">Use your existing Telegram number. No QR scan needed.</p>
-              <input type="tel" autoComplete="tel" aria-label="Telegram phone number" placeholder="+91 phone number"
-                required disabled={busy} value={phone} onChange={event => setPhone(event.target.value)}
-                className="field" style={{ minHeight: 40, maxWidth: 280 }} />
+              <div style={{ maxWidth: 340, width: "100%" }}>
+                <PhoneInput onChange={setPhone} disabled={busy} />
+              </div>
               <button type="submit" disabled={busy} className="btn btn-accent">
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Send Telegram code
               </button>
@@ -961,25 +962,13 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
         <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>
           {link?.linked
             ? "New uploads go to your own Telegram account, so they play and download straight from Telegram."
-            : "Link your Telegram account to store big files as one message."}
+            : "Link your Telegram account to start uploading."}
         </p>
-        <div className={link?.linked ? "mt-4" : "mt-4 opacity-50"}>
-          <Choice
-            label="Default backend"
-            value={prefs.uploadBackend}
-            onChange={value => setPreference("uploadBackend", value)}
-            options={[
-              { value: "auto" as const, label: "Automatic" },
-              { value: "account" as const, label: "Always my account" },
-              { value: "bot" as const, label: "Always the bot" }
-            ]}
-          />
-          {!link?.linked ? (
-            <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
-              Ignored until an account is linked — the bot is the only storage there is.
-            </p>
-          ) : null}
-        </div>
+        {!link?.linked ? (
+          <p className="t-xs mt-3" style={{ color: "var(--danger)" }}>
+            Uploads are paused until your Telegram account is linked above — files are stored only in your own Telegram.
+          </p>
+        ) : null}
 
         <div className="mt-5">
           <Choice<number>

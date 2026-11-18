@@ -18,6 +18,12 @@ export const maxDuration = 60;
  * document in the user's own bot chat. Larger files use init/chunk/complete.
  */
 export async function POST(request: NextRequest) {
+  // Retired: this path stored every small file in the bot. New files go only
+  // to the user's own Telegram, through /api/upload/init. An app still on an
+  // old bundle picks up the new one on reload.
+  if (process.env.SINGLE_SHOT_UPLOAD !== "1") {
+    return NextResponse.json({ error: "TeleDrive was updated. Reload the page to upload." }, { status: 410 });
+  }
   try {
     const user = await requireUser();
     rateLimit(`upload-small:${user.id}`, 300, 60_000);
