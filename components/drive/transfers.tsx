@@ -31,10 +31,13 @@ export function TransferPanel({
   onRetryUpload,
   onCancelDownload,
   onRetryDownload,
-  onDismiss
+  onDismiss,
+  full = false
 }: {
   transfers: TransferItem[];
   open: boolean;
+  /** The Transfers page: no height cap, no collapse toggle. */
+  full?: boolean;
   onToggle: () => void;
   onCancelUpload: (id: string) => void;
   onCancelAll: () => void;
@@ -85,7 +88,7 @@ export function TransferPanel({
       <div className="px-3 py-2" style={{ borderBottom: open ? "1px solid var(--border-dim)" : "none" }}>
         <div className="flex items-center justify-between gap-2">
           <button onClick={onToggle} className="t-xs flex min-w-0 items-center gap-1.5" style={{ color: "var(--text-2)" }}>
-            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
+            {full ? null : <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />}
             <span className="truncate">
               {done}/{moving.length} done{failed ? ` · ${failed} failed` : ""}
               {paused ? ` · ${paused} paused` : ""}
@@ -126,17 +129,17 @@ export function TransferPanel({
       </div>
 
       {open ? (
-        <div className="max-h-72 space-y-1.5 overflow-y-auto p-2">
+        <div className={cn("space-y-1.5 p-2", full ? "" : "max-h-72 overflow-y-auto")}>
           {/* What is moving right now, then everything else, so the live rows
               are never buried under hundreds of waiting ones. */}
           {[
             { label: "Uploading now", rows: active },
-            { label: active.length ? "Waiting, paused and finished" : "", rows: transfers.filter(t => !active.includes(t)) }
+            { label: "Waiting", rows: transfers.filter(t => t.status === "pending") },
+            { label: "Paused or failed", rows: transfers.filter(t => t.status === "paused" || t.status === "error") },
+            { label: "Finished", rows: transfers.filter(t => t.status === "done" || t.status === "skipped") }
           ].map(section => section.rows.length ? (
-            <div key={section.label || "rest"} className="space-y-1.5">
-              {section.label ? (
-                <p className="eyebrow px-1 pt-1" style={{ color: "var(--text-3)" }}>{section.label} · {section.rows.length}</p>
-              ) : null}
+            <div key={section.label} className="space-y-1.5">
+              <p className="eyebrow px-1 pt-1" style={{ color: "var(--text-3)" }}>{section.label} · {section.rows.length}</p>
           <AnimatePresence initial={false}>
             {section.rows.map(item => (
               <motion.div

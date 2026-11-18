@@ -140,6 +140,7 @@ const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
   { icon: Link2, label: "Shared", view: "shared" },
   { icon: BarChart3, label: "Insights", view: "insights" },
   { icon: Trash2, label: "Trash", view: "trash" },
+  { icon: ArrowUpDown, label: "Transfers", view: "uploads" },
   { icon: CloudUpload, label: "Upload & backup", view: "transfers" },
   { icon: SettingsIcon, label: "Settings", view: "settings" },
   { icon: Info, label: "About", view: "about" }
@@ -221,8 +222,17 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   // Distinguishes "no folders" from "not loaded yet" — an empty tree and a tree
   // still in flight look identical otherwise, and one of them wants skeletons.
   const [treeLoaded, setTreeLoaded] = useState(false);
-  const [folderTrail, setFolderTrail] = useState<DriveFolder[]>([]);
-  const trailsByFolder = useRef<Map<string | null, DriveFolder[]>>(new Map([[null, []]]));
+  // Derived from the tree, never remembered from clicks: after a reload or a
+  // Back into a folder this tab never walked, a remembered trail was empty and
+  // the page showed "Home / My Files" over a folder's contents.
+  const folderTrail = useMemo(() => {
+    const byId = new Map(folderTree.map(f => [f.id, f]));
+    const trail: DriveFolder[] = [];
+    for (let at = folderId ? byId.get(folderId) : undefined; at && trail.length < 64; at = at.parentId ? byId.get(at.parentId) : undefined) {
+      trail.unshift(at);
+    }
+    return trail;
+  }, [folderTree, folderId]);
 
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -1653,33 +1663,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   // ── Navigation ────────────────────────────────────────────────────────────
 
   function enterFolder(folder: DriveFolder) {
-    const trail = [...folderTrail, folder];
-    trailsByFolder.current.set(folder.id, trail);
-    setFolderTrail(trail);
     setFolderId(folder.id);
     window.history.pushState(null, "", `?folder=${folder.id}`);
   }
 
   function goToTrail(folder: DriveFolder | null) {
     if (!folder) {
-      setFolderTrail([]);
       setFolderId(null);
       setAppView("files");
       window.history.pushState(null, "", "?");
       return;
     }
-    const index = folderTrail.findIndex(f => f.id === folder.id);
-    setFolderTrail(index >= 0 ? folderTrail.slice(0, index + 1) : []);
     setFolderId(folder.id);
     window.history.pushState(null, "", `?folder=${folder.id}`);
   }
 
   useEffect(() => {
-    const onPop = () => {
-      const next = new URLSearchParams(window.location.search).get("folder");
-      setFolderId(next);
-      setFolderTrail(trailsByFolder.current.get(next) ?? []);
-    };
+    const onPop = () => setFolderId(new URLSearchParams(window.location.search).get("folder"));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -1687,9 +1687,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   function selectView(next: AppView) {
     setAppView(next);
     setSidebarOpen(false);
-    if (next !== "settings" && next !== "transfers") {
+    if (next !== "settings" && next !== "transfers" && next !== "uploads") {
       setFolderId(null);
-      setFolderTrail([]);
       window.history.pushState(null, "", "?");
     }
     if (next === "insights") refreshStats(true);
@@ -1754,6 +1753,41 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    * search: otherwise switching to Settings with text still in the box left the
    * page headed "Results for …" above something that was not results.
    */
+  /** One set of controls for both the sidebar tray and the Transfers page. */
+  const transferProps = {
+    transfers,
+    onCancelUpload: (id: string) => uploads.cancel(id),
+    onCancelAll: () => {
+      const left = transfers.filter(t => t.status !== "done" && t.status !== "skipped").length;
+      if (left > 5 && !window.confirm(`Cancel ${left} unfinished transfers? Files already finished stay in your drive.`)) return;
+      uploads.cancelAll();
+      downloadControllers.current.forEach(c => c.abort());
+      downloadControllers.current.clear();
+      setDownloads([]);
+    },
+    onPauseUpload: (id: string) => uploads.pause(id),
+    onResumeUpload: (id: string) => uploads.resume(id),
+    onPauseAll: () => uploads.pauseAll(),
+    onResumeAll: () => uploads.resumeAll(),
+    onRetryUpload: (id: string) => uploads.retry(id),
+    onCancelDownload: cancelDownload,
+    onRetryDownload: (item: DownloadItem) => {
+      setDownloads(list => list.filter(d => d.id !== item.id));
+      // A zip is rebuilt from its own row: the selection that produced it
+      // is long gone, so the file id is the only handle left.
+      if (item.id.startsWith("zip-")) {
+        toast.info("Select the folders again to rebuild that archive.");
+        return;
+      }
+      void startDownload({ id: item.fileId, originalName: item.name, size: item.size });
+    },
+    onDismiss: (id: string) => {
+      uploads.dismiss(id);
+      setDownloads(list => list.filter(d => d.id !== id));
+    }
+  };
+  const transfersLive = transfers.filter(t => t.status === "uploading" || t.status === "downloading" || t.status === "pending").length;
+
   const heading = !browsing
     ? NAV.find(n => n.view === appView)?.label ?? "My Files"
     : aiSearch && aiAvailable && aiSearchedFor
@@ -1815,7 +1849,6 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const goHome = useCallback(() => {
     setAppView("files");
     setFolderId(null);
-    setFolderTrail([]);
     setSidebarOpen(false);
     window.history.pushState(null, "", "?");
   }, []);
@@ -1916,40 +1949,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
           </button>
         </div>
 
-        <TransferPanel
-          transfers={transfers}
-          open={trayOpen}
-          onToggle={() => setTrayOpen(o => !o)}
-          onCancelUpload={id => uploads.cancel(id)}
-          onCancelAll={() => {
-            const left = transfers.filter(t => t.status !== "done" && t.status !== "skipped").length;
-            if (left > 5 && !window.confirm(`Cancel ${left} unfinished transfers? Files already finished stay in your drive.`)) return;
-            uploads.cancelAll();
-            downloadControllers.current.forEach(c => c.abort());
-            downloadControllers.current.clear();
-            setDownloads([]);
-          }}
-          onPauseUpload={id => uploads.pause(id)}
-          onResumeUpload={id => uploads.resume(id)}
-          onPauseAll={() => uploads.pauseAll()}
-          onResumeAll={() => uploads.resumeAll()}
-          onRetryUpload={id => uploads.retry(id)}
-          onCancelDownload={cancelDownload}
-          onRetryDownload={item => {
-            setDownloads(list => list.filter(d => d.id !== item.id));
-            // A zip is rebuilt from its own row: the selection that produced it
-            // is long gone, so the file id is the only handle left.
-            if (item.id.startsWith("zip-")) {
-              toast.info("Select the folders again to rebuild that archive.");
-              return;
-            }
-            void startDownload({ id: item.fileId, originalName: item.name, size: item.size });
-          }}
-          onDismiss={id => {
-            uploads.dismiss(id);
-            setDownloads(list => list.filter(d => d.id !== id));
-          }}
-        />
+        <TransferPanel {...transferProps} open={trayOpen} onToggle={() => setTrayOpen(o => !o)} />
 
         <nav className="mt-4 flex-1 space-y-0.5 overflow-y-auto pb-3">
           {NAV.map(({ icon: Icon, label, view: navView }) => (
@@ -1966,6 +1966,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               ) : null}
               <Icon className="h-4 w-4 shrink-0" style={{ color: appView === navView ? "var(--accent)" : undefined }} />
               {label}
+              {navView === "uploads" && transfersLive ? (
+                <span className="mono ml-auto rounded-full px-1.5 text-[11px]" style={{ background: "var(--accent-soft, var(--surface-hi))", color: "var(--accent)" }}>
+                  {transfersLive}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>
@@ -2217,7 +2222,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
               transition feel with none of that risk. */}
           <div key={`${appView}-${folderId ?? "root"}`}>
             <motion.div initial={fadeUp(reduceMotion).initial} animate={{ opacity: 1, y: 0 }} transition={transition}>
-              {appView === "transfers" ? (
+              {appView === "uploads" ? (
+                transfers.length ? (
+                  <TransferPanel {...transferProps} open full onToggle={() => {}} />
+                ) : (
+                  <EmptyState
+                    icon={<ArrowUpDown className="h-7 w-7" style={{ color: "var(--accent)" }} />}
+                    title="Nothing moving"
+                    body="Uploads and downloads show up here while they run, grouped by what is happening to them."
+                    action={null}
+                  />
+                )
+              ) : appView === "transfers" ? (
                 <TransfersPanel
                   backupUser={cacheUser}
                   onBackupNow={backupNow}
