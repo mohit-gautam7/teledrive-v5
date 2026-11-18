@@ -669,7 +669,20 @@ export async function verifyStoredDocument(
   msgId: number,
   expectedSize: number
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const client = await connect(session);
+  // A private client, never the shared cache: a folder upload confirms several
+  // files at once on one instance, and tearing down a shared socket after the
+  // first left the others hanging until the function timed out.
+  const client = build(session);
+  silenceBackgroundErrors(client);
+  try {
+    await withTimeout(client.connect(), 15_000, "Telegram connect");
+    return await withTimeout(checkDocument(client, msgId, expectedSize), 20_000, "Telegram lookup");
+  } finally {
+    void retire(client);
+  }
+}
+
+async function checkDocument(client: TelegramClient, msgId: number, expectedSize: number): Promise<{ ok: true } | { ok: false; reason: string }> {
   const messages = await client.getMessages("me", { ids: [msgId] });
   const media = messages[0]?.media;
   if (!(media instanceof Api.MessageMediaDocument) || !(media.document instanceof Api.Document)) {
