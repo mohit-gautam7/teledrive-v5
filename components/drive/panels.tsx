@@ -878,7 +878,8 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
           ]}
         />
 
-        <div>
+        {/* The sidebar is a drawer on phones, so its width only matters on desktop. */}
+        <div className="hidden lg:block">
           <p className="eyebrow">Sidebar width</p>
           <div className="mt-2 flex items-center gap-3">
             <input
@@ -1009,7 +1010,7 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
           ] as const).map(([Icon, label, value]) => (
             <li key={label} className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border-dim)" }}>
               <Icon className="h-4 w-4" style={{ color: "var(--accent)" }} />
-              <p className="display mt-2 text-lg leading-none" style={{ color: "var(--text-1)" }}>{value}</p>
+              <p className="mt-2 whitespace-nowrap text-base font-bold leading-none" style={{ color: "var(--text-1)" }}>{value}</p>
               <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>{label}</p>
             </li>
           ))}

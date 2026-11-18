@@ -11,6 +11,17 @@ in, with the commands and your real values filled in.
 Both projects already exist and are connected to the repo, so this is a push and
 two environment variables — not a fresh set-up.
 
+**Function region.** `vercel.json` pins functions to `hnd1` (Tokyo), next to the
+Supabase database in `ap-northeast-1`. From the default `bom1` every query
+crossed Mumbai→Tokyo, which made a one-row lookup take about a second.
+
+**Keeping Render awake.** GitHub runs `.github/workflows/keep-warm.yml` only every
+few hours despite its 10-minute cron, so Render slept between runs. The real
+pinger is a Supabase `pg_cron` job (`keep-render-warm`, every 10 minutes) that
+calls `/api/health` via `pg_net`. Inspect it with `select * from cron.job;` and
+recent results in `net._http_response`; remove with
+`select cron.unschedule('keep-render-warm');`.
+
 ## Why the duplicate prompt never appeared
 
 Confirmed, not guessed: `https://teledrive-codex.vercel.app/api/upload/check`
