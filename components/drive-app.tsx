@@ -654,6 +654,31 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     };
   }, [uploading]);
 
+  // Direct phone backup has no background schedule — it runs in this page, and
+  // Android pauses the page off screen. So start it whenever the app is opened
+  // or brought back, instead of waiting for a tap, within the user's own
+  // Wi-Fi / charging rules. At most every 10 minutes; start() is a no-op while
+  // a run is in progress and finishes quickly when nothing is new.
+  useEffect(() => {
+    if (!cacheUser || !nativeBackupAvailable()) return;
+    let last = 0;
+    const kick = async () => {
+      if (document.visibilityState !== "visible" || Date.now() - last < 10 * 60_000) return;
+      const status = await nativeBackup.status().catch(() => null);
+      if (!status?.enabled || status.transport !== "direct" || status.running) return;
+      if (!backupNetworkAllowed(status.networkMode ?? (status.wifiOnly ? "wifi" : "both"), await backupConnection())) return;
+      if (status.chargingOnly) {
+        const battery = await (navigator as Navigator & { getBattery?: () => Promise<{ charging: boolean }> }).getBattery?.().catch(() => null);
+        if (!battery?.charging) return;
+      }
+      last = Date.now();
+      void nativeDirectBackup.start(cacheUser);
+    };
+    void kick();
+    document.addEventListener("visibilitychange", kick);
+    return () => document.removeEventListener("visibilitychange", kick);
+  }, [cacheUser]);
+
   // ── Uploads ───────────────────────────────────────────────────────────────
 
   const addFileToState = useCallback(

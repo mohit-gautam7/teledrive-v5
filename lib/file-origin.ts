@@ -45,6 +45,10 @@ const HEAVY = [
 ];
 
 export function isHeavyPath(path: string) {
+  // Grid thumbnails are ~30 KB each: served from the app origin they cost
+  // Vercel's 100 GB rather than Render's 5 GB, and the service worker can
+  // cache them (it only caches same-origin thumbnails).
+  if (/^\/api\/preview\/[^?]+\?(.*&)?thumb=1(&|$)/.test(path)) return false;
   return HEAVY.some(pattern => pattern.test(path));
 }
 
