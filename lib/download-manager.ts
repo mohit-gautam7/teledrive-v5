@@ -109,7 +109,8 @@ export async function downloadWithProgress({
   init,
   signal,
   onProgress,
-  direct
+  direct,
+  source
 }: {
   url: string;
   filename: string;
@@ -122,6 +123,8 @@ export async function downloadWithProgress({
   /** Read from Telegram in this browser instead of the file server, when the
    *  file is in the user's own account and this browser is connected. */
   direct?: { user: string; messageId: number };
+  /** Bytes produced on this device (a zip it builds), instead of a request. */
+  source?: () => ReadableStream<Uint8Array>;
 }): Promise<DownloadOutcome> {
   const streaming = canStreamToDisk();
 
@@ -148,7 +151,7 @@ export async function downloadWithProgress({
       // Dismissed picker means "don't download", not "download some other way".
       return "cancelled";
     }
-  } else if ((sizeHint ?? 0) > MEMORY_DOWNLOAD_LIMIT && !init) {
+  } else if ((sizeHint ?? 0) > MEMORY_DOWNLOAD_LIMIT && !init && !source) {
     // A POST cannot be handed to the browser as a link, so an archive never
     // takes this path; the caller checks the selection against the same limit
     // before starting one.
@@ -182,7 +185,15 @@ export async function downloadWithProgress({
       }
     }
 
-    if (!viaTelegram) {
+    if (source) {
+      const reader = source().getReader();
+      for (;;) {
+        if (signal?.aborted) { await reader.cancel().catch(() => {}); throw new DOMException("Aborted", "AbortError"); }
+        const { done, value } = await reader.read();
+        if (done) break;
+        await collect(value, sizeHint ?? 0);
+      }
+    } else if (!viaTelegram) {
       const target = apiUrl(url);
       const auth = target === url ? {} : await fileAuthHeaders();
       const response = await fetch(target, {
