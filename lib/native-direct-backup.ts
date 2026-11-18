@@ -1,7 +1,7 @@
 "use client";
 
 import { nativeBackup, nativeBackupAvailable } from "@/lib/native-backup";
-import { browserLinked, checkDirectConnection, directConfig } from "@/lib/direct-upload";
+import { browserLinked, checkDirectConnection, directConfig, storedSession } from "@/lib/direct-upload";
 import { DuplicateFileError, uploadFileInChunks } from "@/lib/chunked-upload";
 import { NativeMediaFile, type NativeMedia } from "@/lib/native-media-file";
 import { backupConnection, backupNetworkAllowed } from "@/lib/backup-network";
@@ -16,6 +16,8 @@ type Bridge = {
   directEnd(options: { runId: string }): Promise<unknown>;
   /** App version 4+: keep the app alive (foreground service) during a run. */
   directService?(options: { running: boolean; text?: string }): Promise<unknown>;
+  /** App version 5+: the native worker uploads to Telegram itself with this session. */
+  directCredentials?(options: { session: string; apiId: number }): Promise<{ directReady: boolean }>;
 };
 type State = { user: string; running: boolean; name: string; sent: number; size: number; saved: number; message: string };
 const EMPTY: State = { user: "", running: false, name: "", sent: 0, size: 0, saved: 0, message: "Ready for direct backup." };
@@ -29,6 +31,11 @@ function bridge(): Bridge {
   const api = win.Capacitor?.Plugins?.Backup;
   if (!api) throw new Error("Direct album backup needs the updated Android app.");
   return api;
+}
+
+/** Forget this phone's Telegram session on the native side (sign-out, disconnect). */
+export async function forgetNativeTelegram() {
+  try { await bridge().directCredentials?.({ session: "", apiId: 0 }); } catch { /* no app, or an older one */ }
 }
 
 export const nativeDirectBackup = {
@@ -55,7 +62,18 @@ export const nativeDirectBackup = {
       const status = await nativeBackup.status();
       if (!status || (status.backupVersion ?? 0) < 3) throw new Error("Install the updated Android app for direct album backup.");
       if (!status.enabled || status.transport !== "direct") throw new Error("Turn backup on and choose Direct to Telegram first.");
-      if (!await directConfig() || !browserLinked(user)) throw new Error("Connect this app in Settings → Direct upload first.");
+      const config = await directConfig();
+      const session = storedSession(user);
+      if (!config || !session || !browserLinked(user)) throw new Error("Connect this app in Settings → Direct upload first.");
+      const handOff = bridge().directCredentials;
+      if ((status.backupVersion ?? 0) >= 5 && handOff) {
+        // The app uploads natively from here on, closed or not; the page only
+        // hands over this phone's Telegram session and asks for a run.
+        await handOff({ session, apiId: config.apiId });
+        await nativeBackup.runNow();
+        publish({ message: "Backing up in the background. You can close the app." });
+        return;
+      }
       await checkDirectConnection(user);
       const identity = await apiFetch<{ user: { id: string } | null }>("/api/auth/me");
       if (!identity.user?.id) throw new Error("Sign in before starting backup.");

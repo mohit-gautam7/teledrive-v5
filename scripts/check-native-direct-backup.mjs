@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module';
 registerHooks({ resolve(specifier, context, next) {
   const mocks = {
     '@/lib/native-backup': 'export const nativeBackup=globalThis.backup; export const nativeBackupAvailable=()=>true;',
-    '@/lib/direct-upload': 'export const browserLinked=()=>true; export const directConfig=async()=>({enabled:true}); export const checkDirectConnection=async()=>"Test";',
+    '@/lib/direct-upload': 'export const browserLinked=()=>true; export const directConfig=async()=>({enabled:true,apiId:7}); export const checkDirectConnection=async()=>"Test"; export const storedSession=()=>"1session";',
     '@/lib/api-client': 'export const apiFetch=async()=>({user:{id:"database-user-id"}});',
     '@/lib/backup-network': 'export const backupConnection=async()=>"wifi"; export const backupNetworkAllowed=()=>true;',
     '@/lib/chunked-upload': 'export class DuplicateFileError extends Error {}; export const uploadFileInChunks=(...args)=>globalThis.uploadTest(...args);'
@@ -66,4 +66,13 @@ assert.deepEqual(awake.at(-1), { enabled: false, owner: 'backup' });
 reset(); await nativeDirectBackup.start('display-name');
 assert.equal(nativeDirectBackup.getSnapshot().saved, 2, 'a subsequent run must recover after cleanup failure');
 assert.equal(nativeDirectBackup.getSnapshot().user, 'display-name');
+// App version 5: the page only hands the session to the native worker.
+const handed = []; let ran = 0;
+window.Capacitor.Plugins.Backup.directCredentials = async options => { handed.push(options); return { directReady: true }; };
+globalThis.backup.status = async () => ({ backupVersion: 5, enabled: true, transport: 'direct', networkMode: 'wifi' });
+globalThis.backup.runNow = async () => { ran++; };
+reset(); await nativeDirectBackup.start('display-name');
+assert.deepEqual(handed, [{ session: '1session', apiId: 7 }]); assert.equal(ran, 1);
+assert.equal(readCount, 0, 'version 5 must not read bytes through the page');
+assert.equal(nativeDirectBackup.getSnapshot().running, false);
 console.log('native direct backup: account binding, byte reads, ordered acknowledgement, failure recovery and background pause passed');

@@ -58,7 +58,7 @@ import { SPRING, fadeIn, fadeUp, riseFromBottom, transition, useReducedMotion } 
 import { useOrbitOnChange } from "@/lib/motion-3d";
 import { DepthCard } from "@/components/drive/depth-card";
 import { DriveOverview } from "@/components/drive/drive-overview";
-import { nativeDirectBackup } from "@/lib/native-direct-backup";
+import { forgetNativeTelegram, nativeDirectBackup } from "@/lib/native-direct-backup";
 import { Logo } from "@/components/logo";
 import { FileTile } from "@/components/drive/file-tile";
 import {
@@ -268,7 +268,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [renameFile, setRenameFile] = useState<{ id: string; value: string } | null>(null);
   const [moveModal, setMoveModal] = useState<{ ids: string[] } | null>(null);
   const [propsTarget, setPropsTarget] = useState<PropsTarget | null>(null);
-  const [shareTarget, setShareTarget] = useState<{ fileId?: string; folderId?: string; name: string } | null>(null);
+  const [shareTarget, setShareTarget] = useState<{ fileId?: string; folderId?: string; name: string; messageId?: number } | null>(null);
   /** A batch waiting on the user to say what to do about the files in it that
    *  are already stored. Nothing is queued until they answer. */
   const [duplicateModal, setDuplicateModal] = useState<{
@@ -1559,6 +1559,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     }
   }
 
+  async function sendTelegram(to: string) {
+    if (!shareTarget?.messageId || !cacheUser) return;
+    try {
+      const { sendViaTelegram } = await import("@/lib/direct-upload");
+      await sendViaTelegram(cacheUser, shareTarget.messageId, to);
+      toast.success(`Sent to @${to.trim().replace(/^@/, "")} in Telegram`);
+      setShareTarget(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not send it in Telegram.");
+    }
+  }
+
   function emptyTrash() {
     setConfirmModal({
       title: "Empty trash",
@@ -1586,7 +1598,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     try {
       nativeDirectBackup.stop();
       uploads.pauseAll();
-      if (nativeBackupAvailable()) await nativeBackup.disable();
+      if (nativeBackupAvailable()) { await nativeBackup.disable(); await forgetNativeTelegram(); }
       await apiFetch("/api/auth/logout", { method: "POST" });
       Object.keys(window.localStorage)
         .filter(k => k.startsWith("td:"))
@@ -2364,7 +2376,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                             actions={{
                               onPreview: () => setPreviewFile(file),
                               onDownload: () => void startDownload(file),
-                              onShare: () => setShareTarget({ fileId: file.id, name: file.originalName }),
+                              onShare: () => setShareTarget({ fileId: file.id, name: file.originalName,
+                                messageId: file.backend === "mtproto" && file.telegramMessageId ? Number(file.telegramMessageId) : undefined }),
                               onDelete: () => confirmTrash([file.id]),
                               onFavorite: () => toggleFavorite(file.id),
                               onRestore: () => restoreFile(file.id),
@@ -2595,7 +2608,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       </AnimatePresence>
       <AnimatePresence>{propsTarget ? <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} /> : null}</AnimatePresence>
       <AnimatePresence>
-        {shareTarget ? <ShareModal targetName={shareTarget.name} onCreate={createShare} onClose={() => setShareTarget(null)} /> : null}
+        {shareTarget ? <ShareModal targetName={shareTarget.name} onCreate={createShare} onClose={() => setShareTarget(null)}
+                                   onSendTelegram={shareTarget.messageId && cacheUser && !deviceUnlinked ? sendTelegram : undefined} /> : null}
       </AnimatePresence>
       <AnimatePresence>
         {duplicateModal ? (

@@ -248,12 +248,17 @@ export function PropertiesModal({ target, onClose }: { target: PropsTarget; onCl
 export function ShareModal({
   targetName,
   onCreate,
+  onSendTelegram,
   onClose
 }: {
   targetName: string;
   onCreate: (options: { password?: string; expiryDays?: number }) => Promise<void>;
+  /** Present when this device can forward the file straight from Telegram. */
+  onSendTelegram?: (to: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const [recipient, setRecipient] = useState("");
+  const [sending, setSending] = useState(false);
   const [password, setPassword] = useState("");
   const [expiryDays, setExpiryDays] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -264,7 +269,22 @@ export function ShareModal({
         <h2 className="display t-h2">Share link</h2>
         <p className="t-sm mt-1 break-words" style={{ color: "var(--text-3)" }}>{targetName}</p>
 
-        <label className="eyebrow mt-5 block">Password (optional)</label>
+        {onSendTelegram ? (
+          <div className="mt-5 rounded-xl p-3" style={{ border: "1px solid var(--border-dim)" }}>
+            <label className="eyebrow block">Send in Telegram (direct)</label>
+            <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>Goes from your Telegram to theirs. No server carries it.</p>
+            <div className="mt-2 flex gap-2">
+              <input value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="@username" className="field min-w-0 flex-1"
+                     autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+              <button className="btn btn-accent" disabled={sending || recipient.trim().length < 4}
+                      onClick={async () => { setSending(true); try { await onSendTelegram(recipient); } finally { setSending(false); } }}>
+                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Send
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <label className="eyebrow mt-5 block">{onSendTelegram ? "Or create a link · " : ""}Password (optional)</label>
         <input
           type="password"
           value={password}
