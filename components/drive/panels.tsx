@@ -24,7 +24,18 @@ import {
   Sun,
   Trash2,
   Unlink,
-  CloudUpload
+  CloudUpload,
+  ChevronDown,
+  Palette,
+  LayoutGrid,
+  Send,
+  Gauge,
+  Activity,
+  Sparkles,
+  ShieldCheck,
+  Zap,
+  Layers,
+  HardDrive
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch, ApiError } from "@/lib/api-client";
@@ -478,6 +489,33 @@ function PhoneBackupCard({ user, onBackupNow, scanning }: {
  * credential never reaches the browser at all, and this browser then shows up
  * in Telegram under Settings - Devices like any other, to revoke whenever.
  */
+/** Small icon tiles: the gist of a setting, readable without the paragraph. */
+function Facts({ items }: { items: Array<[typeof Clock, string, string]> }) {
+  return (
+    <ul className="mt-3 grid grid-cols-3 gap-2">
+      {items.map(([Icon, title, sub]) => (
+        <li key={title} className="rounded-xl p-2.5" style={{ background: "var(--surface)", border: "1px solid var(--border-dim)" }}>
+          <Icon className="h-4 w-4" style={{ color: "var(--accent)" }} />
+          <p className="t-xs mt-1.5 font-semibold" style={{ color: "var(--text-1)" }}>{title}</p>
+          <p className="t-xs leading-snug" style={{ color: "var(--text-3)" }}>{sub}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The long explanation, one tap away instead of always on screen. */
+function More({ label = "How it works", children }: { label?: string; children: React.ReactNode }) {
+  return (
+    <details className="group mt-3 rounded-xl" style={{ background: "var(--surface)" }}>
+      <summary className="t-xs flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2.5 font-semibold" style={{ color: "var(--text-2)" }}>
+        {label} <ChevronDown className="h-4 w-4 transition group-open:rotate-180" />
+      </summary>
+      <div className="t-xs space-y-2 px-3 pb-3 leading-relaxed" style={{ color: "var(--text-3)" }}>{children}</div>
+    </details>
+  );
+}
+
 function DirectUploadCard({ user }: { user: string }) {
   const loginController = useRef<AbortController | null>(null);
   const device = nativeBackupAvailable() ? "app" : "browser";
@@ -616,16 +654,12 @@ function DirectUploadCard({ user }: { user: string }) {
         </button>
       </div>
 
-      <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        Normally a file travels twice: up to TeleDrive, then out to Telegram. With this on, your browser sends it to
-        Telegram itself and TeleDrive is told only where it landed &mdash; about a kilobyte instead of the whole file.
-        While this is on, all manual uploads use your linked account and file bytes bypass the host.
-        If direct upload fails, the queue stops that file rather than silently relaying it.
-      </p>
-      {device === "app" ? <p className="t-xs mt-2" style={{ color: "var(--text-3)" }}>
-        Direct uploads work while this app is open. Keep it open until Transfers shows the file as saved.
-        Updated Android builds keep the screen awake during uploads. Choose Direct to Telegram under Photo and video backup for direct album backups while the app is open.
-      </p> : null}
+      <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>Your {device} sends files straight to Telegram.</p>
+      <Facts items={[
+        [Zap, "Faster", "Files travel once, not twice"],
+        [ShieldCheck, "Private", "Bytes skip our server"],
+        [device === "app" ? Smartphone : Monitor, "Keep open", `Until the ${device === "app" ? "app" : "tab"} shows saved`]
+      ]} />
 
       {enabled ? (
         <div className="mt-4">
@@ -735,21 +769,25 @@ function DirectUploadCard({ user }: { user: string }) {
         </div>
       ) : null}
 
-      <p className="t-xs mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        This browser needs its own Telegram sign-in &mdash; it cannot borrow the one TeleDrive uses, because Telegram
-        cuts off a login it sees in two places at once. Sign in once by phone code or QR; it is remembered on this device until you
-        disconnect, and you can revoke it any time from <strong>Telegram &rarr; Settings &rarr; Devices</strong>.
-      </p>
-      <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        The honest cost: while this browser is connected it stores a key that reaches your whole Telegram account, not
-        just TeleDrive &mdash; the same thing Telegram Web stores. On a shared computer, leave this off.
-      </p>
-      <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-        This protects manual browser uploads, including small files. Android automatic background backup uses the file
-        server, not this browser connection. Files saved to your own account also download, and preview up to 64 MB,
-        straight from Telegram; bot-stored files, thumbnails and larger previews use the file server. Metadata requests
-        still reach the website. Telegram&apos;s file-size and rate limits, and your internet data allowance, still apply.
-      </p>
+      <More label="How it works & privacy">
+        <p>
+          Normally a file travels twice: up to TeleDrive, then out to Telegram. With this on, this {device} sends it to
+          Telegram itself and TeleDrive is told only where it landed &mdash; about a kilobyte instead of the whole file.
+          If a direct upload fails, the queue stops that file rather than silently relaying it.
+        </p>
+        <p>
+          This {device} needs its own Telegram sign-in, because Telegram cuts off a login it sees in two places at once.
+          It is remembered until you disconnect, and you can revoke it from <strong>Telegram &rarr; Settings &rarr; Devices</strong>.
+        </p>
+        <p>
+          While connected it stores a key that reaches your whole Telegram account, the same thing Telegram Web stores.
+          On a shared computer, leave this off.
+        </p>
+        <p>
+          Background phone backup uses the file server instead. Files in your own account download, and preview up to
+          64 MB, straight from Telegram; bot-stored files, thumbnails and larger previews use the file server.
+        </p>
+      </More>
     </section>
   );
 }
@@ -762,9 +800,27 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
   const prefs = usePreferences();
   const [deviceKey, setDeviceKey] = useState(0);
 
+  const jump = (id: string) => document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const sections: Array<[string, typeof Clock, string]> = [
+    ["look", Palette, "Look"], ["drive", LayoutGrid, "Drive"], ["telegram", Send, "Telegram"],
+    ["uploads", Gauge, "Uploads"], ["network", Activity, "Network"], ["ai", Sparkles, "AI"]
+  ];
+
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <section className="panel space-y-5 p-5">
+      <nav aria-label="Settings sections" className="grid grid-cols-3 gap-2 sm:grid-cols-6 lg:col-span-2">
+        {sections.map(([id, Icon, label]) => (
+          <button key={id} onClick={() => jump(id)} className="flex flex-col items-center gap-1.5 rounded-2xl p-3 transition hover:brightness-125"
+                  style={{ background: "var(--surface)", border: "1px solid var(--border-dim)" }}>
+            <span className="grid h-9 w-9 place-items-center rounded-xl" style={{ background: "var(--accent-dim)", color: "var(--accent)" }}>
+              <Icon className="h-[18px] w-[18px]" />
+            </span>
+            <span className="t-xs font-semibold" style={{ color: "var(--text-2)" }}>{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <section id="settings-look" className="panel scroll-mt-24 space-y-5 p-5">
         <div className="flex items-start justify-between gap-3">
           <h2 className="display t-h2">Appearance</h2>
           <button
@@ -846,11 +902,9 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
         </div>
       </section>
 
-      <section className="panel space-y-5 p-5">
+      <section id="settings-drive" className="panel scroll-mt-24 space-y-5 p-5">
         <h2 className="display t-h2">Drive defaults</h2>
-        <p className="t-sm -mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-          Where the drive starts each visit. The toolbar still overrides any of them for the session.
-        </p>
+        <p className="t-sm -mt-3" style={{ color: "var(--text-3)" }}>How the drive opens each visit.</p>
 
         <Choice<"grid" | "list">
           label="Default view"
@@ -896,17 +950,17 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
         />
       </section>
 
-      <h3 className="eyebrow pt-2 lg:col-span-2">Telegram connection</h3>
+      <h3 id="settings-telegram" className="eyebrow scroll-mt-24 pt-2 lg:col-span-2">Telegram connection</h3>
       <TelegramLinkCard link={link} onChanged={onLinkChanged} user={user} onDeviceConnected={() => setDeviceKey(k => k + 1)} />
       <DirectUploadCard key={deviceKey} user={user} />
 
-      <h3 className="eyebrow pt-2 lg:col-span-2">Uploads</h3>
+      <h3 id="settings-uploads" className="eyebrow scroll-mt-24 pt-2 lg:col-span-2">Uploads</h3>
       <section className="panel p-5">
         <h2 className="display t-h2">Upload storage</h2>
-        <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
+        <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>
           {link?.linked
-            ? `Anything over ${formatBytes(BOT_DOWNLOAD_LIMIT)} is stored in your own Telegram account as a single message, because that is the largest document a bot can serve back. You can override that.`
-            : "Link your Telegram account in Telegram connection to store big files as one message instead of hundreds of bot chunks."}
+            ? `Over ${formatBytes(BOT_DOWNLOAD_LIMIT)} goes to your own account as one message.`
+            : "Link your Telegram account to store big files as one message."}
         </p>
         <div className={link?.linked ? "mt-4" : "mt-4 opacity-50"}>
           <Choice
@@ -934,38 +988,43 @@ export function SettingsPanel({ link, onLinkChanged, user }: {
             onChange={value => setPreference("uploadConcurrency", value)}
             options={UPLOAD_CONCURRENCIES.map(n => ({ value: n as number, label: String(n) }))}
           />
-          <p className="t-xs mt-2 leading-relaxed" style={{ color: "var(--text-3)" }}>
-            Each file already sends {CHUNK_CONCURRENCY} chunks in parallel, so this multiplies. Higher is faster on a
-            folder of small files and riskier on a slow connection: Telegram answers a flood by making the next wait
-            longer, so the fastest setting can finish a big queue slower than the default.
-          </p>
+          <More label="Why not always the fastest?">
+            <p>
+              Each file already sends {CHUNK_CONCURRENCY} chunks in parallel, so this multiplies. Higher is faster on a
+              folder of small files and riskier on a slow connection: Telegram answers a flood by making the next wait
+              longer, so the fastest setting can finish a big queue slower than the default.
+            </p>
+          </More>
         </div>
       </section>
 
-      <section className="panel p-5 lg:col-span-2">
+      <section className="panel p-5">
         <h2 className="display t-h2">Limits</h2>
-        <ul className="mt-4 grid gap-3 sm:grid-cols-3">
-          {[
-            ["Minimum file size", "1 byte"],
-            ["Maximum file size", formatBytes(link?.maxBytes ?? MAX_FILE_SIZE)],
-            ["Upload chunk", formatBytes(CHUNK_SIZE)]
-          ].map(([label, value]) => (
-            <li key={label} className="rounded-xl p-3.5" style={{ background: "var(--surface)" }}>
-              <p className="eyebrow">{label}</p>
-              <p className="t-body mt-1 font-semibold" style={{ color: "var(--text-1)" }}>{value}</p>
+        <p className="t-sm mt-1" style={{ color: "var(--text-3)" }}>Set by Telegram, not TeleDrive.</p>
+        <ul className="mt-4 grid grid-cols-3 gap-2">
+          {([
+            [Layers, "Smallest", "1 byte"],
+            [HardDrive, "Largest", formatBytes(link?.maxBytes ?? MAX_FILE_SIZE)],
+            [Gauge, "Chunk", formatBytes(CHUNK_SIZE)]
+          ] as const).map(([Icon, label, value]) => (
+            <li key={label} className="rounded-xl p-3" style={{ background: "var(--surface)", border: "1px solid var(--border-dim)" }}>
+              <Icon className="h-4 w-4" style={{ color: "var(--accent)" }} />
+              <p className="display mt-2 text-lg leading-none" style={{ color: "var(--text-1)" }}>{value}</p>
+              <p className="t-xs mt-1" style={{ color: "var(--text-3)" }}>{label}</p>
             </li>
           ))}
         </ul>
-        <p className="t-sm mt-3 leading-relaxed" style={{ color: "var(--text-3)" }}>
-          Telegram sets these ceilings, not TeleDrive. Bot storage chunks every file so no piece exceeds the Bot
-          API&apos;s {formatBytes(BOT_DOWNLOAD_LIMIT)} download limit; linking your own account stores big files as a
-          single message instead.
-        </p>
+        <More label="Why these limits?">
+          <p>
+            Bot storage chunks every file so no piece exceeds the Bot API&apos;s {formatBytes(BOT_DOWNLOAD_LIMIT)} download
+            limit; linking your own account stores big files as a single message instead.
+          </p>
+        </More>
       </section>
 
-      <div className="lg:col-span-2"><NetworkDiagnostics user={user} /></div>
+      <div id="settings-network" className="scroll-mt-24 lg:col-span-2"><NetworkDiagnostics user={user} /></div>
 
-      <h3 className="eyebrow pt-2 lg:col-span-2">AI</h3>
+      <h3 id="settings-ai" className="eyebrow scroll-mt-24 pt-2 lg:col-span-2">AI</h3>
       <AiSection />
     </div>
   );

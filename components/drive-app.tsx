@@ -131,6 +131,13 @@ const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
   { icon: Info, label: "About", view: "about" }
 ];
 
+/** A stable colour per folder name, so folders are told apart at a glance. */
+function folderHue(name: string) {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return h;
+}
+
 /** Views that show the file/folder browser rather than a standalone panel. */
 const BROWSE_VIEWS: AppView[] = ["files", "favorites", "trash"];
 
@@ -1944,7 +1951,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                   ))}
                 </nav>
               ) : null}
-              <h1 className="display t-h1 truncate">{heading}</h1>
+              {/* Wraps instead of truncating: "Upload & backup" is wider than a phone. */}
+              <h1 className="display t-h1 break-words">{heading}</h1>
             </div>
 
             {browsing ? (
@@ -2085,8 +2093,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                     <SkeletonFolders />
                   ) : null}
                   {appView === "files" && folders.length ? (
-                    // Full width on phones: two-up truncates the size line.
-                    <div className="depth-stage mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    // Two-up on phones: the tile stacks icon, name and size so nothing truncates.
+                    <div className="depth-stage mb-6 grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-4">
                       {folders.map((folder, i) => (
                         <DepthCard
                           key={folder.id}
@@ -2096,7 +2104,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                           // the arc is not running; the two would stack into a
                           // double animation on every folder open.
                           className={cn(
-                            "card relative flex items-center gap-2.5 p-3",
+                            "card relative p-3",
                             !orbiting && "rise",
                             dropFolderId === folder.id && "drop-target"
                           )}
@@ -2134,7 +2142,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                           }}
                         >
                           <button
-                            className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                            className="flex w-full min-w-0 flex-col items-start gap-2.5 pr-7 text-left"
                             onClick={() => (selectedFolders.size || selected.size ? toggleFolderSelect(folder.id) : enterFolder(folder))}
                             // Warm the listing before the click lands, so the
                             // folder opens against a populated cache.
@@ -2157,28 +2165,29 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                                 e.stopPropagation();
                                 toggleFolderSelect(folder.id);
                               }}
-                              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg transition"
+                              className="grid h-11 w-11 shrink-0 place-items-center rounded-xl transition"
                               style={{
-                                background: selectedFolders.has(folder.id) ? "var(--accent)" : "rgba(129,140,248,0.12)",
-                                border: `1px solid ${selectedFolders.has(folder.id) ? "var(--accent)" : "rgba(129,140,248,0.24)"}`
+                                background: selectedFolders.has(folder.id) ? "var(--accent)" : `hsl(${folderHue(folder.name)} 80% 60% / 0.14)`,
+                                border: `1px solid ${selectedFolders.has(folder.id) ? "var(--accent)" : `hsl(${folderHue(folder.name)} 80% 60% / 0.3)`}`
                               }}
                             >
                               {selectedFolders.has(folder.id) ? (
-                                <Check className="h-4 w-4" style={{ color: "#04070c" }} />
+                                <Check className="h-5 w-5" style={{ color: "#04070c" }} />
                               ) : (
-                                <FolderIcon className="h-4 w-4" style={{ color: "var(--accent-2)" }} />
+                                <FolderIcon className="h-5 w-5" style={{ color: `hsl(${folderHue(folder.name)} 85% 68%)`, fill: `hsl(${folderHue(folder.name)} 85% 68% / 0.25)` }} />
                               )}
                             </span>
-                            <span className="min-w-0">
+                            <span className="w-full min-w-0">
                               <span className="t-sm block truncate font-semibold" style={{ color: "var(--text-1)" }}>{folder.name}</span>
-                              <span className="mono block truncate" style={{ color: "var(--text-3)" }}>
-                                {folder.fileCount ?? 0} item{(folder.fileCount ?? 0) === 1 ? "" : "s"} · {formatBytes(folder.size ?? 0)}
+                              <span className="mono t-xs mt-0.5 flex flex-wrap gap-x-1.5" style={{ color: "var(--text-3)" }}>
+                                <span>{(folder.fileCount ?? 0).toLocaleString()} item{(folder.fileCount ?? 0) === 1 ? "" : "s"}</span>
+                                <span>{formatBytes(folder.size ?? 0)}</span>
                               </span>
                             </span>
                           </button>
                           <DropdownMenu.Root>
                             <DropdownMenu.Trigger asChild>
-                              <button className="icon-btn shrink-0" style={{ height: 30, width: 30 }} aria-label={`Options for ${folder.name}`}>
+                              <button className="icon-btn absolute right-2 top-2" style={{ height: 30, width: 30 }} aria-label={`Options for ${folder.name}`}>
                                 <MoreVertical className="h-4 w-4" />
                               </button>
                             </DropdownMenu.Trigger>
@@ -2494,10 +2503,10 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 /** Placeholder folder cards, sized like the real ones so nothing shifts. */
 function SkeletonFolders() {
   return (
-    <div className="mb-6 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <div className="mb-6 grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-4">
       {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="card flex items-center gap-2.5 p-3">
-          <div className="skeleton h-9 w-9 shrink-0 rounded-lg" />
+        <div key={i} className="card space-y-2.5 p-3">
+          <div className="skeleton h-11 w-11 rounded-xl" />
           <div className="flex-1 space-y-2">
             <div className="skeleton h-3.5 w-1/2" />
             <div className="skeleton h-3 w-1/3" />

@@ -92,6 +92,8 @@
     .overview-metrics { gap: 10px; }
     .overview-metrics dd { font-size: 16px; }
     .overview-copy .btn { min-height: 44px; }
+    .overview-copy { padding: 18px; }
+    .overview-copy .t-sm { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
     .cloud-stack, .cloud-sheet { animation: none; transition: none; }
