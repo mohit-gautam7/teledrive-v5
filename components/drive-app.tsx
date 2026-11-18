@@ -120,6 +120,19 @@ const NameModal = dynamic(() => modalsChunk().then(m => m.NameModal), { ssr: fal
 const PropertiesModal = dynamic(() => modalsChunk().then(m => m.PropertiesModal), { ssr: false });
 const ShareModal = dynamic(() => modalsChunk().then(m => m.ShareModal), { ssr: false });
 
+// Who had phone backup on at sign-out. Outside the "td:" prefix on purpose:
+// sign-out clears those keys, and this one must outlive it.
+const RESUME_BACKUP_KEY = "teledrive:resume-backup";
+function readResumeBackup(): string | null {
+  try { return window.localStorage.getItem(RESUME_BACKUP_KEY); } catch { return null; }
+}
+function writeResumeBackup(user: string | null) {
+  try {
+    if (user) window.localStorage.setItem(RESUME_BACKUP_KEY, user);
+    else window.localStorage.removeItem(RESUME_BACKUP_KEY);
+  } catch { /* storage blocked: backup just stays off */ }
+}
+
 const NAV: Array<{ icon: typeof FolderIcon; label: string; view: AppView }> = [
   { icon: FolderIcon, label: "My Files", view: "files" },
   { icon: Star, label: "Favourites", view: "favorites" },
@@ -719,7 +732,15 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     let last = 0;
     const kick = async () => {
       if (document.visibilityState !== "visible" || Date.now() - last < 10 * 60_000) return;
-      const status = await nativeBackup.status().catch(() => null);
+      let status = await nativeBackup.status().catch(() => null);
+      // Backup was on when this account signed out: turn it back on once this
+      // phone is connected to Telegram again. A user who had switched it off
+      // left no flag, so their choice stands.
+      if (status && !status.enabled && readResumeBackup() === cacheUser
+          && (await import("@/lib/direct-upload")).browserLinked(cacheUser)) {
+        status = await nativeBackup.enable().catch(() => status);
+        if (status?.enabled) { writeResumeBackup(null); toast.success("Backup is back on."); }
+      }
       if (!status?.enabled || status.transport !== "direct" || status.running) return;
       if (!backupNetworkAllowed(status.networkMode ?? (status.wifiOnly ? "wifi" : "both"), await backupConnection())) return;
       if (status.chargingOnly) {
@@ -732,7 +753,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     void kick();
     document.addEventListener("visibilitychange", kick);
     return () => document.removeEventListener("visibilitychange", kick);
-  }, [cacheUser]);
+  }, [cacheUser, deviceUnlinked]);
 
   // ── Uploads ───────────────────────────────────────────────────────────────
 
@@ -1539,32 +1560,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     });
   }
 
-  async function createShare(options: { password?: string; expiryDays?: number }) {
-    if (!shareTarget) return;
-    try {
-      const data = await apiFetch<{ shareUrl: string }>("/api/share", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...(shareTarget.fileId ? { fileId: shareTarget.fileId } : { folderId: shareTarget.folderId }),
-          password: options.password ?? null,
-          expiryDate: options.expiryDays ? new Date(Date.now() + options.expiryDays * 86400_000).toISOString() : null
-        })
-      });
-      await navigator.clipboard.writeText(`${window.location.origin}${data.shareUrl}`).catch(() => {});
-      toast.success("Share link created and copied");
-      setShareTarget(null);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create the link.");
-    }
-  }
-
   async function sendTelegram(to: string) {
     if (!shareTarget?.messageId || !cacheUser) return;
     try {
       const { sendViaTelegram } = await import("@/lib/direct-upload");
-      await sendViaTelegram(cacheUser, shareTarget.messageId, to);
-      toast.success(`Sent to @${to.trim().replace(/^@/, "")} in Telegram`);
+      const name = await sendViaTelegram(cacheUser, shareTarget.messageId, to);
+      toast.success(`Sent to ${name} in Telegram`);
       setShareTarget(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not send it in Telegram.");
@@ -1598,7 +1599,12 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     try {
       nativeDirectBackup.stop();
       uploads.pauseAll();
-      if (nativeBackupAvailable()) { await nativeBackup.disable(); await forgetNativeTelegram(); }
+      if (nativeBackupAvailable()) {
+        const wasOn = (await nativeBackup.status().catch(() => null))?.enabled;
+        writeResumeBackup(wasOn ? cacheUser : null);
+        await nativeBackup.disable();
+        await forgetNativeTelegram();
+      }
       await apiFetch("/api/auth/logout", { method: "POST" });
       Object.keys(window.localStorage)
         .filter(k => k.startsWith("td:"))
@@ -2336,9 +2342,6 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                                 <DropdownMenu.Item onSelect={() => copyFolder(folder)} className="menu-item">
                                   <Copy className="h-4 w-4" style={{ color: "var(--accent)" }} /> Make a copy
                                 </DropdownMenu.Item>
-                                <DropdownMenu.Item onSelect={() => setShareTarget({ folderId: folder.id, name: folder.name })} className="menu-item">
-                                  <Link2 className="h-4 w-4" style={{ color: "var(--accent)" }} /> Share folder
-                                </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => deleteFolder(folder.id)} className="menu-item menu-item-danger">
                                   <Trash2 className="h-4 w-4" /> Delete
                                 </DropdownMenu.Item>
@@ -2608,8 +2611,11 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       </AnimatePresence>
       <AnimatePresence>{propsTarget ? <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} /> : null}</AnimatePresence>
       <AnimatePresence>
-        {shareTarget ? <ShareModal targetName={shareTarget.name} onCreate={createShare} onClose={() => setShareTarget(null)}
-                                   onSendTelegram={shareTarget.messageId && cacheUser && !deviceUnlinked ? sendTelegram : undefined} /> : null}
+        {shareTarget ? <ShareModal targetName={shareTarget.name} onClose={() => setShareTarget(null)}
+                                   onSendTelegram={shareTarget.messageId && cacheUser && !deviceUnlinked ? sendTelegram : undefined}
+                                   unavailable={!shareTarget.messageId
+                                     ? "This file was saved by the old bot, not in your Telegram, so it can't be sent from here. Download it and send it in Telegram."
+                                     : "Connect this device to Telegram first (the banner at the top), then you can send files."} /> : null}
       </AnimatePresence>
       <AnimatePresence>
         {duplicateModal ? (
