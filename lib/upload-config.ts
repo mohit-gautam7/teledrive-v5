@@ -83,20 +83,6 @@ export const CHUNK_CONCURRENCY = (() => {
 export const MTPROTO_PART_SIZE = 512 * 1024;
 
 /**
- * Above this, a linked account stores the file in its own Telegram session.
- *
- * The number is Telegram's, not a preference: BOT_DOWNLOAD_LIMIT is the largest
- * document a bot can serve back, so it is exactly the largest file bot storage
- * can hold in one message. Anything bigger has to be either bot-chunked into
- * hundreds of parts or — when the user has linked their account — sent through
- * MTProto as a single message in their own Saved Messages.
- *
- * It used to sit at 64 MB, which meant a linked user's 30 MB file was still
- * chunked across eight bot messages for no reason at all.
- */
-export const MTPROTO_PREFERRED_ABOVE = BOT_DOWNLOAD_LIMIT;
-
-/**
  * `chatId` recorded for a file stored in the user's own Saved Messages.
  *
  * MTProto's own name for "this account's chat with itself", so it is what the
@@ -138,9 +124,12 @@ export function backendFor(
   prefer: BackendPreference = "auto"
 ): UploadBackend {
   if (!hasMtprotoSession) return "bot";
-  if (prefer === "account") return "mtproto";
+  // Everything goes to the user's own account by default: those files play and
+  // download straight from Telegram on a connected device, where bot-stored
+  // ones must come through the file server. "Always the bot" is still honoured
+  // where the bot can serve the file back.
   if (prefer === "bot" && fileSize <= BOT_DOWNLOAD_LIMIT) return "bot";
-  return fileSize > MTPROTO_PREFERRED_ABOVE ? "mtproto" : "bot";
+  return "mtproto";
 }
 
 /**
