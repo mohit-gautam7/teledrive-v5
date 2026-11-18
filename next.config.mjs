@@ -103,7 +103,9 @@ const nextConfig = {
   // Next 15 promoted both of these out of `experimental`: the bundler must leave
   // `telegram` (GramJS) and `sharp` as real Node requires, and instrumentation.ts
   // now runs without a flag.
-  serverExternalPackages: ["telegram", "sharp"],
+  // big-integer must stay external with telegram: bundled, our copy fails
+  // GramJS's isInstance check and every MTProto download throws CastError.
+  serverExternalPackages: ["telegram", "sharp", "big-integer"],
   webpack(config, { isServer }) {
     if (!isServer) {
       config.resolve.fallback = {

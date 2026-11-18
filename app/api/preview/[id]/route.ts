@@ -19,6 +19,25 @@ export const maxDuration = 60;
 // File bytes for a given id never change, so previews can cache forever.
 const IMMUTABLE = "private, max-age=31536000, immutable";
 
+// Each slow-path thumbnail holds the whole original (up to 25 MB) plus a sharp
+// decode. A folder of fresh backups asked for dozens at once and OOM-killed the
+// 512 MB Render instance, so only a couple run at a time; the rest queue.
+// ponytail: per-process limit, fine while Render runs one instance.
+const THUMB_SLOTS = 2;
+let thumbsActive = 0;
+const thumbQueue: (() => void)[] = [];
+async function withThumbSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (thumbsActive < THUMB_SLOTS) thumbsActive++;
+  else await new Promise<void>(resolve => thumbQueue.push(resolve));
+  try {
+    return await fn();
+  } finally {
+    const next = thumbQueue.shift();
+    if (next) next(); // hand the slot straight over
+    else thumbsActive--;
+  }
+}
+
 export async function GET(request: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   try {
@@ -65,23 +84,32 @@ export async function GET(request: NextRequest, props: { params: Promise<{ id: s
         }
       }
 
+      // HEIC can never be decoded here (no HEVC in this libvips), so don't pull
+      // megabytes out of Telegram just to fail on them.
+      if (/hei[cf]/i.test(file.mimeType || "")) {
+        return new NextResponse(null, { status: 415, headers: protectiveHeaders() });
+      }
+
       // Slow path (once per image): download original, resize, store the thumb.
       try {
-        const buf = await readEntireFile(file);
-        if (buf) {
+        const out = await withThumbSlot(async () => {
+          const buf = await readEntireFile(file);
+          if (!buf) return null;
           const sharp = (await import("sharp")).default;
+          sharp.cache(false);
           // failOn: "none" because sharp defaults to rejecting any image with a
           // recoverable defect, and phone JPEGs are full of them — a truncated
           // EXIF block or trailing bytes after the EOI marker is routine. The
           // logs were full of "Warning treated as error due to failOn setting"
           // for files that download byte-for-byte intact and open fine
           // everywhere else. Decode what is there instead of refusing it.
-          const out = await sharp(buf, { failOn: "none" })
+          return sharp(buf, { failOn: "none" })
             .rotate()
             .resize(400, 400, { fit: "inside", withoutEnlargement: true })
             .webp({ quality: 72 })
             .toBuffer();
-
+        });
+        if (out) {
           // Persist the thumbnail so it never has to be regenerated.
           try {
             const chatId = botChatFor(file, user.telegramId);
