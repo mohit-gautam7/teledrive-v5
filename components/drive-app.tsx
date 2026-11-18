@@ -149,6 +149,51 @@ const SEARCH_DEBOUNCE_MS = 300;
  *  server. Nothing here runs during SSR, so falling back to useEffect is safe. */
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
+/**
+ * A folder/file selection as a zip built on this device, or null when the
+ * server should build it. Account files are read straight from Telegram when
+ * this device is connected; anything else comes from the file server.
+ */
+async function planLocalZip(
+  selection: { folderIds?: string[]; fileIds?: string[]; label: string },
+  user: string,
+  signal: AbortSignal
+): Promise<{ name: string; size: number; stream: () => ReadableStream<Uint8Array> } | null> {
+  const plan = await apiFetch<{ name: string; entries: Array<{ id: string; path: string; size: number; modified: string; backend: string; telegramMessageId: string | null }> }>(
+    "/api/files/zip-plan",
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folderIds: selection.folderIds, fileIds: selection.fileIds, name: selection.label }) }
+  );
+  const [{ zipSize, zipStream }, direct, origin] = await Promise.all([
+    import("@/lib/zip-stream"),
+    import("@/lib/direct-upload"),
+    import("@/lib/file-origin")
+  ]);
+  const linked = direct.browserLinked(user);
+  const entries = plan.entries.map(e => ({
+    path: e.path,
+    size: e.size,
+    modified: new Date(e.modified),
+    open: async (): Promise<ReadableStream<Uint8Array>> => {
+      if (linked && e.backend === "mtproto" && e.telegramMessageId) {
+        const parts = direct.downloadDirect(user, Number(e.telegramMessageId), signal);
+        return new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            const next = await parts.next();
+            if (next.done) controller.close();
+            else controller.enqueue(next.value);
+          },
+          cancel() { void parts.return(undefined); }
+        });
+      }
+      const target = origin.apiUrl(`/api/download/${e.id}`);
+      const response = await fetch(target, { signal, headers: target.startsWith("/") ? {} : await origin.fileAuthHeaders() });
+      if (!response.ok || !response.body) throw new Error(`Could not read "${e.path}".`);
+      return response.body;
+    }
+  }));
+  return { name: plan.name, size: zipSize(entries), stream: () => zipStream(entries) };
+}
+
 export default function DriveApp({ user }: { user: { name: string; username?: string | null; avatar?: string | null } }) {
   const reduceMotion = useReducedMotion();
 
@@ -253,6 +298,16 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
 
   const maxBytes = link?.maxBytes ?? MAX_FILE_SIZE;
   const cacheUser = user.username || user.name;
+  // Linked account, but this browser/app holds no Telegram session of its own.
+  const [deviceUnlinked, setDeviceUnlinked] = useState(false);
+  useEffect(() => {
+    if (!link?.linked || !cacheUser) { setDeviceUnlinked(false); return; }
+    let live = true;
+    const check = () => import("@/lib/direct-upload").then(m => { if (live) setDeviceUnlinked(!m.browserLinked(cacheUser)); }).catch(() => {});
+    void check();
+    window.addEventListener("focus", check);
+    return () => { live = false; window.removeEventListener("focus", check); };
+  }, [link?.linked, cacheUser, appView]);
   const cacheKey = `td:${cacheUser}:${appView}:${folderId ?? "root"}:${debouncedQuery}:${sortField}:${sortDir}:${typeFilter}`;
   const loadedKeyRef = useRef<string | null>(null);
 
@@ -1041,7 +1096,23 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       setTrayOpen(true);
 
       try {
-        const outcome = await downloadWithProgress({
+        // Built on this device: files in the user's own Telegram are read
+        // straight from Telegram, so only bot-stored ones touch the file
+        // server. The server-built zip remains the fallback.
+        const local = await planLocalZip(selection, cacheUser, controller.signal).catch(() => null);
+        const outcome = local
+          ? await downloadWithProgress({
+              url: "",
+              filename: `${local.name}.zip`,
+              sizeHint: local.size,
+              source: local.stream,
+              signal: controller.signal,
+              onProgress: ({ loaded, total }) => {
+                const rate = sampleRate(samples, loaded, total);
+                setDownloads(list => list.map(d => (d.id === id ? { ...d, ...rate, size: total || d.size } : d)));
+              }
+            })
+          : await downloadWithProgress({
           url: "/api/download/zip",
           filename: `${selection.label}.zip`,
           init: {
@@ -1962,6 +2033,20 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] px-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pt-7">
+          {/* Without its own Telegram connection this device sends everything
+              through the file server; one tap fixes that. */}
+          {deviceUnlinked && appView !== "settings" ? (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl px-4 py-3"
+                 style={{ background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }}>
+              <p className="t-sm min-w-0" style={{ color: "var(--text-2)" }}>
+                Connect this device to Telegram so uploads, videos and downloads go straight to Telegram.
+              </p>
+              <button className="btn btn-accent shrink-0" onClick={() => {
+                selectView("settings");
+                window.setTimeout(() => document.getElementById("settings-telegram")?.scrollIntoView({ behavior: "smooth" }), 350);
+              }}>Connect</button>
+            </div>
+          ) : null}
           {/* Title row */}
           <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
