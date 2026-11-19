@@ -357,7 +357,8 @@ class UploadManager {
   /** Hand the bytes back to a restored session and carry on. */
   attach(id: string, file: File) {
     const item = this.items.find(it => it.id === id);
-    if (!item) return;
+    // Two resumes racing (the first-click grant and Resume all) must not start one row twice.
+    if (!item || (item.file && (item.status === "pending" || item.status === "uploading"))) return;
     this.patch(id, { file, status: "pending", error: undefined });
     void this.pump();
   }
@@ -632,7 +633,29 @@ class UploadManager {
         const file = await this.recall(session, { prompt: false });
         if (file) this.attach(session.id, file);
       }
+      // Still waiting means Chrome wants a click before re-granting the folder.
+      // Take the first one on the page rather than making the user find Resume;
+      // its prompt also offers "Allow on every visit", after which reloads
+      // resume with no click at all.
+      if (!hasDirectoryHandles() || !this.items.some(it => it.status === "paused" && !it.file)) return;
+      const onGesture = (event: Event) => {
+        if (!event.isTrusted) return;
+        window.removeEventListener("pointerdown", onGesture, true);
+        window.removeEventListener("keydown", onGesture, true);
+        void this.resumeOrphansFromHandles();
+      };
+      window.addEventListener("pointerdown", onGesture, true);
+      window.addEventListener("keydown", onGesture, true);
     })();
+  }
+
+  /** Re-grant remembered handles inside a click; never opens a file dialog. */
+  private async resumeOrphansFromHandles() {
+    const orphans = this.items.filter(it => it.status === "paused" && !it.file && !this.needsPick.has(it.id));
+    for (const item of orphans) await this.reattach(item, false);
+    // Whatever is left has no usable handle: Resume all goes straight to a picker.
+    if (this.items.some(it => it.status === "paused" && !it.file)) this.needsFolderPick = true;
+    else if (orphans.length) toast.success("Uploads picked up where they stopped.");
   }
 
   /**
