@@ -169,12 +169,20 @@ const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : us
  * server should build it. Account files are read straight from Telegram when
  * this device is connected; anything else comes from the file server.
  */
+/** The message(s) in the user's own Telegram holding one file, in order. */
+async function messageIdsFor(fileId: string): Promise<number[]> {
+  const plan = await apiFetch<{ entries: Array<{ messageIds: number[] }> }>("/api/files/zip-plan", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fileIds: [fileId] })
+  });
+  return plan.entries[0]?.messageIds ?? [];
+}
+
 async function planLocalZip(
   selection: { folderIds?: string[]; fileIds?: string[]; label: string },
   user: string,
   signal: AbortSignal
 ): Promise<{ name: string; size: number; stream: () => ReadableStream<Uint8Array> } | null> {
-  const plan = await apiFetch<{ name: string; entries: Array<{ id: string; path: string; size: number; modified: string; backend: string; telegramMessageId: string | null }> }>(
+  const plan = await apiFetch<{ name: string; entries: Array<{ id: string; path: string; size: number; modified: string; backend: string; messageIds: number[] }> }>(
     "/api/files/zip-plan",
     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folderIds: selection.folderIds, fileIds: selection.fileIds, name: selection.label }) }
   );
@@ -189,8 +197,8 @@ async function planLocalZip(
     size: e.size,
     modified: new Date(e.modified),
     open: async (): Promise<ReadableStream<Uint8Array>> => {
-      if (linked && e.backend === "mtproto" && e.telegramMessageId) {
-        const parts = direct.downloadDirect(user, Number(e.telegramMessageId), signal);
+      if (linked && e.messageIds?.length) {
+        const parts = direct.downloadDirect(user, e.messageIds, signal);
         return new ReadableStream<Uint8Array>({
           async pull(controller) {
             const next = await parts.next();
@@ -292,7 +300,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
   const [renameFile, setRenameFile] = useState<{ id: string; value: string } | null>(null);
   const [moveModal, setMoveModal] = useState<{ ids: string[] } | null>(null);
   const [propsTarget, setPropsTarget] = useState<PropsTarget | null>(null);
-  const [shareTarget, setShareTarget] = useState<{ fileId?: string; folderId?: string; name: string; messageId?: number } | null>(null);
+  const [shareTarget, setShareTarget] = useState<{ fileId?: string; folderId?: string; name: string; messageId?: number; split?: boolean } | null>(null);
   /** A batch waiting on the user to say what to do about the files in it that
    *  are already stored. Nothing is queued until they answer. */
   const [duplicateModal, setDuplicateModal] = useState<{
@@ -1046,7 +1054,7 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
    * disk it does; otherwise very large files go back to a plain browser download
    * and the row says so instead of inventing a percentage.
    */
-  const startDownload = useCallback(async (file: { id: string; originalName: string; size: number; backend?: string; telegramMessageId?: string | null }) => {
+  const startDownload = useCallback(async (file: { id: string; originalName: string; size: number; backend?: string; telegramMessageId?: string | null; isChunked?: boolean }) => {
     const id = `dl-${file.id}-${Date.now()}`;
     const controller = new AbortController();
     downloadControllers.current.set(id, controller);
@@ -1072,12 +1080,18 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     const notice = toast.loading(`Downloading "${file.originalName}"…`);
 
     try {
+      // A file stored in several messages has no single id; ask which ones.
+      const pieces = file.backend === "mtproto" && !file.telegramMessageId && file.isChunked
+        ? await messageIdsFor(file.id).catch(() => [])
+        : [];
       const outcome = await downloadWithProgress({
         url: `/api/download/${file.id}`,
         filename: file.originalName,
         sizeHint: file.size,
         signal: controller.signal,
-        direct: file.backend === "mtproto" && file.telegramMessageId ? { user: cacheUser, messageId: Number(file.telegramMessageId) } : undefined,
+        direct: file.backend === "mtproto" && file.telegramMessageId
+          ? { user: cacheUser, messageId: Number(file.telegramMessageId) }
+          : pieces.length ? { user: cacheUser, messageId: pieces } : undefined,
         onProgress: ({ loaded, total }) => {
           const rate = sampleRate(samples, loaded, total || file.size);
           setDownloads(list => list.map(d => (d.id === id ? { ...d, ...rate, size: total || d.size } : d)));
@@ -1588,15 +1602,19 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
     try {
       let ids = shareTarget.messageId ? [shareTarget.messageId] : [];
       let skipped = 0;
-      if (shareTarget.folderId) {
-        // Same listing the device-built zip uses: every file under the folder.
-        const plan = await apiFetch<{ entries: Array<{ path: string; backend: string; telegramMessageId: string | null }> }>(
+      let split = 0;
+      if (shareTarget.folderId || shareTarget.split) {
+        // Same listing the device-built zip uses: every file under the folder,
+        // or the pieces of one file stored as several messages.
+        const plan = await apiFetch<{ entries: Array<{ path: string; messageIds: number[] }> }>(
           "/api/files/zip-plan",
-          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ folderIds: [shareTarget.folderId], name: shareTarget.name }) }
+          { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify(shareTarget.folderId ? { folderIds: [shareTarget.folderId], name: shareTarget.name } : { fileIds: [shareTarget.fileId] }) }
         );
-        const sendable = plan.entries.filter(e => e.backend === "mtproto" && e.telegramMessageId);
+        const sendable = plan.entries.filter(e => e.messageIds?.length);
         skipped = plan.entries.length - sendable.length;
-        ids = sendable.sort((a, b) => a.path.localeCompare(b.path)).map(e => Number(e.telegramMessageId));
+        split = sendable.filter(e => e.messageIds.length > 1).length;
+        ids = sendable.sort((a, b) => a.path.localeCompare(b.path)).flatMap(e => e.messageIds);
         if (!ids.length) {
           toast.error(plan.entries.length ? "None of these files are in your Telegram (they were saved by the old bot)." : "This folder is empty.");
           return;
@@ -1606,7 +1624,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       const { sendViaTelegram } = await import("@/lib/direct-upload");
       const name = await sendViaTelegram(cacheUser, ids, to);
       const what = shareTarget.folderId ? `${ids.length} file${ids.length === 1 ? "" : "s"}` : "File";
-      toast.success(`${what} sent to ${name} in Telegram${skipped ? ` (${skipped} old bot file${skipped === 1 ? "" : "s"} skipped)` : ""}`);
+      toast.success(`${what} sent to ${name} in Telegram${skipped ? ` (${skipped} old bot file${skipped === 1 ? "" : "s"} skipped)` : ""}` +
+        (split ? `. Files over 2 GB arrive as numbered parts (.001, .002…); 7-Zip joins them back into one file.` : ""));
       setShareTarget(null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not send it in Telegram.");
@@ -2440,7 +2459,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
                               onPreview: () => setPreviewFile(file),
                               onDownload: () => void startDownload(file),
                               onShare: () => setShareTarget({ fileId: file.id, name: file.originalName,
-                                messageId: file.backend === "mtproto" && file.telegramMessageId ? Number(file.telegramMessageId) : undefined }),
+                                messageId: file.backend === "mtproto" && file.telegramMessageId ? Number(file.telegramMessageId) : undefined,
+                                split: file.backend === "mtproto" && !file.telegramMessageId && file.isChunked }),
                               onDelete: () => confirmTrash([file.id]),
                               onFavorite: () => toggleFavorite(file.id),
                               onRestore: () => restoreFile(file.id),
@@ -2677,8 +2697,8 @@ export default function DriveApp({ user }: { user: { name: string; username?: st
       <AnimatePresence>{propsTarget ? <PropertiesModal target={propsTarget} onClose={() => setPropsTarget(null)} /> : null}</AnimatePresence>
       <AnimatePresence>
         {shareTarget ? <ShareModal targetName={shareTarget.name} onClose={() => setShareTarget(null)}
-                                   onSendTelegram={(shareTarget.messageId || shareTarget.folderId) && cacheUser && !deviceUnlinked ? sendTelegram : undefined}
-                                   unavailable={!shareTarget.messageId && !shareTarget.folderId
+                                   onSendTelegram={(shareTarget.messageId || shareTarget.folderId || shareTarget.split) && cacheUser && !deviceUnlinked ? sendTelegram : undefined}
+                                   unavailable={!shareTarget.messageId && !shareTarget.folderId && !shareTarget.split
                                      ? "This file was saved by the old bot, not in your Telegram, so it can't be sent from here. Download it and send it in Telegram."
                                      : "Connect this device to Telegram first (the banner at the top), then you can send files."} /> : null}
       </AnimatePresence>

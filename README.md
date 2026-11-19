@@ -46,7 +46,13 @@ top of it.
 
 - **Upload files**, **Upload folder** (the folder tree is recreated), or drag
   and drop anywhere. Drop onto a folder card to put files in that folder.
-- Files up to **2 GB** each (**4 GB** with Telegram Premium).
+- **No per-file size limit.** Telegram holds at most 2,000 MiB per message, so
+  a bigger file is uploaded as numbered parts (`movie.mkv.001`, `.002`, …),
+  each its own message in your Telegram. TeleDrive joins them back together:
+  the file appears once in your drive, and downloads, zips and video seeking
+  return one whole file. If the upload stops part-way, finished parts are kept
+  and Resume continues from the next part. (A 100 GB sanity cap exists only so
+  a typo cannot queue a petabyte.)
 - Several files upload at once. Each shows its percentage, speed and time left.
 
 ### Transfers page
@@ -65,7 +71,7 @@ the upload. Nothing is lost:
 |---|---|
 | Finished | Safe in your drive. |
 | Already in Telegram, not yet confirmed | Only needs confirming; it is not sent again. |
-| Half-sent | That one file starts over. Telegram drops unfinished pieces. |
+| Half-sent | That one file starts over (for a file over 2 GB: only the part that was being sent). |
 | Not started | Waits in **Paused**. |
 
 **Getting it going again:**
@@ -88,6 +94,8 @@ or a **phone number**. A bare 10-digit number is taken as Indian, `+91`.
 
 - The file is **forwarded Telegram-to-Telegram** from your account. Nothing is
   downloaded or re-uploaded, so even a 2 GB file arrives instantly.
+- A file over 2 GB arrives as its numbered parts (`.001`, `.002`, …). 7-Zip
+  ("Combine files") or `copy /b` joins them back into the original.
 - **Folders** send every file inside them, in path order, at most 100 per
   batch.
 - A phone number is looked up without adding the person to your contacts.

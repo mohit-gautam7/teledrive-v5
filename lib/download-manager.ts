@@ -122,7 +122,7 @@ export async function downloadWithProgress({
   onProgress: (progress: DownloadProgress) => void;
   /** Read from Telegram in this browser instead of the file server, when the
    *  file is in the user's own account and this browser is connected. */
-  direct?: { user: string; messageId: number };
+  direct?: { user: string; messageId: number | number[] };
   /** Bytes produced on this device (a zip it builds), instead of a request. */
   source?: () => ReadableStream<Uint8Array>;
 }): Promise<DownloadOutcome> {

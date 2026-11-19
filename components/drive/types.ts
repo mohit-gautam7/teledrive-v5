@@ -11,6 +11,8 @@ export type DriveFile = {
   folderId: string | null;
   isFavorite: boolean;
   createdAt: string;
+  /** With backend "mtproto" and no telegramMessageId: stored as several messages (over 2,000 MiB). */
+  isChunked?: boolean;
   /** Stored in a way Telegram will not serve back (single bot document > 20 MB).
    *  Re-uploading is the only fix, so the tile says so instead of failing mutely. */
   unreachable?: boolean;

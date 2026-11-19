@@ -65,6 +65,12 @@ export const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
 /** Telegram Premium raises the per-file ceiling to 4 GB. */
 export const MAX_FILE_SIZE_PREMIUM = 4 * 1024 * 1024 * 1024; // 4 GB
+/**
+ * With a linked account, a file past one message is stored as several (see
+ * DIRECT_MAX_BYTES), so Telegram's per-file cap no longer applies.
+ * ponytail: arbitrary sanity ceiling, not a Telegram limit; raise freely.
+ */
+export const MAX_SPLIT_FILE_SIZE = 100 * 1024 * 1024 * 1024; // 100 GB
 
 /**
  * How many chunks of one file are in flight at once.

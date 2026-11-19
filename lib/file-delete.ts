@@ -58,9 +58,13 @@ async function hasSurvivingTwin(file: DeletableFile): Promise<boolean> {
 export async function purgeTelegramCopies(file: DeletableFile) {
   try {
     if (await hasSurvivingTwin(file)) return;
-    if (file.backend === "mtproto" && file.telegramMessageId) {
+    if (file.backend === "mtproto") {
+      // One message, or one per piece for a file stored in several.
+      const ids = file.telegramMessageId
+        ? [Number(file.telegramMessageId)]
+        : file.chunks.filter(c => !c.telegramFileId && c.telegramMsgId > 0).map(c => c.telegramMsgId);
       const session = decryptSecret(file.user.storageConfig?.mtprotoSession);
-      if (session) await deleteUserMessages(session, [Number(file.telegramMessageId)]);
+      if (session && ids.length) await deleteUserMessages(session, ids);
       return;
     }
 

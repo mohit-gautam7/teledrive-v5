@@ -2030,8 +2030,8 @@ function TelegramLinkCard({ link, onChanged, user, onDeviceConnected }: {
 
       <p className="t-sm mt-2 leading-relaxed" style={{ color: "var(--text-2)" }}>
         {link.linked
-          ? `Big files are stored as a single message in your Saved Messages — up to ${formatBytes(link.maxBytes)} each.`
-          : `Sign in once with your Telegram number or QR. That links your account for big files (up to ${formatBytes(MAX_FILE_SIZE)}, 4 GB with Premium) and connects this device for direct uploads and downloads — no second scan.`}
+          ? "Files go straight into your Saved Messages. Anything over 2 GB is stored as several parts there and always downloads as one file."
+          : "Sign in once with your Telegram number or QR. That links your account for files of any size and connects this device for direct uploads and downloads — no second scan."}
       </p>
 
       {link.linked ? (
@@ -2061,7 +2061,7 @@ function TelegramLinkCard({ link, onChanged, user, onDeviceConnected }: {
         <TelegramLoginFlow
           endpoint="/api/telegram/link"
           onDone={result => {
-            toast.success(`Telegram account linked${result.premium ? " (Premium — 4 GB files)" : ""}`);
+            toast.success("Telegram account linked");
             onChanged();
             void connectThisDevice(user, result.password).then(onDeviceConnected);
           }}

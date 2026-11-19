@@ -1,5 +1,5 @@
 import { mtprotoConfigured } from "@/lib/telegram-user";
-import { MAX_FILE_SIZE, MAX_FILE_SIZE_PREMIUM } from "@/lib/upload-config";
+import { MAX_FILE_SIZE, MAX_SPLIT_FILE_SIZE } from "@/lib/upload-config";
 
 /** The MTProto link state, as the browser is allowed to see it. */
 export type LinkState = {
@@ -32,6 +32,6 @@ export function describeLink(
     linked,
     telegramUserId: config?.mtprotoUserId ?? null,
     premium: config?.mtprotoPremium ?? false,
-    maxBytes: linked && config?.mtprotoPremium ? MAX_FILE_SIZE_PREMIUM : MAX_FILE_SIZE
+    maxBytes: linked ? MAX_SPLIT_FILE_SIZE : MAX_FILE_SIZE
   };
 }
