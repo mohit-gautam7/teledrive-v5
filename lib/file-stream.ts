@@ -154,6 +154,42 @@ function buildChunkStream(
   });
 }
 
+/** A file too big for one message, stored as several in the user's own Telegram. */
+export function isSplitAccountFile(file: Pick<StreamableFile, "backend" | "telegramMessageId" | "isChunked" | "uploadStatus" | "chunks">) {
+  return file.backend === "mtproto" && !file.telegramMessageId && file.isChunked &&
+    file.uploadStatus === "complete" && file.chunks.length > 0;
+}
+
+/**
+ * Bytes `rangeStart`–`rangeEnd` of a split file: each piece's slice is read
+ * with the same ranged reader a single message uses, one piece after another.
+ */
+function splitRangeStream(parts: OffsetChunk[], rangeStart: number, rangeEnd: number, session: string): ReadableStream<Uint8Array> {
+  const relevant = parts.filter(p => p.end >= rangeStart && p.start <= rangeEnd);
+  let index = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      for (;;) {
+        if (!reader) {
+          if (index >= relevant.length) return controller.close();
+          const part = relevant[index++];
+          reader = buildRangeStream(
+            Math.max(rangeStart, part.start) - part.start,
+            Math.min(rangeEnd, part.end) - part.start,
+            (from, to) => downloadRange(session, part.msgId, from, to)
+          ).getReader();
+        }
+        const next = await reader.read();
+        if (next.done) { reader = null; continue; }
+        controller.enqueue(next.value);
+        return;
+      }
+    },
+    cancel(reason) { void reader?.cancel(reason); }
+  });
+}
+
 /** The user's own bot token, decrypted. Stored ciphertext since the token
  *  stopped being kept in the clear; decryptSecret passes older plaintext
  *  through untouched, so existing rows keep working. */
@@ -212,7 +248,7 @@ export async function readEntireFile(file: StreamableFile, maxBytes = 25 * 1024 
 export function unreachableReason(file: StreamableFile): string | null {
   const totalSize = Number(file.size);
 
-  if (file.isChunked) {
+  if (file.isChunked && file.backend !== "mtproto") {
     // Every chunk is fetched by file_id, so any single chunk over the ceiling is
     // unreachable even though the file as a whole is chunked.
     const oversized = file.chunks.find(c => c.telegramFileId && c.chunkSize > BOT_DOWNLOAD_LIMIT);
@@ -295,6 +331,20 @@ export function streamFileResponse(
     }
     const msgId = Number(file.telegramMessageId);
     const stream = buildRangeStream(start, end, (from, to) => downloadRange(mtprotoSession, msgId, from, to));
+    const headers: Record<string, string> = { ...baseHeaders, "Content-Length": String(end - start + 1) };
+    if (partial) headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
+    return new NextResponse(stream, { status: partial ? 206 : 200, headers });
+  }
+
+  // ── Stored in the user's own Telegram as several messages (past 2,000 MiB) ──
+  if (isSplitAccountFile(file)) {
+    if (!mtprotoSession) {
+      return NextResponse.json(
+        { error: "This file lives in your own Telegram account. Re-link it in Settings to download." },
+        { status: 409 }
+      );
+    }
+    const stream = splitRangeStream(mapChunkOffsets(file.chunks), start, end, mtprotoSession);
     const headers: Record<string, string> = { ...baseHeaders, "Content-Length": String(end - start + 1) };
     if (partial) headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
     return new NextResponse(stream, { status: partial ? 206 : 200, headers });

@@ -20,6 +20,7 @@ import { maxUploadBytesFor, describeLimit } from "@/lib/upload-limits";
 import { resolveOwnedFolder } from "@/lib/folder-tree";
 import { FILE_ORIGIN } from "@/lib/file-origin";
 import { findDuplicate } from "@/lib/duplicates";
+import { DIRECT_MAX_BYTES } from "@/lib/direct-parts";
 
 export const runtime = "nodejs";
 
@@ -71,7 +72,12 @@ export async function POST(request: NextRequest) {
         where: {
           userId: user.id,
           uploadStatus: "uploading",
-          createdAt: { lt: new Date(Date.now() - STALE_UPLOAD_MS) }
+          // A file sent in 2,000 MiB pieces can legitimately take more than a
+          // day; give those a week before calling them abandoned.
+          OR: [
+            { size: { lte: BigInt(DIRECT_MAX_BYTES) }, createdAt: { lt: new Date(Date.now() - STALE_UPLOAD_MS) } },
+            { createdAt: { lt: new Date(Date.now() - 7 * STALE_UPLOAD_MS) } }
+          ]
         },
         include: { chunks: true, user: { include: { storageConfig: true } } },
         take: 5

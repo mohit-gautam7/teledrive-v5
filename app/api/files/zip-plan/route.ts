@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { jsonError } from "@/lib/api-response";
 import { MAX_ZIP_ENTRIES, planZip, ZipPlanError } from "@/lib/zip-plan";
+import { isSplitAccountFile } from "@/lib/file-stream";
 
 export const runtime = "nodejs";
 
@@ -32,7 +33,14 @@ export async function POST(request: NextRequest) {
         size: Number(file.size),
         modified: file.createdAt.toISOString(),
         backend: file.backend,
-        telegramMessageId: file.telegramMessageId
+        telegramMessageId: file.telegramMessageId,
+        // The message(s) in the user's own Telegram holding the bytes, in order:
+        // one for most files, one per piece for a file stored in several.
+        messageIds: file.backend !== "mtproto"
+          ? []
+          : file.telegramMessageId
+            ? [Number(file.telegramMessageId)]
+            : isSplitAccountFile(file) ? file.chunks.map(c => c.telegramMsgId) : []
       }))
     });
   } catch (error) {

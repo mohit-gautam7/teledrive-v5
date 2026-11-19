@@ -8,6 +8,8 @@ import { rateLimit } from "@/lib/rate-limit";
 import { aiEnabled } from "@/lib/feature-flags";
 import { verifyStoredDocument } from "@/lib/telegram-user";
 import { userMtprotoSession } from "@/lib/mtproto-session";
+import { DIRECT_MAX_BYTES } from "@/lib/direct-parts";
+import type { File } from "@prisma/client";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -28,7 +30,12 @@ export const maxDuration = 60;
  * would be worse than a failed upload.
  */
 
-const body = z.object({ messageId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]) });
+const messageIdSchema = z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]);
+const body = z.union([
+  z.object({ messageId: messageIdSchema }),
+  // A file past one message: one id per DIRECT_MAX_BYTES piece, in order.
+  z.object({ messageIds: z.array(messageIdSchema).min(2).max(1000) })
+]);
 
 async function fireAutomations(userId: string, file: { id: string; originalName: string; mimeType: string }) {
   if (!aiEnabled()) return;
@@ -46,8 +53,7 @@ export async function POST(request: NextRequest, props: { params: Promise<{ file
     const user = await requireUser();
     rateLimit(`upload-direct:${user.id}`, 600, 60_000);
 
-    const { messageId } = body.parse(await request.json());
-    const msgId = Number(messageId);
+    const parsed = body.parse(await request.json());
 
     const file = await prisma.file.findFirst({
       where: { id: params.fileId, userId: user.id, isDeleted: false, backend: "mtproto" }
@@ -55,6 +61,8 @@ export async function POST(request: NextRequest, props: { params: Promise<{ file
     if (!file) {
       return NextResponse.json({ error: "Upload session not found." }, { status: 404 });
     }
+    if ("messageIds" in parsed) return confirmSplit(user.id, file, parsed.messageIds.map(Number));
+    const msgId = Number(parsed.messageId);
     // A lost response must not make a successful confirmation look like failure.
     if (file.uploadStatus === "complete" && file.telegramMessageId === String(msgId)) {
       return NextResponse.json({ file: toPublicFile(file) });
@@ -107,4 +115,62 @@ export async function POST(request: NextRequest, props: { params: Promise<{ file
   } catch (error) {
     return jsonError(error, "Could not finish the direct upload.");
   }
+}
+
+/**
+ * Finish a file stored as several messages. Every piece is checked against the
+ * size it must have, the same rule as a single message, before anything is
+ * written. The pieces become Chunk rows; telegramMessageId stays empty so no
+ * single-message path can mistake piece one for the whole file.
+ */
+async function confirmSplit(userId: string, file: File, msgIds: number[]) {
+  const size = Number(file.size);
+  const expected = Math.ceil(size / DIRECT_MAX_BYTES);
+  if (new Set(msgIds).size !== msgIds.length) {
+    return NextResponse.json({ error: "The same Telegram message was named as two parts." }, { status: 400 });
+  }
+  if (msgIds.length !== expected) {
+    return NextResponse.json({ error: `This file needs ${expected} parts, but ${msgIds.length} were sent.` }, { status: 400 });
+  }
+  const sizes = msgIds.map((_, i) => Math.min(DIRECT_MAX_BYTES, size - i * DIRECT_MAX_BYTES));
+
+  const stored = await prisma.chunk.findMany({ where: { fileId: file.id }, orderBy: { chunkIndex: "asc" } });
+  if (file.uploadStatus === "complete" && stored.map(c => c.telegramMsgId).join() === msgIds.join()) {
+    return NextResponse.json({ file: toPublicFile(file) });
+  }
+  if (file.uploadStatus !== "uploading") {
+    return NextResponse.json({ error: "Upload session is already closed." }, { status: 409 });
+  }
+  const config = await prisma.storageConfig.findUnique({ where: { userId }, select: { directUpload: true } });
+  if (!config?.directUpload) {
+    return NextResponse.json({ error: "Direct upload is switched off for this account." }, { status: 403 });
+  }
+  const session = await userMtprotoSession(userId);
+  if (!session) return NextResponse.json({ error: "Your Telegram account is no longer linked." }, { status: 409 });
+
+  // Each check opens its own short connection, so they can run side by side
+  // and a 5-part file still fits in one function's time limit.
+  const checks = await Promise.all(msgIds.map((id, i) => verifyStoredDocument(session, id, sizes[i])));
+  const bad = checks.findIndex(check => !check.ok);
+  if (bad >= 0) {
+    const reason = (checks[bad] as { reason?: string }).reason ?? "";
+    console.warn("[upload/direct] rejected part", bad + 1, "message", msgIds[bad], "-", reason);
+    return NextResponse.json(
+      { error: `Telegram does not have part ${bad + 1} where the browser said it did. ${reason}` },
+      { status: 409 }
+    );
+  }
+
+  const [, , updated] = await prisma.$transaction([
+    prisma.chunk.deleteMany({ where: { fileId: file.id } }),
+    prisma.chunk.createMany({
+      data: msgIds.map((id, i) => ({ fileId: file.id, chunkIndex: i, telegramMsgId: id, telegramFileId: null, chunkSize: sizes[i] }))
+    }),
+    prisma.file.update({
+      where: { id: file.id },
+      data: { uploadStatus: "complete", telegramMessageId: null, isChunked: true, totalChunks: msgIds.length }
+    })
+  ]);
+  await fireAutomations(userId, updated);
+  return NextResponse.json({ file: toPublicFile(updated) });
 }

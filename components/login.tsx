@@ -21,7 +21,7 @@ type Tab = "account" | "code" | "widget";
 
 const PILLARS = [
   { icon: Lock, title: "Your account, your bytes", body: "Files land in your own Telegram chat. No third-party bucket, nothing to trust but Telegram." },
-  { icon: InfinityIcon, title: "Storage that keeps going", body: "Telegram sets the ceiling, not us — up to 2 GB per file, 4 GB with Premium." },
+  { icon: InfinityIcon, title: "Storage that keeps going", body: "No per-file size limit — files over 2 GB are stored in Telegram as several parts and come back as one." },
   { icon: ShieldCheck, title: "Secrets stay server-side", body: "Bot tokens never reach the browser. Every byte is proxied, every session is an HTTP-only cookie." }
 ];
 

@@ -430,7 +430,13 @@ const DIRECT_READ_PARALLEL = 4;
  * chunks live in the bot's chat under the bot's message ids and file ids,
  * which a user client cannot address, so those still come through the server.
  */
-export async function* downloadDirect(user: string, messageId: number, signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+export async function* downloadDirect(user: string, messageIds: number | number[], signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+  // A file stored in several messages is those messages' bytes back to back.
+  if (Array.isArray(messageIds)) {
+    for (const id of messageIds) yield* downloadDirect(user, id, signal);
+    return;
+  }
+  const messageId = messageIds;
   const client = await connected(user);
   const { Api } = await import("telegram");
   try {

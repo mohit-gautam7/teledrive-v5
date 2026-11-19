@@ -2,7 +2,8 @@ import { UploadAbortedError, fileFetch } from "@/lib/api-client";
 import { resumeKeyFor } from "@/lib/file-identity";
 import { CHUNK_SIZE, CHUNK_CONCURRENCY, MAX_HONOURED_WAIT_MS, retryAfterMs, type UploadBackend } from "@/lib/upload-config";
 import { DirectUploadUnavailable, uploadDirect } from "@/lib/direct-upload";
-import { readDirectReceipt, saveDirectReceipt, clearDirectReceipt } from "@/lib/direct-receipt";
+import { readDirectReceipt, saveDirectReceipt, clearDirectReceipt, readDirectPieces, saveDirectPieces } from "@/lib/direct-receipt";
+import { DIRECT_MAX_BYTES } from "@/lib/direct-parts";
 import { BackupPausedError } from "@/lib/backup-network";
 
 const MAX_RETRIES = 5;
@@ -98,6 +99,58 @@ export class DuplicateFileError extends Error {
   }
 }
 
+/**
+ * A file bigger than one Telegram message (2,000 MiB), sent as several:
+ * "name.001", "name.002", … — the usual split naming, so a piece forwarded on
+ * its own can still be joined by 7-Zip or `copy /b`. Each finished piece is
+ * remembered, so a reload or retry carries on from the next one. There is no
+ * relay fallback: the relay stores one message, which cannot hold this file.
+ */
+async function uploadSplit({ file, user, fileId, onProgress, signal, beforeSend }: {
+  file: File;
+  user: string;
+  fileId: string;
+  onProgress: (loadedBytes: number) => void;
+  signal?: AbortSignal;
+  beforeSend?: () => Promise<void>;
+}): Promise<{ fileId: string; file: UploadedFileMeta | null }> {
+  const count = Math.ceil(file.size / DIRECT_MAX_BYTES);
+  const pad = String(count).length > 3 ? String(count).length : 3;
+  const ids = readDirectPieces(user, fileId).slice(0, count);
+  try {
+    for (let index = ids.length; index < count; index++) {
+      const start = index * DIRECT_MAX_BYTES;
+      const piece = new File([file.slice(start, Math.min(start + DIRECT_MAX_BYTES, file.size))],
+        `${file.name}.${String(index + 1).padStart(pad, "0")}`, { type: "application/octet-stream" });
+      const { messageId } = await uploadDirect({
+        user,
+        file: piece,
+        caption: `\u{1F4C4} ${file.name} (part ${index + 1} of ${count})`,
+        onProgress: loaded => onProgress(Math.min(start + loaded, file.size - 1)),
+        signal,
+        beforeSend
+      });
+      ids.push(messageId);
+      saveDirectPieces(user, fileId, ids);
+    }
+    const res = await fileFetch(`/api/upload/direct/${fileId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messageIds: ids }),
+      signal
+    });
+    const body = (await res.json().catch(() => ({}))) as { file?: UploadedFileMeta; error?: string };
+    if (!res.ok || !body.file?.id) throw new Error(body.error || "Telegram stored the file, but the drive could not confirm it. Retry to confirm.");
+    clearDirectReceipt(user, fileId);
+    onProgress(file.size);
+    return { fileId, file: body.file };
+  } catch (err) {
+    if (err instanceof BackupPausedError) throw err;
+    if (isAbort(err)) throw new UploadAbortedError();
+    throw new DirectUploadUnavailable(`${(err as Error)?.message || "Upload failed."} Finished parts are kept; retry to continue.`);
+  }
+}
+
 export async function uploadFileInChunks({
   file,
   user,
@@ -172,6 +225,9 @@ export async function uploadFileInChunks({
 
   if (directOnly && (backend !== "mtproto" || received.length > 0)) {
     throw new DirectUploadUnavailable("This upload cannot use direct mode. Link your Telegram account in Settings first. No file bytes were relayed.");
+  }
+  if (backend === "mtproto" && received.length === 0 && file.size > DIRECT_MAX_BYTES) {
+    return uploadSplit({ file, user, fileId, onProgress, signal, beforeSend });
   }
   if (backend === "mtproto" && received.length === 0) {
     try {
